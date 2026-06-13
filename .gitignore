@@ -1,0 +1,14 @@
+# Secrets — never commit
+token.json
+credentials.json
+Resources/token.json
+*.token
+
+# Xcode / build
+*.xcodeproj
+DerivedData/
+.build/
+build/
+*.xcuserstate
+xcuserdata/
+.DS_Store

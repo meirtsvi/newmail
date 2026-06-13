@@ -1,0 +1,178 @@
+import Foundation
+
+// MARK: - Errors
+
+enum MailError: LocalizedError {
+    case auth(String)
+    case api(Int, String)
+    case other(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .auth(let m): return "Authentication error: \(m)"
+        case .api(let code, let body):
+            if code == 403 {
+                return "Permission denied (403). The current token scope is read-only. "
+                     + "Re-authorize with gmail.modify / gmail.send to enable writes.\n\(body.prefix(300))"
+            }
+            return "API error \(code): \(body.prefix(300))"
+        case .other(let m): return m
+        }
+    }
+}
+
+// MARK: - Addresses
+
+struct MailAddress: Hashable, Identifiable {
+    var name: String
+    var email: String
+
+    var id: String { email.isEmpty ? name : email }
+    var display: String { name.isEmpty ? email : name }
+
+    var initials: String {
+        let base = name.isEmpty ? email : name
+        let parts = base.split(whereSeparator: { $0 == " " || $0 == "." || $0 == "@" })
+        if let a = parts.first?.first, parts.count >= 2, let b = parts.dropFirst().first?.first {
+            return "\(a)\(b)".uppercased()
+        }
+        return String(base.prefix(2)).uppercased()
+    }
+
+    /// Parses an RFC 5322 address such as `Name <user@host>` or a bare `user@host`.
+    static func parse(_ raw: String) -> MailAddress {
+        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let lt = s.firstIndex(of: "<"), let gt = s.lastIndex(of: ">"), lt < gt {
+            let name = String(s[..<lt])
+                .trimmingCharacters(in: CharacterSet(charactersIn: " \""))
+                .trimmingCharacters(in: .whitespaces)
+            let email = String(s[s.index(after: lt)..<gt]).trimmingCharacters(in: .whitespaces)
+            return MailAddress(name: name, email: email)
+        }
+        return MailAddress(name: "", email: s)
+    }
+
+    static func parseList(_ raw: String) -> [MailAddress] {
+        raw.split(separator: ",").map { parse(String($0)) }
+    }
+}
+
+// MARK: - Folders
+
+enum FolderKind: String, Hashable {
+    case inbox, sent, drafts, trash, junk, archive, snoozed, starred, important, custom
+
+    var icon: String {
+        switch self {
+        case .inbox: return "tray"
+        case .sent: return "paperplane"
+        case .drafts: return "doc"
+        case .trash: return "trash"
+        case .junk: return "xmark.bin"
+        case .archive: return "archivebox"
+        case .snoozed: return "clock"
+        case .starred: return "star"
+        case .important: return "exclamationmark"
+        case .custom: return "folder"
+        }
+    }
+
+    /// Sidebar ordering weight (lower = higher in list).
+    var sortWeight: Int {
+        switch self {
+        case .inbox: return 0
+        case .snoozed: return 1
+        case .sent: return 2
+        case .drafts: return 3
+        case .archive: return 4
+        case .junk: return 5
+        case .trash: return 6
+        case .starred: return 7
+        case .important: return 8
+        case .custom: return 9
+        }
+    }
+}
+
+struct MailFolder: Identifiable, Hashable {
+    var id: String          // provider label/folder id
+    var name: String
+    var kind: FolderKind
+    var unreadCount: Int = 0
+    var totalCount: Int = 0
+}
+
+// MARK: - Messages
+
+struct MessageHeader: Identifiable, Hashable {
+    var id: String
+    var threadId: String
+    var from: MailAddress
+    var to: [MailAddress]
+    var subject: String
+    var snippet: String
+    var date: Date
+    var isRead: Bool
+    var isFlagged: Bool
+    var hasAttachments: Bool
+    var labelIds: [String]
+
+    // Comparable sort keys for boolean columns (Bool isn't Comparable).
+    var readSort: Int { isRead ? 1 : 0 }
+    var flagSort: Int { isFlagged ? 1 : 0 }
+    var attachmentSort: Int { hasAttachments ? 1 : 0 }
+}
+
+struct MailAttachment: Identifiable, Hashable, Codable {
+    var id: String          // attachmentId
+    var messageId: String
+    var filename: String
+    var mimeType: String
+    var sizeBytes: Int
+}
+
+struct MessageBody {
+    var headerId: String
+    var html: String
+    var plainText: String
+    var attachments: [MailAttachment]
+}
+
+// MARK: - Search
+
+enum SearchScope: String, CaseIterable, Identifiable {
+    case currentFolder = "Current folder"
+    case allFolders = "All folders"
+    var id: String { rawValue }
+}
+
+// MARK: - Date formatting (matches the reference UI)
+
+extension Date {
+    var mailListString: String {
+        let cal = Calendar.current
+        if cal.isDateInToday(self) {
+            return formatted(date: .omitted, time: .shortened)
+        }
+        if cal.isDateInYesterday(self) {
+            return "Yesterday"
+        }
+        if let days = cal.dateComponents([.day], from: self, to: Date()).day, days < 7 {
+            return formatted(.dateTime.weekday(.wide))
+        }
+        return formatted(.dateTime.month(.abbreviated).day())
+    }
+
+    var mailFullString: String {
+        formatted(date: .abbreviated, time: .shortened)
+    }
+}
+
+extension CharacterSet {
+    /// Allowed characters for a value in application/x-www-form-urlencoded.
+    static let formValueAllowed: CharacterSet = {
+        var cs = CharacterSet.alphanumerics
+        cs.insert(charactersIn: "-._~")
+        return cs
+    }()
+}

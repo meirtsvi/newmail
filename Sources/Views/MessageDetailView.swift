@@ -1,0 +1,117 @@
+import SwiftUI
+
+/// A message opened in its own modal window (double-click). Shows the full
+/// header and body, reply/forward actions, and an in-message find bar (⌘F)
+/// with next/previous navigation.
+struct MessageDetailView: View {
+    @Environment(MailboxViewModel.self) private var vm
+    @Environment(\.dismiss) private var dismiss
+    let header: MessageHeader
+
+    @StateObject private var finder = WebFindController()
+    @State private var showFind = false
+    @State private var findText = ""
+    @FocusState private var findFocused: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            toolbar
+            Divider()
+            if showFind {
+                findBar
+                Divider()
+            }
+            headerBlock
+            Divider()
+            bodyBlock
+        }
+        .frame(minWidth: 720, idealWidth: 840, minHeight: 560, idealHeight: 720)
+    }
+
+    private var toolbar: some View {
+        HStack(spacing: 14) {
+            Text(header.subject).font(.headline).lineLimit(1)
+            Spacer()
+            Button { reply(all: false) } label: { Image(systemName: "arrowshape.turn.up.left") }
+                .help("Reply")
+            Button { reply(all: true) } label: { Image(systemName: "arrowshape.turn.up.left.2") }
+                .help("Reply All")
+            Button { forward() } label: { Image(systemName: "arrowshape.turn.up.right") }
+                .help("Forward")
+            Button {
+                showFind.toggle()
+                if showFind { findFocused = true }
+            } label: { Image(systemName: "magnifyingglass") }
+                .help("Find in Message (⌘F)")
+                .keyboardShortcut("f", modifiers: .command)
+            Button("Done") { dismiss() }
+                .keyboardShortcut(.cancelAction)
+        }
+        .buttonStyle(.borderless)
+        .imageScale(.large)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    private var findBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Find in message", text: $findText)
+                .textFieldStyle(.roundedBorder)
+                .focused($findFocused)
+                .onSubmit { finder.find(findText, forward: true) }
+                .frame(maxWidth: 280)
+            Button { finder.find(findText, forward: false) } label: { Image(systemName: "chevron.up") }
+                .help("Previous")
+                .disabled(findText.isEmpty)
+            Button { finder.find(findText, forward: true) } label: { Image(systemName: "chevron.down") }
+                .help("Next")
+                .disabled(findText.isEmpty)
+            if !finder.status.isEmpty {
+                Text(finder.status).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button { showFind = false } label: { Image(systemName: "xmark.circle.fill") }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+
+    private var headerBlock: some View {
+        HStack(spacing: 10) {
+            Avatar(address: header.from)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(header.from.display).font(.body.weight(.semibold))
+                if !header.to.isEmpty {
+                    Text("To: \(header.to.map(\.display).joined(separator: ", "))")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            Spacer()
+            Text(header.date.mailFullString).font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(16)
+    }
+
+    @ViewBuilder
+    private var bodyBlock: some View {
+        if let body = vm.modalBody {
+            HTMLView(html: body.html, finder: finder)
+        } else {
+            VStack { Spacer(); ProgressView(); Spacer() }.frame(maxWidth: .infinity)
+        }
+    }
+
+    private func reply(all: Bool) {
+        vm.selection = [header.id]
+        // Replaces the message sheet with the compose sheet.
+        vm.startReply(all: all)
+    }
+
+    private func forward() {
+        vm.selection = [header.id]
+        vm.startForward()
+    }
+}

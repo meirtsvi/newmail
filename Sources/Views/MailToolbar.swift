@@ -1,0 +1,91 @@
+import SwiftUI
+
+/// The window toolbar mirroring the reference UI's quick-action row. All actions
+/// operate on the current selection and route through the shared view model.
+/// Every control has a `.help` tooltip shown on hover.
+struct MailToolbar: ToolbarContent {
+    @Bindable var vm: MailboxViewModel
+
+    private var ids: [String] { Array(vm.selection) }
+    private var hasSelection: Bool { !vm.selection.isEmpty }
+
+    var body: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            Button { vm.startNewMail() } label: {
+                Label("New Mail", systemImage: "square.and.pencil")
+            }
+            .keyboardShortcut("n", modifiers: .command)
+            .help("New Mail (⌘N)")
+        }
+
+        ToolbarItemGroup {
+            Button { Task { await vm.toggleFlag(ids) } } label: {
+                Label("Flag", systemImage: "flag")
+            }
+            .disabled(!hasSelection)
+            .help("Flag")
+
+            Button { vm.startReply(all: false) } label: {
+                Label("Reply", systemImage: "arrowshape.turn.up.left")
+            }
+            .keyboardShortcut("r", modifiers: .command)
+            .disabled(!hasSelection)
+            .help("Reply (⌘R)")
+
+            Button { vm.startReply(all: true) } label: {
+                Label("Reply All", systemImage: "arrowshape.turn.up.left.2")
+            }
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+            .disabled(!hasSelection)
+            .help("Reply All (⇧⌘R)")
+
+            Button { vm.startForward() } label: {
+                Label("Forward", systemImage: "arrowshape.turn.up.right")
+            }
+            .keyboardShortcut("f", modifiers: [.command, .shift])
+            .disabled(!hasSelection)
+            .help("Forward (⇧⌘F)")
+
+            Button { Task { await vm.deleteMessages(ids) } } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            .keyboardShortcut(.delete, modifiers: [])
+            .disabled(!hasSelection)
+            .help("Delete")
+
+            Menu {
+                MoveMenu(ids: ids)
+            } label: {
+                Label("Move", systemImage: "folder")
+            }
+            .disabled(!hasSelection)
+            .help("Move to folder")
+
+            Menu {
+                SnoozeMenu(ids: ids)
+            } label: {
+                Label("Snooze", systemImage: "clock")
+            }
+            .disabled(!hasSelection)
+            .help("Snooze")
+
+            Button { Task { await vm.markRead(ids, read: !allSelectedRead) } } label: {
+                Label(allSelectedRead ? "Mark Unread" : "Mark Read",
+                      systemImage: allSelectedRead ? "envelope.badge" : "envelope.open")
+            }
+            .disabled(!hasSelection)
+            .help(allSelectedRead ? "Mark as Unread" : "Mark as Read")
+
+            Button { Task { await vm.sync() } } label: {
+                Label("Sync", systemImage: "arrow.clockwise")
+            }
+            .keyboardShortcut("r", modifiers: [.command, .option])
+            .help("Sync (⌥⌘R)")
+        }
+    }
+
+    private var allSelectedRead: Bool {
+        let chosen = vm.selectedHeaders
+        return !chosen.isEmpty && chosen.allSatisfy { $0.isRead }
+    }
+}

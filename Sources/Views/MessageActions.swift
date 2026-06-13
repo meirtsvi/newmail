@@ -1,0 +1,132 @@
+import SwiftUI
+
+/// Reusable action controls shared by the toolbar, row-hover overlay, and
+/// right-click context menu — a single command surface over a set of message ids.
+
+struct SnoozeMenu: View {
+    @Environment(MailboxViewModel.self) private var vm
+    let ids: [String]
+
+    var body: some View {
+        ForEach(SnoozeService.Preset.allCases) { preset in
+            Button(preset.rawValue) {
+                let wake = SnoozeService.wakeDate(for: preset)
+                Task { await vm.snoozeMessages(ids, until: wake) }
+            }
+        }
+        Divider()
+        // A sheet can't present from inside a menu, so route through the view
+        // model; ContentView shows the date/time picker.
+        Button("Custom…") { vm.requestCustomSnooze(ids) }
+    }
+}
+
+struct CustomSnoozeSheet: View {
+    @Binding var date: Date
+    let onConfirm: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Snooze until").font(.headline)
+            DatePicker("", selection: $date, in: Date()...,
+                       displayedComponents: [.date, .hourAndMinute])
+                .datePickerStyle(.graphical)
+                .labelsHidden()
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Snooze") { onConfirm(); dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 320)
+    }
+}
+
+struct MoveMenu: View {
+    @Environment(MailboxViewModel.self) private var vm
+    let ids: [String]
+
+    var body: some View {
+        ForEach(vm.folders.filter { $0.kind != .inbox }) { folder in
+            Button {
+                Task { await vm.move(ids, to: folder) }
+            } label: {
+                Label(folder.name, systemImage: folder.kind.icon)
+            }
+        }
+    }
+}
+
+/// Compact icon buttons revealed when hovering a message row: flag, move, delete.
+/// The icon currently under the cursor is emphasized (bold + full-opacity).
+struct HoverActions: View {
+    @Environment(MailboxViewModel.self) private var vm
+    let id: String
+    let isFlagged: Bool
+    @State private var hoveredSymbol: String?
+
+    var body: some View {
+        HStack(spacing: 4) {
+            iconButton(isFlagged ? "flag.fill" : "flag", help: isFlagged ? "Unflag" : "Flag") {
+                Task { await vm.toggleFlag([id]) }
+            }
+            Menu {
+                MoveMenu(ids: [id])
+            } label: {
+                icon("folder")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Move to folder")
+            .onHover { hoveredSymbol = $0 ? "folder" : (hoveredSymbol == "folder" ? nil : hoveredSymbol) }
+
+            iconButton("trash", help: "Delete") {
+                Task { await vm.deleteMessages([id]) }
+            }
+        }
+        .buttonStyle(.borderless)
+        .imageScale(.medium)
+        .padding(.horizontal, 4)
+    }
+
+    private func iconButton(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) { icon(symbol) }
+            .help(help)
+            .onHover { hoveredSymbol = $0 ? symbol : (hoveredSymbol == symbol ? nil : hoveredSymbol) }
+    }
+
+    /// An icon that turns bold + primary when it is the one being hovered.
+    private func icon(_ symbol: String) -> some View {
+        let isHovered = hoveredSymbol == symbol
+        return Image(systemName: symbol)
+            .fontWeight(isHovered ? .bold : .regular)
+            .foregroundStyle(isHovered ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+    }
+}
+
+/// The right-click menu for a selection of messages.
+struct MessageContextMenu: View {
+    @Environment(MailboxViewModel.self) private var vm
+    let ids: [String]
+
+    var body: some View {
+        if !ids.isEmpty {
+            Button("Reply") { vm.selection = Set(ids); vm.startReply(all: false) }
+            Button("Reply All") { vm.selection = Set(ids); vm.startReply(all: true) }
+            Button("Forward") { vm.selection = Set(ids); vm.startForward() }
+            Divider()
+            Button("Mark Read") { Task { await vm.markRead(ids, read: true) } }
+            Button("Mark Unread") { Task { await vm.markRead(ids, read: false) } }
+            Button("Flag") { Task { await vm.toggleFlag(ids) } }
+            Menu("Move to") { MoveMenu(ids: ids) }
+            Menu("Snooze") { SnoozeMenu(ids: ids) }
+            Divider()
+            Button("Archive") { Task { await vm.archiveMessages(ids) } }
+            Button("Delete", role: .destructive) { Task { await vm.deleteMessages(ids) } }
+        }
+    }
+}
