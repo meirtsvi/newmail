@@ -151,6 +151,20 @@ final class MailboxViewModel {
         // Instant paint from cache, then refresh from the network.
         messages = store.cachedHeaders(folderId: folder.id)
         await loadMessages()
+        await refreshCurrentFolderCount()
+    }
+
+    /// Fetches the accurate total/unread count for the selected folder so the
+    /// list header can show e.g. "Inbox (103)".
+    private func refreshCurrentFolderCount() async {
+        guard let folder = currentFolder,
+              let count = try? await provider.folderCount(id: folder.id) else { return }
+        currentFolder?.unreadCount = count.unread
+        currentFolder?.totalCount = count.total
+        if let i = folders.firstIndex(where: { $0.id == folder.id }) {
+            folders[i].unreadCount = count.unread
+            folders[i].totalCount = count.total
+        }
     }
 
     func loadMessages() async {
@@ -348,11 +362,20 @@ final class MailboxViewModel {
         guard let header = selectedHeaders.first else { return }
         let to = header.from.email
         let subject = header.subject.hasPrefix("Re:") ? header.subject : "Re: \(header.subject)"
+        // Show the full original message (rendered) below the reply, like forward.
+        let original = bodyFor(header)?.html ?? ""
+        let quoted = """
+        <br><br>
+        <p>On \(header.date.mailFullString), \(escape(header.from.display)) &lt;\(escape(header.from.email))&gt; wrote:</p>
+        <blockquote style="margin:0 0 0 8px;padding-left:10px;border-left:2px solid #ccc">
+        \(original.isEmpty ? "<p>\(escape(header.snippet))</p>" : original)
+        </blockquote>
+        """
         activeSheet = .compose(ComposeRequest(
             kind: all ? .replyAll : .reply,
             to: to,
             subject: subject,
-            quoted: quote(header)
+            quotedHTML: quoted
         ))
     }
 
@@ -370,7 +393,7 @@ final class MailboxViewModel {
         activeSheet = .compose(ComposeRequest(
             kind: .forward,
             subject: subject,
-            forwardHTML: forwardHeader + (original.isEmpty ? "<p>\(escape(header.snippet))</p>" : original)
+            quotedHTML: forwardHeader + (original.isEmpty ? "<p>\(escape(header.snippet))</p>" : original)
         ))
     }
 
@@ -378,12 +401,6 @@ final class MailboxViewModel {
         s.replacingOccurrences(of: "&", with: "&amp;")
          .replacingOccurrences(of: "<", with: "&lt;")
          .replacingOccurrences(of: ">", with: "&gt;")
-    }
-
-    private func quote(_ header: MessageHeader) -> String {
-        let resolved = bodyFor(header)
-        let body = resolved?.plainText ?? resolved?.html ?? header.snippet
-        return "\n\n--- On \(header.date.mailFullString), \(header.from.display) wrote ---\n\(body)"
     }
 
     /// The loaded body for a header, whether it came from the preview pane or
@@ -474,15 +491,15 @@ final class ComposeRequest: Identifiable {
     var cc: String
     var subject: String
     var body: String
-    /// Original message HTML to show as the forwarded/quoted preview.
-    var forwardHTML: String
+    /// Original message HTML to show as the rendered quote (reply/forward).
+    var quotedHTML: String
 
-    init(kind: ComposeKind, to: String = "", subject: String = "", quoted: String = "", forwardHTML: String = "") {
+    init(kind: ComposeKind, to: String = "", subject: String = "", quoted: String = "", quotedHTML: String = "") {
         self.kind = kind
         self.to = to
         self.cc = ""
         self.subject = subject
         self.body = quoted
-        self.forwardHTML = forwardHTML
+        self.quotedHTML = quotedHTML
     }
 }

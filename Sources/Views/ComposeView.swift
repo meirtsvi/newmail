@@ -32,9 +32,9 @@ struct ComposeView: View {
         }
         .frame(width: 640, height: 560)
         .onAppear {
-            if !request.forwardHTML.isEmpty {
+            if !request.quotedHTML.isEmpty {
                 // Render the original message as a rich preview in the editable body.
-                let wrapped = "<br><br>\(request.forwardHTML)"
+                let wrapped = "<br><br>\(request.quotedHTML)"
                 if let data = wrapped.data(using: .utf8),
                    let attr = try? NSAttributedString(
                        data: data,

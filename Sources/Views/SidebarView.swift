@@ -102,7 +102,6 @@ struct SidebarView: View {
                 node = child
                 if index == components.count - 1 {
                     node.folder = folder
-                    node.id = folder.id
                 }
             }
         }
@@ -114,8 +113,12 @@ struct SidebarView: View {
             let kids = builder.children.values.map(convert).sorted {
                 sortKey($0) < sortKey($1)
             }
+            // Real folders use the provider id; synthesized parents use a
+            // distinct "path:" id so they can't collide with a folder id
+            // (e.g. the Gmail label id "INBOX" vs a synthesized "INBOX" node).
+            let nodeId = builder.folder?.id ?? "path:\(builder.id)"
             return FolderNode(
-                id: builder.id, name: builder.name, folder: builder.folder,
+                id: nodeId, name: builder.name, folder: builder.folder,
                 children: kids.isEmpty ? nil : kids
             )
         }

@@ -123,6 +123,12 @@ final class GmailProvider: MailProvider {
         return result
     }
 
+    func folderCount(id: String) async throws -> (unread: Int, total: Int) {
+        let data = try await request("labels/\(id)")
+        let label = try JSONDecoder().decode(GmailAPI.Label.self, from: data)
+        return (label.messagesUnread ?? 0, label.messagesTotal ?? 0)
+    }
+
     func ensureFolder(named name: String) async throws -> String {
         let data = try await request("labels")
         let list = try JSONDecoder().decode(GmailAPI.LabelsList.self, from: data)
@@ -147,7 +153,7 @@ final class GmailProvider: MailProvider {
         pageToken: String?
     ) async throws -> (headers: [MessageHeader], nextPageToken: String?) {
         var items = [
-            URLQueryItem(name: "maxResults", value: "50"),
+            URLQueryItem(name: "maxResults", value: "100"),
             URLQueryItem(name: "labelIds", value: folderId),
         ]
         if let query, !query.isEmpty { items.append(URLQueryItem(name: "q", value: query)) }
@@ -160,7 +166,7 @@ final class GmailProvider: MailProvider {
         pageToken: String?
     ) async throws -> (headers: [MessageHeader], nextPageToken: String?) {
         var items = [
-            URLQueryItem(name: "maxResults", value: "50"),
+            URLQueryItem(name: "maxResults", value: "100"),
             URLQueryItem(name: "q", value: query),
         ]
         if let pageToken { items.append(URLQueryItem(name: "pageToken", value: pageToken)) }
@@ -173,21 +179,23 @@ final class GmailProvider: MailProvider {
         let data = try await request("messages", query: items)
         let list = try JSONDecoder().decode(GmailAPI.MessagesList.self, from: data)
         let ids = (list.messages ?? []).map(\.id)
-        let headers = try await fetchHeaders(ids)
+        let headers = await fetchHeaders(ids)
         return (headers, list.nextPageToken)
     }
 
-    /// Fetches metadata for many message ids, capped concurrency, original order preserved.
-    private func fetchHeaders(_ ids: [String]) async throws -> [MessageHeader] {
+    /// Fetches metadata for many message ids with capped concurrency, preserving
+    /// order. A failed individual fetch is skipped rather than aborting the whole
+    /// page (so one transient error can't drop the entire list).
+    private func fetchHeaders(_ ids: [String]) async -> [MessageHeader] {
         var byId: [String: MessageHeader] = [:]
         var index = 0
         while index < ids.count {
             let slice = Array(ids[index..<min(index + headerFetchWindow, ids.count)])
-            try await withThrowingTaskGroup(of: MessageHeader?.self) { group in
+            await withTaskGroup(of: MessageHeader?.self) { group in
                 for id in slice {
-                    group.addTask { [self] in try await fetchHeader(id) }
+                    group.addTask { [self] in try? await fetchHeader(id) }
                 }
-                for try await header in group {
+                for await header in group {
                     if let header { byId[header.id] = header }
                 }
             }

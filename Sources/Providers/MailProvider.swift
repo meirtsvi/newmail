@@ -7,6 +7,7 @@ protocol MailProvider: AnyObject {
 
     func loadProfile() async throws
     func listFolders() async throws -> [MailFolder]
+    func folderCount(id: String) async throws -> (unread: Int, total: Int)
     func listMessages(folderId: String, query: String?, pageToken: String?) async throws -> (headers: [MessageHeader], nextPageToken: String?)
     func search(query: String, pageToken: String?) async throws -> (headers: [MessageHeader], nextPageToken: String?)
     func fetchBody(id: String) async throws -> MessageBody

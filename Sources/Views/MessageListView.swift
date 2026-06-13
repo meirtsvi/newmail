@@ -21,8 +21,16 @@ struct MessageListView: View {
 
     private var header: some View {
         HStack {
-            Text(vm.currentFolder?.name ?? "Mailbox")
-                .font(.title2.weight(.semibold))
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(vm.currentFolder?.name ?? "Mailbox")
+                    .font(.title2.weight(.semibold))
+                if let total = vm.currentFolder?.totalCount, total > 0 {
+                    Text("(\(total))")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
             if vm.isLoading {
                 ProgressView().controlSize(.small).padding(.leading, 4)
             }
