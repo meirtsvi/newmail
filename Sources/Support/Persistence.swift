@@ -42,14 +42,16 @@ final class CachedFolder {
     var unreadCount: Int
     var totalCount: Int
     var sortIndex: Int
+    var path: String = ""
 
-    init(id: String, name: String, kindRaw: String, unreadCount: Int, totalCount: Int, sortIndex: Int) {
+    init(id: String, name: String, kindRaw: String, unreadCount: Int, totalCount: Int, sortIndex: Int, path: String) {
         self.id = id
         self.name = name
         self.kindRaw = kindRaw
         self.unreadCount = unreadCount
         self.totalCount = totalCount
         self.sortIndex = sortIndex
+        self.path = path
     }
 }
 

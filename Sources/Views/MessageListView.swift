@@ -6,6 +6,9 @@ import SwiftUI
 struct MessageListView: View {
     @Environment(MailboxViewModel.self) private var vm
     @State private var hoveredId: String?
+    @State private var columnCustomization = TableColumnCustomization<MessageHeader>()
+
+    private static let columnsKey = "messageColumnCustomization"
 
     var body: some View {
         @Bindable var vm = vm
@@ -50,9 +53,16 @@ struct MessageListView: View {
 
     private var table: some View {
         @Bindable var vm = vm
-        return Table(vm.displayedMessages, selection: $vm.selection, sortOrder: $vm.sortOrder) {
+        return Table(
+            vm.displayedMessages,
+            selection: $vm.selection,
+            sortOrder: $vm.sortOrder,
+            columnCustomization: $columnCustomization
+        ) {
             columns
         }
+        .onAppear(perform: loadColumns)
+        .onChange(of: columnCustomization) { _, value in saveColumns(value) }
         .contextMenu(forSelectionType: String.self) { ids in
             MessageContextMenu(vm: vm, ids: ids.isEmpty ? Array(vm.selection) : Array(ids))
         } primaryAction: { ids in
@@ -75,10 +85,28 @@ struct MessageListView: View {
         TableColumn("◷", value: \MessageHeader.attachmentSort) { msg in attachmentCell(msg) }
             .width(24)
         TableColumn("From", value: \MessageHeader.from.display) { msg in fromCell(msg) }
-            .width(min: 180, ideal: 240)
+            .width(min: 120, ideal: 240)
+            .customizationID("from")
         TableColumn("Subject", value: \MessageHeader.subject) { msg in subjectCell(msg) }
+            .customizationID("subject")
         TableColumn("Date", value: \MessageHeader.date) { msg in dateCell(msg) }
-            .width(min: 70, ideal: 90)
+            .width(min: 60, ideal: 90)
+            .customizationID("date")
+    }
+
+    // MARK: - Column width persistence
+
+    private func loadColumns() {
+        guard let data = UserDefaults.standard.data(forKey: Self.columnsKey),
+              let decoded = try? JSONDecoder().decode(TableColumnCustomization<MessageHeader>.self, from: data)
+        else { return }
+        columnCustomization = decoded
+    }
+
+    private func saveColumns(_ value: TableColumnCustomization<MessageHeader>) {
+        if let data = try? JSONEncoder().encode(value) {
+            UserDefaults.standard.set(data, forKey: Self.columnsKey)
+        }
     }
 
     @ViewBuilder

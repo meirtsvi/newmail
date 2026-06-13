@@ -72,7 +72,9 @@ final class GmailProvider: MailProvider {
                 name: Self.displayName(label),
                 kind: Self.kind(label),
                 unreadCount: 0,
-                totalCount: 0
+                totalCount: 0,
+                // User labels carry their full nested name (e.g. "Work/Receipts").
+                path: label.type == "user" ? label.name : Self.displayName(label)
             )
         }
 

@@ -96,10 +96,18 @@ enum FolderKind: String, Hashable {
 
 struct MailFolder: Identifiable, Hashable {
     var id: String          // provider label/folder id
-    var name: String
+    var name: String        // leaf display name
     var kind: FolderKind
     var unreadCount: Int = 0
     var totalCount: Int = 0
+    /// Full hierarchical path, e.g. "Work/Receipts" (slash-separated). Defaults
+    /// to the leaf name for non-nested folders.
+    var path: String = ""
+
+    var pathComponents: [String] {
+        let p = path.isEmpty ? name : path
+        return p.split(separator: "/").map(String.init)
+    }
 }
 
 // MARK: - Messages

@@ -26,7 +26,8 @@ final class MailStore {
                 name: $0.name,
                 kind: FolderKind(rawValue: $0.kindRaw) ?? .custom,
                 unreadCount: $0.unreadCount,
-                totalCount: $0.totalCount
+                totalCount: $0.totalCount,
+                path: $0.path.isEmpty ? $0.name : $0.path
             )
         }
     }
@@ -43,10 +44,12 @@ final class MailStore {
                 row.unreadCount = folder.unreadCount
                 row.totalCount = folder.totalCount
                 row.sortIndex = index
+                row.path = folder.path
             } else {
                 context.insert(CachedFolder(
                     id: folder.id, name: folder.name, kindRaw: folder.kind.rawValue,
-                    unreadCount: folder.unreadCount, totalCount: folder.totalCount, sortIndex: index
+                    unreadCount: folder.unreadCount, totalCount: folder.totalCount,
+                    sortIndex: index, path: folder.path
                 ))
             }
             byId.removeValue(forKey: folder.id)
