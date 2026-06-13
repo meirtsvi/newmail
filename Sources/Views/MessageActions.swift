@@ -2,9 +2,14 @@ import SwiftUI
 
 /// Reusable action controls shared by the toolbar, row-hover overlay, and
 /// right-click context menu — a single command surface over a set of message ids.
+///
+/// These take the view model explicitly rather than via `@Environment`: when a
+/// menu is presented from the toolbar or a context menu, the observable
+/// environment is not always propagated into that detached hosting context, and
+/// reading it at render time traps. Passing `vm` down avoids that crash.
 
 struct SnoozeMenu: View {
-    @Environment(MailboxViewModel.self) private var vm
+    let vm: MailboxViewModel
     let ids: [String]
 
     var body: some View {
@@ -46,7 +51,7 @@ struct CustomSnoozeSheet: View {
 }
 
 struct MoveMenu: View {
-    @Environment(MailboxViewModel.self) private var vm
+    let vm: MailboxViewModel
     let ids: [String]
 
     var body: some View {
@@ -63,7 +68,7 @@ struct MoveMenu: View {
 /// Compact icon buttons revealed when hovering a message row: flag, move, delete.
 /// The icon currently under the cursor is emphasized (bold + full-opacity).
 struct HoverActions: View {
-    @Environment(MailboxViewModel.self) private var vm
+    let vm: MailboxViewModel
     let id: String
     let isFlagged: Bool
     @State private var hoveredSymbol: String?
@@ -74,7 +79,7 @@ struct HoverActions: View {
                 Task { await vm.toggleFlag([id]) }
             }
             Menu {
-                MoveMenu(ids: [id])
+                MoveMenu(vm: vm, ids: [id])
             } label: {
                 icon("folder")
             }
@@ -110,7 +115,7 @@ struct HoverActions: View {
 
 /// The right-click menu for a selection of messages.
 struct MessageContextMenu: View {
-    @Environment(MailboxViewModel.self) private var vm
+    let vm: MailboxViewModel
     let ids: [String]
 
     var body: some View {
@@ -122,8 +127,8 @@ struct MessageContextMenu: View {
             Button("Mark Read") { Task { await vm.markRead(ids, read: true) } }
             Button("Mark Unread") { Task { await vm.markRead(ids, read: false) } }
             Button("Flag") { Task { await vm.toggleFlag(ids) } }
-            Menu("Move to") { MoveMenu(ids: ids) }
-            Menu("Snooze") { SnoozeMenu(ids: ids) }
+            Menu("Move to") { MoveMenu(vm: vm, ids: ids) }
+            Menu("Snooze") { SnoozeMenu(vm: vm, ids: ids) }
             Divider()
             Button("Archive") { Task { await vm.archiveMessages(ids) } }
             Button("Delete", role: .destructive) { Task { await vm.deleteMessages(ids) } }

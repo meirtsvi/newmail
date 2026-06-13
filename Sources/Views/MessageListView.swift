@@ -54,7 +54,7 @@ struct MessageListView: View {
             columns
         }
         .contextMenu(forSelectionType: String.self) { ids in
-            MessageContextMenu(ids: ids.isEmpty ? Array(vm.selection) : Array(ids))
+            MessageContextMenu(vm: vm, ids: ids.isEmpty ? Array(vm.selection) : Array(ids))
         } primaryAction: { ids in
             // Double-click (or Return) opens the message in its own window.
             if let id = ids.first { vm.openInWindow(id) }
@@ -118,7 +118,7 @@ struct MessageListView: View {
             Spacer(minLength: 4)
             // Quick actions appear to the right of the From column on hover.
             if hoveredId == msg.id {
-                HoverActions(id: msg.id, isFlagged: msg.isFlagged)
+                HoverActions(vm: vm, id: msg.id, isFlagged: msg.isFlagged)
                     .transition(.opacity)
             }
         }

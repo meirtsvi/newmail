@@ -54,7 +54,7 @@ struct MailToolbar: ToolbarContent {
             .help("Delete")
 
             Menu {
-                MoveMenu(ids: ids)
+                MoveMenu(vm: vm, ids: ids)
             } label: {
                 Label("Move", systemImage: "folder")
             }
@@ -62,7 +62,7 @@ struct MailToolbar: ToolbarContent {
             .help("Move to folder")
 
             Menu {
-                SnoozeMenu(ids: ids)
+                SnoozeMenu(vm: vm, ids: ids)
             } label: {
                 Label("Snooze", systemImage: "clock")
             }
