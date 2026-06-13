@@ -53,5 +53,16 @@ struct ContentView: View {
         } message: {
             Text(vm.errorMessage ?? "")
         }
+        .alert(
+            "Google Sign-In",
+            isPresented: Binding(
+                get: { vm.authMessage != nil },
+                set: { if !$0 { vm.authMessage = nil } }
+            )
+        ) {
+            Button("OK") { vm.authMessage = nil }
+        } message: {
+            Text(vm.authMessage ?? "")
+        }
     }
 }

@@ -50,6 +50,8 @@ final class MailboxViewModel {
     // Status
     var isLoading = false
     var errorMessage: String?
+    var authMessage: String?
+    var isSigningIn = false
     var hasWriteScope = true
 
     init(provider: MailProvider = GmailProvider()) {
@@ -238,6 +240,28 @@ final class MailboxViewModel {
 
     func requestCustomSnooze(_ ids: [String]) {
         activeSheet = .customSnooze(ids)
+    }
+
+    // MARK: - Interactive OAuth sign-in
+
+    func signInForWriteAccess() async {
+        guard !isSigningIn else { return }
+        isSigningIn = true
+        defer { isSigningIn = false }
+        do {
+            try await OAuthService.shared.signIn()
+            hasWriteScope = (try? await GoogleAuth.shared.hasWriteScope) ?? false
+            if hasWriteScope {
+                authMessage = "Signed in successfully. Your organization permits this app and granted write access — delete, move, snooze, and send now work."
+            } else {
+                authMessage = "Signed in, but write scopes were not granted. Your organization or account may restrict modify/send for this app."
+            }
+            // Refresh with the new token.
+            try? await loadFolders()
+            await reloadCurrentFolder()
+        } catch {
+            errorMessage = "Sign-in failed: \(error.localizedDescription)"
+        }
     }
 
     // MARK: - Search

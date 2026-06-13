@@ -63,6 +63,40 @@ actor GoogleAuth {
         try loadIfNeeded().scopes ?? []
     }
 
+    /// Stores the result of an interactive OAuth sign-in, replacing whatever
+    /// token was loaded before (e.g. upgrading a read-only token to read+write).
+    func persistOAuthToken(
+        accessToken: String,
+        refreshToken: String?,
+        expiresIn: Double,
+        scopes: [String],
+        tokenURI: String,
+        clientId: String,
+        clientSecret: String
+    ) {
+        // Keep the existing refresh token if Google didn't return a new one.
+        let refresh = refreshToken ?? (try? loadIfNeeded().refresh_token) ?? ""
+        let expiry = Date().addingTimeInterval(expiresIn)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+        let token = StoredToken(
+            token: accessToken,
+            refresh_token: refresh,
+            token_uri: tokenURI,
+            client_id: clientId,
+            client_secret: clientSecret,
+            scopes: scopes,
+            expiry: formatter.string(from: expiry)
+        )
+        stored = token
+        expiryDate = expiry
+        refreshTask = nil
+        if let data = try? JSONEncoder().encode(token) {
+            try? data.write(to: fileURL)
+        }
+    }
+
     var hasWriteScope: Bool {
         get throws {
             let s = try loadIfNeeded().scopes ?? []

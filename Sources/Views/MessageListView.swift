@@ -25,10 +25,23 @@ struct MessageListView: View {
             }
             Spacer()
             if !vm.hasWriteScope {
-                Label("Read-only token", systemImage: "lock")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .help("token.json has gmail.readonly scope. Re-authorize with gmail.modify/gmail.send to enable writes.")
+                Button {
+                    Task { await vm.signInForWriteAccess() }
+                } label: {
+                    if vm.isSigningIn {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Signing in…").font(.caption)
+                        }
+                    } else {
+                        Label("Sign in with Google for write access", systemImage: "person.badge.key")
+                            .font(.caption)
+                    }
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.orange)
+                .disabled(vm.isSigningIn)
+                .help("Authorize via Google OAuth (gmail.modify + gmail.send) to enable delete/move/snooze/send — and to check whether your organization allows this app.")
             }
         }
         .padding(.horizontal, 16)

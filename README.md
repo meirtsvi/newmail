@@ -38,6 +38,25 @@ xcodebuild -project newmail.xcodeproj -scheme newmail -configuration Debug \
 `~/Library/Containers/com.meirt.newmail/Data/Library/Application Support/newmail/`
 on first launch (the app refreshes/persists tokens there).
 
+## Interactive OAuth sign-in (branch: oauth-interactive-login)
+
+This branch adds a real Google OAuth 2.0 flow (PKCE over a loopback redirect — the
+desktop "installed app" pattern) as an alternative to the bundled read-only token.
+
+When the token lacks write scope, the message-list header shows **"Sign in with
+Google for write access"**. Clicking it:
+1. Opens your default browser to Google's consent screen for this app, requesting
+   `gmail.modify` + `gmail.send`.
+2. If your organization blocks the app, the returned error is shown (this is how to
+   check whether the org permits it).
+3. On consent, a local loopback server captures the code, exchanges it for a
+   read+write token, and stores it in Application Support — enabling delete, move,
+   snooze, and send.
+
+Requires the `com.apple.security.network.server` entitlement (added on this branch)
+for the loopback listener. Reuses the bundled client_id/secret so the consent screen
+reflects this exact app.
+
 ## Read-only token — enabling writes
 
 The current `token.json` has scope **`gmail.readonly`**, so all read features work
