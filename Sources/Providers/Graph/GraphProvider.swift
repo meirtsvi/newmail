@@ -266,7 +266,7 @@ final class GraphProvider: MailProvider {
             plain = msg.bodyPreview ?? ""
         } else {
             plain = content
-            html = "<pre style=\"white-space:pre-wrap;font-family:-apple-system,sans-serif\">\(Self.escapeHTML(content))</pre>"
+            html = PlainTextHTML.render(content)
         }
 
         var attachments: [MailAttachment] = []
@@ -406,11 +406,5 @@ final class GraphProvider: MailProvider {
         let plain = ISO8601DateFormatter()
         plain.formatOptions = [.withInternetDateTime]
         return plain.date(from: s) ?? Date()
-    }
-
-    private static func escapeHTML(_ s: String) -> String {
-        s.replacingOccurrences(of: "&", with: "&amp;")
-         .replacingOccurrences(of: "<", with: "&lt;")
-         .replacingOccurrences(of: ">", with: "&gt;")
     }
 }

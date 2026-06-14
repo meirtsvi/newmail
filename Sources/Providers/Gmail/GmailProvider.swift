@@ -277,11 +277,7 @@ final class GmailProvider: MailProvider {
         }
 
         if html.isEmpty, !text.isEmpty {
-            let escaped = text
-                .replacingOccurrences(of: "&", with: "&amp;")
-                .replacingOccurrences(of: "<", with: "&lt;")
-                .replacingOccurrences(of: ">", with: "&gt;")
-            html = "<pre style=\"white-space:pre-wrap;font-family:-apple-system,sans-serif\">\(escaped)</pre>"
+            html = PlainTextHTML.render(text)
         }
         let invite = ics.isEmpty ? nil : ICSParser.parse(ics)
         return MessageBody(headerId: id, html: html, plainText: text, attachments: attachments, calendar: invite)
