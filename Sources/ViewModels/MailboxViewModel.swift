@@ -11,6 +11,7 @@ final class MailboxViewModel {
     let provider: MailProvider
     let snooze: SnoozeService
     let store = MailStore()
+    private var refreshTimer: Timer?
 
     // Account / folders
     var accountEmail = ""
@@ -100,8 +101,18 @@ final class MailboxViewModel {
                 await selectFolder(inbox)
             }
             snooze.start()
+            startPeriodicRefresh()
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Periodically refreshes the current folder (messages + count) so the list
+    /// and the "Folder (N)" header stay current without manual Sync.
+    func startPeriodicRefresh() {
+        refreshTimer?.invalidate()
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
+            Task { await self?.reloadCurrentFolder() }
         }
     }
 
@@ -202,6 +213,8 @@ final class MailboxViewModel {
     func reloadCurrentFolder() async {
         if isSearching { await runSearch() } else { await loadMessages() }
         try? await loadFolders()
+        // Keep the header's "Folder (N)" count in sync on every refresh.
+        await refreshCurrentFolderCount()
     }
 
     // MARK: - Preview
