@@ -98,8 +98,13 @@ struct MessageListView: View {
         TableColumn("Subject", value: \MessageHeader.subject) { msg in subjectCell(msg) }
             .customizationID("subject")
         TableColumn("Date", value: \MessageHeader.date) { msg in dateCell(msg) }
-            .width(min: 60, ideal: 90)
+            .width(min: 60, ideal: 110)
             .customizationID("date")
+        if vm.currentFolder?.kind == .snoozed {
+            TableColumn("Snoozed Until") { msg in snoozedUntilCell(msg) }
+                .width(min: 100, ideal: 150)
+                .customizationID("snoozedUntil")
+        }
     }
 
     // MARK: - Column width persistence
@@ -143,6 +148,15 @@ struct MessageListView: View {
         Text(msg.date.mailListString)
             .foregroundStyle(.secondary)
             .font(msg.isRead ? .body : .body.weight(.semibold))
+    }
+
+    @ViewBuilder
+    private func snoozedUntilCell(_ msg: MessageHeader) -> some View {
+        if let wake = vm.snoozedUntil(msg.id) {
+            Text(wake.mailFullString).foregroundStyle(.secondary)
+        } else {
+            Text("—").foregroundStyle(.tertiary)
+        }
     }
 
     private func fromCell(_ msg: MessageHeader) -> some View {

@@ -9,6 +9,7 @@ import SwiftData
 @Model
 final class SnoozeRecord {
     @Attribute(.unique) var messageId: String
+    var accountId: String = ""
     var accountEmail: String
     var wakeDate: Date
     var originLabelId: String
@@ -17,6 +18,7 @@ final class SnoozeRecord {
 
     init(
         messageId: String,
+        accountId: String,
         accountEmail: String,
         wakeDate: Date,
         originLabelId: String,
@@ -24,6 +26,7 @@ final class SnoozeRecord {
         createdAt: Date = .init()
     ) {
         self.messageId = messageId
+        self.accountId = accountId
         self.accountEmail = accountEmail
         self.wakeDate = wakeDate
         self.originLabelId = originLabelId
@@ -32,11 +35,36 @@ final class SnoozeRecord {
     }
 }
 
+// MARK: - Accounts
+
+/// Persisted list of configured accounts (so they reload across launches).
+@Model
+final class PersistedAccount {
+    @Attribute(.unique) var id: String
+    var providerKindRaw: String
+    var email: String
+    var displayName: String
+    var externalId: String
+    var sortIndex: Int
+
+    init(id: String, providerKindRaw: String, email: String, displayName: String, externalId: String, sortIndex: Int) {
+        self.id = id
+        self.providerKindRaw = providerKindRaw
+        self.email = email
+        self.displayName = displayName
+        self.externalId = externalId
+        self.sortIndex = sortIndex
+    }
+}
+
 // MARK: - Cache models
 
 @Model
 final class CachedFolder {
-    @Attribute(.unique) var id: String
+    /// Composite "accountId\u{1}folderId" — unique across accounts.
+    @Attribute(.unique) var key: String
+    var accountId: String
+    var id: String
     var name: String
     var kindRaw: String
     var unreadCount: Int
@@ -44,7 +72,9 @@ final class CachedFolder {
     var sortIndex: Int
     var path: String = ""
 
-    init(id: String, name: String, kindRaw: String, unreadCount: Int, totalCount: Int, sortIndex: Int, path: String) {
+    init(accountId: String, id: String, name: String, kindRaw: String, unreadCount: Int, totalCount: Int, sortIndex: Int, path: String) {
+        self.key = "\(accountId)\u{1}\(id)"
+        self.accountId = accountId
         self.id = id
         self.name = name
         self.kindRaw = kindRaw
@@ -58,6 +88,7 @@ final class CachedFolder {
 @Model
 final class CachedMessage {
     @Attribute(.unique) var id: String
+    var accountId: String = ""
     var threadId: String
     var fromName: String
     var fromEmail: String
@@ -73,11 +104,12 @@ final class CachedMessage {
     var labelIdsRaw: String
 
     init(
-        id: String, threadId: String, fromName: String, fromEmail: String, toRaw: String,
+        id: String, accountId: String, threadId: String, fromName: String, fromEmail: String, toRaw: String,
         subject: String, snippet: String, date: Date, isRead: Bool, isFlagged: Bool,
         hasAttachments: Bool, labelIdsRaw: String
     ) {
         self.id = id
+        self.accountId = accountId
         self.threadId = threadId
         self.fromName = fromName
         self.fromEmail = fromEmail
@@ -111,11 +143,19 @@ final class CachedBody {
 
 enum Persistence {
     static let container: ModelContainer = {
-        let schema = Schema([SnoozeRecord.self, CachedFolder.self, CachedMessage.self, CachedBody.self])
+        let schema = Schema([
+            SnoozeRecord.self, CachedFolder.self, CachedMessage.self, CachedBody.self, PersistedAccount.self,
+        ])
+        // Versioned store file: the multi-account schema is incompatible with the
+        // single-account one, and the cache is disposable (re-fetched from the
+        // server), so we use a fresh file rather than a migration.
+        let dir = URL.applicationSupportDirectory.appending(path: "newmail", directoryHint: .isDirectory)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let storeURL = dir.appending(path: "cache-v2.store")
         do {
-            return try ModelContainer(for: schema)
+            return try ModelContainer(for: schema, configurations: ModelConfiguration(schema: schema, url: storeURL))
         } catch {
-            // If a schema change can't migrate, fall back to a fresh in-memory store.
+            // Last resort: a fresh in-memory store so the app still launches.
             let config = ModelConfiguration(isStoredInMemoryOnly: true)
             return try! ModelContainer(for: schema, configurations: config)
         }

@@ -6,13 +6,15 @@ import Foundation
 final class GmailProvider: MailProvider {
     private let base = URL(string: "https://gmail.googleapis.com/gmail/v1/users/me")!
     private let auth: GoogleAuth
+    let accountId: String
     private(set) var accountEmail: String = "me"
 
     /// Concurrency cap for per-message header fetches (kept low to avoid
     /// Gmail's burst rate-limit, which returns 429 RESOURCE_EXHAUSTED).
     private let headerFetchWindow = 6
 
-    init(auth: GoogleAuth = .shared) {
+    init(accountId: String = "gmail", auth: GoogleAuth = .shared) {
+        self.accountId = accountId
         self.auth = auth
     }
 
@@ -74,7 +76,8 @@ final class GmailProvider: MailProvider {
                 unreadCount: 0,
                 totalCount: 0,
                 // User labels carry their full nested name (e.g. "Work/Receipts").
-                path: label.type == "user" ? label.name : Self.displayName(label)
+                path: label.type == "user" ? label.name : Self.displayName(label),
+                accountId: accountId
             )
         }
 
@@ -214,7 +217,7 @@ final class GmailProvider: MailProvider {
         ]
         let data = try await request("messages/\(id)", query: items)
         let msg = try JSONDecoder().decode(GmailAPI.Message.self, from: data)
-        return Self.header(from: msg)
+        return Self.header(from: msg, accountId: accountId)
     }
 
     // MARK: - Body
@@ -352,7 +355,7 @@ final class GmailProvider: MailProvider {
         }
     }
 
-    private static func header(from msg: GmailAPI.Message) -> MessageHeader {
+    private static func header(from msg: GmailAPI.Message, accountId: String) -> MessageHeader {
         var headers: [String: String] = [:]
         for h in msg.payload?.headers ?? [] {
             headers[h.name.lowercased()] = h.value
@@ -372,7 +375,8 @@ final class GmailProvider: MailProvider {
             // Heuristic from the metadata payload: multipart/mixed messages
             // carry attachments (the parts tree isn't returned by format=metadata).
             hasAttachments: (msg.payload?.mimeType ?? "").caseInsensitiveCompare("multipart/mixed") == .orderedSame,
-            labelIds: labels
+            labelIds: labels,
+            accountId: accountId
         )
     }
 

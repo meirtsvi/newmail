@@ -13,6 +13,10 @@ struct SnoozeMenu: View {
     let ids: [String]
 
     var body: some View {
+        if vm.currentFolder?.kind == .snoozed {
+            Button("Unsnooze") { Task { await vm.unsnoozeMessages(ids) } }
+            Divider()
+        }
         ForEach(SnoozeService.Preset.allCases) { preset in
             Button(preset.rawValue) {
                 let wake = SnoozeService.wakeDate(for: preset)
@@ -34,10 +38,16 @@ struct CustomSnoozeSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Snooze until").font(.headline)
+            // The graphical style doesn't reliably surface an editable hour field
+            // when combined with .hourAndMinute, so pick the day graphically and
+            // the time with a separate field picker (both bound to the same date).
             DatePicker("", selection: $date, in: Date()...,
-                       displayedComponents: [.date, .hourAndMinute])
+                       displayedComponents: [.date])
                 .datePickerStyle(.graphical)
                 .labelsHidden()
+            DatePicker("Time", selection: $date,
+                       displayedComponents: [.hourAndMinute])
+                .datePickerStyle(.field)
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -55,7 +65,7 @@ struct MoveMenu: View {
     let ids: [String]
 
     var body: some View {
-        ForEach(vm.folders.filter { $0.kind != .inbox }) { folder in
+        ForEach(vm.currentFolders.filter { $0.kind != .inbox }, id: \.compositeId) { folder in
             Button {
                 Task { await vm.move(ids, to: folder) }
             } label: {

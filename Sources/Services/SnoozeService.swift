@@ -15,14 +15,16 @@ final class SnoozeService {
     }
 
     private let provider: MailProvider
+    private let accountId: String
     private let context: ModelContext
     private var timer: Timer?
 
     /// Notifies the UI (e.g. to refresh the current folder) after messages wake.
     var onWake: (() -> Void)?
 
-    init(provider: MailProvider, context: ModelContext? = nil) {
+    init(provider: MailProvider, accountId: String, context: ModelContext? = nil) {
         self.provider = provider
+        self.accountId = accountId
         self.context = context ?? Persistence.container.mainContext
     }
 
@@ -62,6 +64,7 @@ final class SnoozeService {
         for id in ids {
             let record = SnoozeRecord(
                 messageId: id,
+                accountId: accountId,
                 accountEmail: provider.accountEmail,
                 wakeDate: wake,
                 originLabelId: fromFolderId,
@@ -70,6 +73,37 @@ final class SnoozeService {
             context.insert(record)
         }
         try? context.save()
+    }
+
+    /// Returns the snoozed messages to their origin folder immediately and drops
+    /// their records (manual "unsnooze").
+    func unsnooze(ids: [String]) async throws {
+        guard !ids.isEmpty else { return }
+        let scopedAccountId = accountId
+        let descriptor = FetchDescriptor<SnoozeRecord>(
+            predicate: #Predicate { $0.accountId == scopedAccountId }
+        )
+        let records = (try? context.fetch(descriptor))?.filter { ids.contains($0.messageId) } ?? []
+        for record in records {
+            try await provider.move(
+                ids: [record.messageId],
+                toFolderId: record.originLabelId.isEmpty ? "INBOX" : record.originLabelId,
+                fromFolderId: record.snoozedLabelId
+            )
+            context.delete(record)
+        }
+        try? context.save()
+    }
+
+    /// The wake time for a snoozed message, if one is recorded (used by the
+    /// "Snoozed Until" column).
+    func wakeDate(forMessageId id: String) -> Date? {
+        let scopedAccountId = accountId
+        var descriptor = FetchDescriptor<SnoozeRecord>(
+            predicate: #Predicate { $0.messageId == id && $0.accountId == scopedAccountId }
+        )
+        descriptor.fetchLimit = 1
+        return (try? context.fetch(descriptor))?.first?.wakeDate
     }
 
     // MARK: Timer
@@ -91,8 +125,9 @@ final class SnoozeService {
 
     func processExpired() async {
         let now = Date()
+        let scopedAccountId = accountId
         let descriptor = FetchDescriptor<SnoozeRecord>(
-            predicate: #Predicate { $0.wakeDate <= now }
+            predicate: #Predicate { $0.accountId == scopedAccountId && $0.wakeDate <= now }
         )
         guard let due = try? context.fetch(descriptor), !due.isEmpty else { return }
 

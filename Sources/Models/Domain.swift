@@ -103,11 +103,15 @@ struct MailFolder: Identifiable, Hashable {
     /// Full hierarchical path, e.g. "Work/Receipts" (slash-separated). Defaults
     /// to the leaf name for non-nested folders.
     var path: String = ""
+    var accountId: String = ""
 
     var pathComponents: [String] {
         let p = path.isEmpty ? name : path
         return p.split(separator: "/").map(String.init)
     }
+
+    /// Unique across accounts (a folder id like "INBOX" can repeat per account).
+    var compositeId: String { "\(accountId)\u{1}\(id)" }
 }
 
 // MARK: - Messages
@@ -124,6 +128,7 @@ struct MessageHeader: Identifiable, Hashable {
     var isFlagged: Bool
     var hasAttachments: Bool
     var labelIds: [String]
+    var accountId: String = ""
 
     // Comparable sort keys for boolean columns (Bool isn't Comparable).
     var readSort: Int { isRead ? 1 : 0 }
@@ -168,7 +173,7 @@ extension Date {
         if let days = cal.dateComponents([.day], from: self, to: Date()).day, days < 7 {
             return formatted(.dateTime.weekday(.wide))
         }
-        return formatted(.dateTime.month(.abbreviated).day())
+        return formatted(.dateTime.month(.abbreviated).day().year())
     }
 
     var mailFullString: String {

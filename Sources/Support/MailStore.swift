@@ -3,8 +3,8 @@ import SwiftData
 
 /// SwiftData-backed cache for folders, message headers, and bodies. Lets the UI
 /// paint instantly from cache and keep working offline, with the network as the
-/// source of truth that reconciles into the cache. Single-account MVP: ids are
-/// unique within the account.
+/// source of truth that reconciles into the cache. Multi-account: folders and
+/// headers are scoped by `accountId`.
 @MainActor
 final class MailStore {
     private let context: ModelContext
@@ -15,8 +15,9 @@ final class MailStore {
 
     // MARK: Folders
 
-    func cachedFolders() -> [MailFolder] {
+    func cachedFolders(accountId: String) -> [MailFolder] {
         let descriptor = FetchDescriptor<CachedFolder>(
+            predicate: #Predicate { $0.accountId == accountId },
             sortBy: [SortDescriptor(\.sortIndex), SortDescriptor(\.name)]
         )
         let rows = (try? context.fetch(descriptor)) ?? []
@@ -27,14 +28,17 @@ final class MailStore {
                 kind: FolderKind(rawValue: $0.kindRaw) ?? .custom,
                 unreadCount: $0.unreadCount,
                 totalCount: $0.totalCount,
-                path: $0.path.isEmpty ? $0.name : $0.path
+                path: $0.path.isEmpty ? $0.name : $0.path,
+                accountId: $0.accountId
             )
         }
     }
 
-    func saveFolders(_ folders: [MailFolder]) {
-        let existing = (try? context.fetch(FetchDescriptor<CachedFolder>())) ?? []
-        var byId = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
+    func saveFolders(_ folders: [MailFolder], accountId: String) {
+        let existing = (try? context.fetch(
+            FetchDescriptor<CachedFolder>(predicate: #Predicate { $0.accountId == accountId })
+        )) ?? []
+        var byId = Dictionary(existing.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let liveIds = Set(folders.map(\.id))
 
         for (index, folder) in folders.enumerated() {
@@ -47,14 +51,14 @@ final class MailStore {
                 row.path = folder.path
             } else {
                 context.insert(CachedFolder(
-                    id: folder.id, name: folder.name, kindRaw: folder.kind.rawValue,
+                    accountId: accountId, id: folder.id, name: folder.name, kindRaw: folder.kind.rawValue,
                     unreadCount: folder.unreadCount, totalCount: folder.totalCount,
                     sortIndex: index, path: folder.path
                 ))
             }
             byId.removeValue(forKey: folder.id)
         }
-        // Drop folders that no longer exist server-side.
+        // Drop folders that no longer exist server-side (within this account).
         for (id, row) in byId where !liveIds.contains(id) {
             context.delete(row)
         }
@@ -63,10 +67,10 @@ final class MailStore {
 
     // MARK: Headers
 
-    func cachedHeaders(folderId: String, limit: Int = 200) -> [MessageHeader] {
+    func cachedHeaders(folderId: String, accountId: String, limit: Int = 200) -> [MessageHeader] {
         let needle = ",\(folderId),"
         var descriptor = FetchDescriptor<CachedMessage>(
-            predicate: #Predicate { $0.labelIdsRaw.contains(needle) },
+            predicate: #Predicate { $0.accountId == accountId && $0.labelIdsRaw.contains(needle) },
             sortBy: [SortDescriptor(\.date, order: .reverse)]
         )
         descriptor.fetchLimit = limit
@@ -80,12 +84,13 @@ final class MailStore {
         let existing = (try? context.fetch(
             FetchDescriptor<CachedMessage>(predicate: #Predicate { ids.contains($0.id) })
         )) ?? []
-        var byId = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
+        var byId = Dictionary(existing.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
 
         for header in headers {
             let toRaw = header.to.map { "\($0.name)|\($0.email)" }.joined(separator: "‖")
             let labelsRaw = "," + header.labelIds.joined(separator: ",") + ","
             if let row = byId[header.id] {
+                row.accountId = header.accountId
                 row.fromName = header.from.name
                 row.fromEmail = header.from.email
                 row.toRaw = toRaw
@@ -98,7 +103,7 @@ final class MailStore {
                 row.labelIdsRaw = labelsRaw
             } else {
                 context.insert(CachedMessage(
-                    id: header.id, threadId: header.threadId,
+                    id: header.id, accountId: header.accountId, threadId: header.threadId,
                     fromName: header.from.name, fromEmail: header.from.email, toRaw: toRaw,
                     subject: header.subject, snippet: header.snippet, date: header.date,
                     isRead: header.isRead, isFlagged: header.isFlagged,
@@ -179,7 +184,7 @@ final class MailStore {
             from: MailAddress(name: row.fromName, email: row.fromEmail),
             to: to, subject: row.subject, snippet: row.snippet, date: row.date,
             isRead: row.isRead, isFlagged: row.isFlagged, hasAttachments: row.hasAttachments,
-            labelIds: labels
+            labelIds: labels, accountId: row.accountId
         )
     }
 
