@@ -25,6 +25,7 @@ final class WebFindController: ObservableObject {
 struct HTMLView: NSViewRepresentable {
     let html: String
     var finder: WebFindController? = nil
+    var zoom: Double = 1.0
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -40,10 +41,18 @@ struct HTMLView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        webView.loadHTMLString(Self.wrap(html), baseURL: nil)
+        // Only reload when the content actually changes; a zoom change alone must
+        // not reload (that would reset scroll position).
+        if context.coordinator.loadedHTML != html {
+            context.coordinator.loadedHTML = html
+            webView.loadHTMLString(Self.wrap(html), baseURL: nil)
+        }
+        webView.pageZoom = zoom
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+        var loadedHTML: String?
+
         func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,

@@ -104,6 +104,13 @@ actor GoogleAuth {
         }
     }
 
+    var hasCalendarScope: Bool {
+        get throws {
+            let s = try loadIfNeeded().scopes ?? []
+            return s.contains { $0.contains("calendar") }
+        }
+    }
+
     // MARK: Loading
 
     @discardableResult

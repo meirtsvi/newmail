@@ -64,16 +64,36 @@ enum MIMEBuilder {
     /// Builds an RSVP email carrying an iCalendar REPLY (text/calendar;
     /// method=REPLY). Sent to the organizer; Gmail/Outlook process it to record
     /// the response and update the calendar.
-    static func buildICSReply(from: String, to: String, subject: String, ics: String) -> Data {
+    static func buildICSReply(from: String, to: String, subject: String, ics: String, note: String = "") -> Data {
         var lines: [String] = []
         if !from.isEmpty { lines.append("From: \(from)") }
         lines.append("To: \(to)")
         lines.append("Subject: \(encodeHeader(subject))")
         lines.append("MIME-Version: 1.0")
-        lines.append("Content-Type: text/calendar; charset=utf-8; method=REPLY")
-        lines.append("Content-Transfer-Encoding: 8bit")
-        lines.append("")
-        lines.append(ics)
+
+        if note.isEmpty {
+            lines.append("Content-Type: text/calendar; charset=utf-8; method=REPLY")
+            lines.append("Content-Transfer-Encoding: 8bit")
+            lines.append("")
+            lines.append(ics)
+        } else {
+            // Carry the organizer-visible note as a text/plain part alongside the
+            // calendar REPLY (multipart/alternative).
+            let boundary = "nm_\(UUID().uuidString)"
+            lines.append("Content-Type: multipart/alternative; boundary=\"\(boundary)\"")
+            lines.append("")
+            lines.append("--\(boundary)")
+            lines.append("Content-Type: text/plain; charset=utf-8")
+            lines.append("Content-Transfer-Encoding: 8bit")
+            lines.append("")
+            lines.append(note)
+            lines.append("--\(boundary)")
+            lines.append("Content-Type: text/calendar; charset=utf-8; method=REPLY")
+            lines.append("Content-Transfer-Encoding: 8bit")
+            lines.append("")
+            lines.append(ics)
+            lines.append("--\(boundary)--")
+        }
         return lines.joined(separator: "\r\n").data(using: .utf8) ?? Data()
     }
 

@@ -199,7 +199,8 @@ enum ICSParser {
 /// Builds the iCalendar body for an RSVP (METHOD:REPLY) per RFC 5546: echoes the
 /// UID/ORGANIZER/DTSTART and carries a single ATTENDEE line with the chosen PARTSTAT.
 enum ICSReplyBuilder {
-    static func reply(to invite: CalendarInvite, attendee: MailAddress, response: InviteResponse, now: Date) -> String {
+    static func reply(to invite: CalendarInvite, attendee: MailAddress, response: InviteResponse,
+                      comment: String = "", now: Date) -> String {
         let stamp = utcStamp(now)
         var lines = [
             "BEGIN:VCALENDAR",
@@ -214,11 +215,20 @@ enum ICSReplyBuilder {
         lines.append("ATTENDEE;PARTSTAT=\(response.rawValue);CN=\(cn):mailto:\(attendee.email)")
         if let dtStart = invite.dtStartLine { lines.append(dtStart) }
         if let dtEnd = invite.dtEndLine { lines.append(dtEnd) }
+        if !comment.isEmpty { lines.append("COMMENT:\(escapeText(comment))") }
         lines.append("SEQUENCE:\(invite.sequence)")
         lines.append("DTSTAMP:\(stamp)")
         lines.append("END:VEVENT")
         lines.append("END:VCALENDAR")
         return lines.joined(separator: "\r\n")
+    }
+
+    /// Escapes a TEXT value per RFC 5545 (newlines, commas, semicolons, backslashes).
+    private static func escapeText(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\", with: "\\\\")
+         .replacingOccurrences(of: ";", with: "\\;")
+         .replacingOccurrences(of: ",", with: "\\,")
+         .replacingOccurrences(of: "\n", with: "\\n")
     }
 
     private static func utcStamp(_ date: Date) -> String {

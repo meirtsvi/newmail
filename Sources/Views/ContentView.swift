@@ -13,6 +13,10 @@ struct ContentView: View {
                 .frame(minWidth: 220)
         } content: {
             VStack(spacing: 0) {
+                if !vm.selection.isEmpty {
+                    MoveBarView()
+                    Divider()
+                }
                 MessageListView()
                 Divider()
                 StatusBar()
@@ -32,6 +36,16 @@ struct ContentView: View {
         }
         .onSubmit(of: .search) {
             Task { await vm.runSearch() }
+        }
+        // Clearing the search field (the X button) reloads the folder's list.
+        .onChange(of: vm.searchText) { _, newValue in
+            if newValue.isEmpty { Task { await vm.clearSearch() } }
+        }
+        // Escape empties the search field (which reloads the folder via onChange).
+        .onKeyPress(.escape) {
+            guard !vm.searchText.isEmpty else { return .ignored }
+            vm.searchText = ""
+            return .handled
         }
         // A single sheet driven by an enum — reliably presents compose, the
         // message window, and the custom-snooze picker.
@@ -79,15 +93,14 @@ struct StatusBar: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            if let status = vm.statusMessage {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                Text(status)
+            statusContent
+            Spacer()
+            if let folder = vm.currentFolder, folder.totalCount > 0 {
+                Text("\(folder.totalCount) messages")
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .help(status)
-                Spacer()
+                    .monospacedDigit()
+            }
+            if vm.statusMessage != nil {
                 Button {
                     Task { await vm.sync() }
                 } label: {
@@ -95,22 +108,33 @@ struct StatusBar: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Retry")
-            } else if vm.isLoading {
-                ProgressView().controlSize(.small)
-                Text("Updating…").foregroundStyle(.secondary)
-                Spacer()
-            } else {
-                Image(systemName: "checkmark.circle")
-                    .foregroundStyle(.secondary)
-                Text(vm.accountEmail.isEmpty ? "Ready" : vm.accountEmail)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer()
             }
         }
         .font(.caption)
         .padding(.horizontal, 12)
         .frame(height: 24)
         .background(.bar)
+    }
+
+    @ViewBuilder
+    private var statusContent: some View {
+        if let status = vm.statusMessage {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(status)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .help(status)
+        } else if vm.isLoading {
+            ProgressView().controlSize(.small)
+            Text("Updating…").foregroundStyle(.secondary)
+        } else {
+            Image(systemName: "checkmark.circle")
+                .foregroundStyle(.secondary)
+            Text(vm.accountEmail.isEmpty ? "Ready" : vm.accountEmail)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
     }
 }

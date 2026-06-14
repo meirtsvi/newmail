@@ -295,6 +295,13 @@ final class GmailProvider: MailProvider {
         return body.data.flatMap(Self.decodeBase64URL)
     }
 
+    func fetchAttachment(messageId: String, attachmentId: String) async throws -> Data {
+        guard let data = try await fetchAttachmentData(messageId: messageId, attachmentId: attachmentId) else {
+            throw MailError.other("Attachment is unavailable.")
+        }
+        return data
+    }
+
     // MARK: - Mutations (require write scope)
 
     func setRead(ids: [String], read: Bool) async throws {

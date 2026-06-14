@@ -162,6 +162,14 @@ struct MessageListView: View {
         Text(msg.date.mailListString)
             .foregroundStyle(.secondary)
             .font(msg.isRead ? .body : .body.weight(.semibold))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onHover { setHover($0, id: msg.id) }
+    }
+
+    private func setHover(_ inside: Bool, id: String) {
+        if inside { hoveredId = id }
+        else if hoveredId == id { hoveredId = nil }
     }
 
     @ViewBuilder
@@ -175,38 +183,37 @@ struct MessageListView: View {
 
     private func fromCell(_ msg: MessageHeader) -> some View {
         HStack(spacing: 8) {
+            // The avatar is the drag handle (dragging the whole cell would steal
+            // the click the Table needs for row selection).
             Avatar(address: msg.from)
+                .onDrag {
+                    let ids = vm.selection.contains(msg.id) ? Array(vm.selection) : [msg.id]
+                    return MessageDragPayload.itemProvider(ids: ids)
+                }
             Text(msg.from.display)
                 .font(msg.isRead ? .body : .body.weight(.bold))
                 .lineLimit(1)
             Spacer(minLength: 4)
-            // Quick actions appear to the right of the From column on hover.
-            if hoveredId == msg.id {
+            // Quick actions appear to the right of the From column when the row is
+            // hovered or selected. (SwiftUI's Table doesn't reliably deliver hover
+            // to cells, so the selected row is the dependable way to reach them.)
+            if hoveredId == msg.id || vm.selection.contains(msg.id) {
                 HoverActions(vm: vm, id: msg.id, isFlagged: msg.isFlagged)
                     .transition(.opacity)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .onHover { inside in
-            hoveredId = inside ? msg.id : (hoveredId == msg.id ? nil : hoveredId)
-        }
+        .onHover { setHover($0, id: msg.id) }
     }
 
     private func subjectCell(_ msg: MessageHeader) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(msg.subject)
-                .font(msg.isRead ? .body : .body.weight(.semibold))
-                .lineLimit(1)
-            Text(msg.snippet)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-        .onHover { inside in
-            hoveredId = inside ? msg.id : (hoveredId == msg.id ? nil : hoveredId)
-        }
+        Text(msg.subject)
+            .font(msg.isRead ? .body : .body.weight(.semibold))
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onHover { setHover($0, id: msg.id) }
     }
 }
 

@@ -22,6 +22,7 @@ struct SidebarView: View {
                     ForEach(vm.favorites, id: \.compositeId) { folder in
                         row(folder, accountSuffix: favoriteSuffix(folder)).tag("fav:\(folder.compositeId)")
                     }
+                    .onMove { vm.moveFavorite(fromOffsets: $0, toOffset: $1) }
                 }
             }
 
@@ -101,6 +102,7 @@ struct SidebarView: View {
                     .monospacedDigit()
             }
         }
+        .modifier(FolderDropTarget(vm: vm, folder: folder))
         .contextMenu {
             if vm.isFavorite(folder) {
                 Button("Remove from Favorites") { vm.toggleFavorite(folder) }

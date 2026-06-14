@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import AppKit
 
 /// Drives the entire UI. Holds one `Session` per configured account (each with
 /// its own provider), the per-account folder trees, the current message list,
@@ -28,7 +29,12 @@ final class MailboxViewModel {
     private(set) var sessions: [Session] = []
     var foldersByAccount: [String: [MailFolder]] = [:]
     var favorites: [MailFolder] = []
-    private var favoriteIds: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "favoriteFolderIds2") ?? [])
+    // Ordered list of favorite folder composite ids (UserDefaults preserves order).
+    private var favoriteOrder: [String] = UserDefaults.standard.stringArray(forKey: "favoriteFolderIds2") ?? []
+
+    // Quick-move bar: a separate, user-configured ordered set of target folders.
+    var quickMoveFolders: [MailFolder] = []
+    private var quickMoveOrder: [String] = UserDefaults.standard.stringArray(forKey: "quickMoveFolderIds") ?? []
 
     // One MSAL app backs all Microsoft accounts; created lazily on first use.
     private var _graphAuth: GraphAuth?
@@ -60,6 +66,13 @@ final class MailboxViewModel {
     // Preview
     var currentBody: MessageBody?
     var isLoadingBody = false
+
+    // Calendar context for the invitation currently shown (Gmail only).
+    var inviteContextHeaderId: String?
+    var inviteDayEvents: [CalEvent] = []
+    var inviteEventsLoading = false
+    var inviteNeedsCalendarAuth = false
+    var inviteEventsError: String?
 
     // Search
     var searchText = ""
@@ -276,7 +289,9 @@ final class MailboxViewModel {
         sessions.removeAll { $0.account.id == accountId }
         foldersByAccount[accountId] = nil
         accountStore.remove(id: accountId)
-        favoriteIds = favoriteIds.filter { !$0.hasPrefix("\(accountId)\u{1}") }
+        favoriteOrder.removeAll { $0.hasPrefix("\(accountId)\u{1}") }
+        quickMoveOrder.removeAll { $0.hasPrefix("\(accountId)\u{1}") }
+        UserDefaults.standard.set(quickMoveOrder, forKey: "quickMoveFolderIds")
         persistFavorites()
         recomputeFavorites()
 
@@ -302,12 +317,27 @@ final class MailboxViewModel {
 
     // MARK: - Favorites
 
-    func isFavorite(_ folder: MailFolder) -> Bool { favoriteIds.contains(favKey(folder)) }
+    func isFavorite(_ folder: MailFolder) -> Bool { favoriteOrder.contains(favKey(folder)) }
 
     func toggleFavorite(_ folder: MailFolder) {
         let key = favKey(folder)
-        if favoriteIds.contains(key) { favoriteIds.remove(key) }
-        else { favoriteIds.insert(key) }
+        if let idx = favoriteOrder.firstIndex(of: key) { favoriteOrder.remove(at: idx) }
+        else { favoriteOrder.append(key) }
+        persistFavorites()
+        recomputeFavorites()
+    }
+
+    /// Reorders favorites (drag-to-reorder in the sidebar). Offsets are indices
+    /// into the displayed `favorites` list; ids for folders not currently loaded
+    /// keep their relative position at the end.
+    func moveFavorite(fromOffsets: IndexSet, toOffset: Int) {
+        var displayed = favorites.map { favKey($0) }
+        let moving = fromOffsets.sorted().map { displayed[$0] }
+        for i in fromOffsets.sorted(by: >) { displayed.remove(at: i) }
+        let insertAt = min(max(toOffset - fromOffsets.filter { $0 < toOffset }.count, 0), displayed.count)
+        displayed.insert(contentsOf: moving, at: insertAt)
+        let shown = Set(displayed)
+        favoriteOrder = displayed + favoriteOrder.filter { !shown.contains($0) }
         persistFavorites()
         recomputeFavorites()
     }
@@ -315,21 +345,61 @@ final class MailboxViewModel {
     private func favKey(_ folder: MailFolder) -> String { folder.compositeId }
 
     private func persistFavorites() {
-        UserDefaults.standard.set(Array(favoriteIds), forKey: "favoriteFolderIds2")
+        UserDefaults.standard.set(favoriteOrder, forKey: "favoriteFolderIds2")
     }
 
     private func recomputeFavorites() {
         let all = sessions.flatMap { foldersByAccount[$0.account.id] ?? [] }
-        if favoriteIds.isEmpty {
+        if favoriteOrder.isEmpty {
             // Seed each account's inbox.
             for folders in all where folders.kind == .inbox {
-                favoriteIds.insert(favKey(folders))
+                favoriteOrder.append(favKey(folders))
             }
             persistFavorites()
         }
-        favorites = all
-            .filter { favoriteIds.contains(favKey($0)) }
-            .sorted { ($0.accountId, $0.kind.sortWeight) < ($1.accountId, $1.kind.sortWeight) }
+        let byId = Dictionary(all.map { (favKey($0), $0) }, uniquingKeysWith: { first, _ in first })
+        favorites = favoriteOrder.compactMap { byId[$0] }
+        recomputeQuickMove()
+    }
+
+    // MARK: - Quick-move bar
+
+    /// Quick-move targets for the current account (moves stay within a provider).
+    var quickMoveForCurrentAccount: [MailFolder] {
+        quickMoveFolders.filter { $0.accountId == currentAccountId }
+    }
+
+    func isQuickMove(_ folder: MailFolder) -> Bool { quickMoveOrder.contains(folder.compositeId) }
+
+    func toggleQuickMove(_ folder: MailFolder) {
+        let key = folder.compositeId
+        if let i = quickMoveOrder.firstIndex(of: key) { quickMoveOrder.remove(at: i) }
+        else { quickMoveOrder.append(key) }
+        UserDefaults.standard.set(quickMoveOrder, forKey: "quickMoveFolderIds")
+        recomputeQuickMove()
+    }
+
+    private func recomputeQuickMove() {
+        let all = sessions.flatMap { foldersByAccount[$0.account.id] ?? [] }
+        let byId = Dictionary(all.map { ($0.compositeId, $0) }, uniquingKeysWith: { first, _ in first })
+        quickMoveFolders = quickMoveOrder.compactMap { byId[$0] }
+    }
+
+    /// Whether `folder` can receive a drop of the current selection: same account,
+    /// and not the folder already being viewed.
+    func isDropTarget(_ folder: MailFolder) -> Bool {
+        folder.accountId == currentAccountId && folder.compositeId != currentFolder?.compositeId
+    }
+
+    /// Moves dropped/quick-moved messages, rejecting cross-account targets.
+    func moveDropped(_ ids: [String], to folder: MailFolder) async {
+        guard !ids.isEmpty else { return }
+        guard folder.accountId == currentAccountId else {
+            statusMessage = "Can’t move across accounts."
+            return
+        }
+        guard folder.compositeId != currentFolder?.compositeId else { return }
+        await move(ids, to: folder)
     }
 
     // MARK: - Selection
@@ -439,6 +509,7 @@ final class MailboxViewModel {
             let body = try await provider.fetchBody(id: id)
             currentBody = body
             store.saveBody(body)
+            await loadInviteContextIfNeeded(headerId: id, body: body)
             if let header = messages.first(where: { $0.id == id }), !header.isRead {
                 try? await provider.setRead(ids: [id], read: true)
                 mutateLocal(ids: [id]) { $0.isRead = true }
@@ -446,6 +517,16 @@ final class MailboxViewModel {
             }
         } catch {
             if currentBody == nil { errorMessage = error.localizedDescription }
+        }
+    }
+
+    /// Loads calendar context for an invitation body, or clears it otherwise.
+    private func loadInviteContextIfNeeded(headerId: String, body: MessageBody) async {
+        if let invite = body.calendar, invite.method == .request || invite.method == .cancel {
+            await loadInviteContext(headerId: headerId, invite: invite)
+        } else if inviteContextHeaderId == headerId {
+            inviteContextHeaderId = nil
+            inviteDayEvents = []
         }
     }
 
@@ -458,6 +539,7 @@ final class MailboxViewModel {
                 let body = try await provider.fetchBody(id: id)
                 modalBody = body
                 store.saveBody(body)
+                await loadInviteContextIfNeeded(headerId: id, body: body)
             } catch {
                 if modalBody == nil { errorMessage = error.localizedDescription }
             }
@@ -497,6 +579,14 @@ final class MailboxViewModel {
     }
 
     // MARK: - Search
+
+    /// Called when the search field is cleared (the X button): drop search mode
+    /// and reload the folder's message list.
+    func clearSearch() async {
+        guard isSearching else { return }
+        isSearching = false
+        await loadMessages()
+    }
 
     func runSearch() async {
         guard let provider = currentProvider else { return }
@@ -599,39 +689,68 @@ final class MailboxViewModel {
 
     func startReply(all: Bool) {
         guard let header = selectedHeaders.first else { return }
-        let to = header.from.email
-        let subject = header.subject.hasPrefix("Re:") ? header.subject : "Re: \(header.subject)"
-        let original = bodyFor(header)?.html ?? ""
-        let quoted = """
-        <br><br>
-        <p>On \(header.date.mailFullString), \(escape(header.from.display)) &lt;\(escape(header.from.email))&gt; wrote:</p>
-        <blockquote style="margin:0 0 0 8px;padding-left:10px;border-left:2px solid #ccc">
-        \(original.isEmpty ? "<p>\(escape(header.snippet))</p>" : original)
-        </blockquote>
-        """
-        activeSheet = .compose(ComposeRequest(
-            kind: all ? .replyAll : .reply,
-            to: to,
-            subject: subject,
-            quotedHTML: quoted
-        ))
+        Task {
+            let body = await ensureBody(for: header)
+            let to = header.from.email
+            let subject = header.subject.hasPrefix("Re:") ? header.subject : "Re: \(header.subject)"
+            let quoted = """
+            <br><br>
+            <p>On \(header.date.mailFullString), \(escape(header.from.display)) &lt;\(escape(header.from.email))&gt; wrote:</p>
+            <blockquote style="margin:0 0 0 8px;padding-left:10px;border-left:2px solid #ccc">
+            \(quotedBody(body, fallbackSnippet: header.snippet))
+            </blockquote>
+            """
+            activeSheet = .compose(ComposeRequest(
+                kind: all ? .replyAll : .reply,
+                to: to,
+                subject: subject,
+                quotedHTML: quoted
+            ))
+        }
     }
 
     func startForward() {
         guard let header = selectedHeaders.first else { return }
-        let subject = header.subject.hasPrefix("Fwd:") ? header.subject : "Fwd: \(header.subject)"
-        let original = bodyFor(header)?.html ?? ""
-        let forwardHeader = """
-        <p>---------- Forwarded message ----------<br>
-        From: \(escape(header.from.display)) &lt;\(escape(header.from.email))&gt;<br>
-        Date: \(header.date.mailFullString)<br>
-        Subject: \(escape(header.subject))</p>
-        """
-        activeSheet = .compose(ComposeRequest(
-            kind: .forward,
-            subject: subject,
-            quotedHTML: forwardHeader + (original.isEmpty ? "<p>\(escape(header.snippet))</p>" : original)
-        ))
+        Task {
+            let body = await ensureBody(for: header)
+            let subject = header.subject.hasPrefix("Fwd:") ? header.subject : "Fwd: \(header.subject)"
+            let forwardHeader = """
+            <p>---------- Forwarded message ----------<br>
+            From: \(escape(header.from.display)) &lt;\(escape(header.from.email))&gt;<br>
+            Date: \(header.date.mailFullString)<br>
+            Subject: \(escape(header.subject))</p>
+            """
+            activeSheet = .compose(ComposeRequest(
+                kind: .forward,
+                subject: subject,
+                quotedHTML: forwardHeader + quotedBody(body, fallbackSnippet: header.snippet),
+                attachments: body?.attachments ?? []
+            ))
+        }
+    }
+
+    /// Returns the message body for quoting/forwarding: the open preview, then the
+    /// disk cache, then a fresh fetch — so reply/forward include the full original
+    /// even when the message wasn't the one being previewed.
+    private func ensureBody(for header: MessageHeader) async -> MessageBody? {
+        if let body = bodyFor(header) { return body }
+        if let cached = store.cachedBody(id: header.id) { return cached }
+        guard let provider = currentProvider else { return nil }
+        if let body = try? await provider.fetchBody(id: header.id) {
+            store.saveBody(body)
+            return body
+        }
+        return nil
+    }
+
+    /// The original content to quote: HTML when present, else plain text, else the
+    /// list snippet as a last resort.
+    private func quotedBody(_ body: MessageBody?, fallbackSnippet snippet: String) -> String {
+        if let html = body?.html, !html.isEmpty { return html }
+        if let text = body?.plainText, !text.isEmpty {
+            return "<p>\(escape(text).replacingOccurrences(of: "\n", with: "<br>"))</p>"
+        }
+        return "<p>\(escape(snippet))</p>"
     }
 
     private func escape(_ s: String) -> String {
@@ -659,10 +778,60 @@ final class MailboxViewModel {
 
     // MARK: - Calendar invites
 
+    private var currentAccountIsGmail: Bool {
+        sessions.first { $0.account.id == currentAccountId }?.account.providerKind == .gmail
+    }
+
+    /// Loads the user's Google Calendar events for the invitation's day so the
+    /// card can show their schedule. Gmail-only; no-op (with an auth prompt) when
+    /// the calendar scope hasn't been granted.
+    func loadInviteContext(headerId: String, invite: CalendarInvite) async {
+        inviteContextHeaderId = headerId
+        inviteDayEvents = []
+        inviteNeedsCalendarAuth = false
+        inviteEventsError = nil
+        guard let day = invite.start, currentAccountIsGmail else { return }
+        guard (try? await GoogleAuth.shared.hasCalendarScope) == true else {
+            inviteNeedsCalendarAuth = true
+            return
+        }
+        inviteEventsLoading = true
+        defer { inviteEventsLoading = false }
+        do {
+            let events = try await GoogleCalendarService.shared.events(onDayOf: day)
+            if inviteContextHeaderId == headerId { inviteDayEvents = events }
+        } catch {
+            guard inviteContextHeaderId == headerId else { return }
+            // Distinguish a missing/insufficient scope (re-consent helps → show the
+            // Connect button) from any other failure such as the Calendar API being
+            // disabled in the Cloud project (re-consent won't help → show the error,
+            // which carries Google's "enable the API" link).
+            if case let MailError.api(403, body) = error,
+               body.contains("ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
+                inviteNeedsCalendarAuth = true
+            } else {
+                inviteEventsError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Re-runs Google sign-in (now including the calendar scope) and reloads.
+    func connectGoogleCalendar(forHeaderId headerId: String, invite: CalendarInvite) async {
+        await signInForWriteAccess()
+        await loadInviteContext(headerId: headerId, invite: invite)
+        if inviteNeedsCalendarAuth {
+            authMessage = """
+            Calendar access wasn’t granted. On Google’s sign-in screen: pick your account; if it warns \
+            “Google hasn’t verified this app”, click Advanced → “Go to newmail (unsafe)”; then keep the \
+            “See the events on all your calendars” permission checked and click Continue.
+            """
+        }
+    }
+
     /// Sends an RSVP to the invitation's organizer as an iCalendar REPLY email.
     /// Returns whether the reply was sent (the caller updates its UI state).
     @discardableResult
-    func respondToInvite(_ invite: CalendarInvite, response: InviteResponse) async -> Bool {
+    func respondToInvite(_ invite: CalendarInvite, response: InviteResponse, note: String = "") async -> Bool {
         guard let provider = currentProvider else {
             errorMessage = "No account is selected."
             return false
@@ -672,10 +841,12 @@ final class MailboxViewModel {
             return false
         }
         let me = MailAddress(name: "", email: accountEmail)
-        let ics = ICSReplyBuilder.reply(to: invite, attendee: me, response: response, now: Date())
+        let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ics = ICSReplyBuilder.reply(to: invite, attendee: me, response: response,
+                                        comment: trimmedNote, now: Date())
         let subject = "\(response.subjectPrefix): \(invite.summary)"
         let mime = MIMEBuilder.buildICSReply(
-            from: accountEmail, to: organizer.email, subject: subject, ics: ics
+            from: accountEmail, to: organizer.email, subject: subject, ics: ics, note: trimmedNote
         )
         do {
             try await provider.send(rawMIME: mime)
@@ -684,6 +855,94 @@ final class MailboxViewModel {
             errorMessage = error.localizedDescription
             return false
         }
+    }
+
+    // MARK: - Attachments
+
+    /// Opens an attachment with the system default app.
+    func openAttachment(_ att: MailAttachment) async {
+        if let url = await downloadToTemp(att) { NSWorkspace.shared.open(url) }
+    }
+
+    /// Saves a single attachment to ~/Downloads and reveals it in Finder.
+    func downloadAttachment(_ att: MailAttachment) async {
+        await saveToDownloads([att])
+    }
+
+    /// Saves all of a message's attachments to ~/Downloads.
+    func downloadAllAttachments(_ atts: [MailAttachment]) async {
+        await saveToDownloads(atts)
+    }
+
+    /// Previews attachments in Quick Look (optionally starting at one of them).
+    func previewAttachments(_ atts: [MailAttachment], start: MailAttachment? = nil) async {
+        var urls: [URL] = []
+        for att in atts {
+            if let url = await downloadToTemp(att) { urls.append(url) }
+        }
+        guard !urls.isEmpty else { return }
+        let index = start.flatMap { s in atts.firstIndex { $0.id == s.id } } ?? 0
+        QuickLookController.shared.preview(urls, startIndex: index)
+    }
+
+    /// Downloads remote attachments to temp files so they can be re-sent (forward).
+    func materializeAttachments(_ atts: [MailAttachment]) async -> [URL] {
+        var urls: [URL] = []
+        for att in atts {
+            if let url = await downloadToTemp(att) { urls.append(url) }
+        }
+        return urls
+    }
+
+    private func downloadToTemp(_ att: MailAttachment) async -> URL? {
+        guard let provider = currentProvider else { return nil }
+        do {
+            let data = try await provider.fetchAttachment(messageId: att.messageId, attachmentId: att.id)
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("attachments", isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let url = dir.appendingPathComponent(att.filename)
+            try data.write(to: url)
+            return url
+        } catch {
+            statusMessage = "Couldn’t open \(att.filename): \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    private func saveToDownloads(_ atts: [MailAttachment]) async {
+        guard let provider = currentProvider else { return }
+        let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        var savedURLs: [URL] = []
+        for att in atts {
+            do {
+                let data = try await provider.fetchAttachment(messageId: att.messageId, attachmentId: att.id)
+                let url = Self.uniqueURL(in: downloads, filename: att.filename)
+                try data.write(to: url)
+                savedURLs.append(url)
+            } catch {
+                statusMessage = "Couldn’t download \(att.filename): \(error.localizedDescription)"
+            }
+        }
+        if savedURLs.count == 1 {
+            NSWorkspace.shared.activateFileViewerSelecting(savedURLs)
+        } else if savedURLs.count > 1 {
+            statusMessage = "Downloaded \(savedURLs.count) attachments to Downloads."
+        }
+    }
+
+    private static func uniqueURL(in dir: URL, filename: String) -> URL {
+        let fm = FileManager.default
+        let base = (filename as NSString).deletingPathExtension
+        let ext = (filename as NSString).pathExtension
+        var url = dir.appendingPathComponent(filename)
+        var i = 1
+        while fm.fileExists(atPath: url.path) {
+            let name = ext.isEmpty ? "\(base) \(i)" : "\(base) \(i).\(ext)"
+            url = dir.appendingPathComponent(name)
+            i += 1
+        }
+        return url
     }
 
     // MARK: - Helpers
@@ -793,13 +1052,18 @@ final class ComposeRequest: Identifiable {
     var subject: String
     var body: String
     var quotedHTML: String
+    /// Remote attachments to carry over (used when forwarding); fetched and
+    /// attached by the compose view on appear.
+    var attachments: [MailAttachment]
 
-    init(kind: ComposeKind, to: String = "", subject: String = "", quoted: String = "", quotedHTML: String = "") {
+    init(kind: ComposeKind, to: String = "", subject: String = "", quoted: String = "",
+         quotedHTML: String = "", attachments: [MailAttachment] = []) {
         self.kind = kind
         self.to = to
         self.cc = ""
         self.subject = subject
         self.body = quoted
         self.quotedHTML = quotedHTML
+        self.attachments = attachments
     }
 }

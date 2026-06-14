@@ -4,6 +4,10 @@ import SwiftUI
 /// with inline reply/forward controls.
 struct MessagePreviewView: View {
     @Environment(MailboxViewModel.self) private var vm
+    /// Persisted message-body zoom, driven by ⌘+ / ⌘- / ⌘0.
+    @AppStorage("messageZoom") private var zoom: Double = 1.0
+
+    private static let zoomRange = 0.5...3.0
 
     private var selectedHeader: MessageHeader? {
         guard vm.selection.count == 1, let id = vm.selection.first else { return nil }
@@ -30,6 +34,7 @@ struct MessagePreviewView: View {
                 }
                 bodyBlock
             }
+            .background(zoomShortcuts)
         } else {
             ContentUnavailableView(
                 vm.selection.count > 1 ? "\(vm.selection.count) messages selected" : "No message selected",
@@ -60,7 +65,7 @@ struct MessagePreviewView: View {
                 replyControls
             }
             if let body = vm.currentBody, !body.attachments.isEmpty {
-                attachments(body.attachments)
+                AttachmentList(attachments: body.attachments)
             }
         }
         .padding(16)
@@ -80,27 +85,32 @@ struct MessagePreviewView: View {
         .foregroundStyle(.secondary)
     }
 
-    private func attachments(_ items: [MailAttachment]) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack {
-                ForEach(items) { att in
-                    Label(att.filename, systemImage: "paperclip")
-                        .font(.caption)
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(.quaternary, in: Capsule())
-                }
-            }
-        }
-    }
-
     @ViewBuilder
     private var bodyBlock: some View {
         if vm.isLoadingBody {
             VStack { Spacer(); ProgressView(); Spacer() }.frame(maxWidth: .infinity)
         } else if let body = vm.currentBody {
-            HTMLView(html: body.html)
+            HTMLView(html: body.html, zoom: zoom)
         } else {
             Color.clear
         }
+    }
+
+    /// Zero-size hidden buttons that register the zoom keyboard shortcuts. Both
+    /// "+" (⌘⇧=) and "=" map to zoom-in so the unshifted key works too.
+    private var zoomShortcuts: some View {
+        Group {
+            Button("") { zoom = min(Self.zoomRange.upperBound, zoom + 0.1) }
+                .keyboardShortcut("+", modifiers: .command)
+            Button("") { zoom = min(Self.zoomRange.upperBound, zoom + 0.1) }
+                .keyboardShortcut("=", modifiers: .command)
+            Button("") { zoom = max(Self.zoomRange.lowerBound, zoom - 0.1) }
+                .keyboardShortcut("-", modifiers: .command)
+            Button("") { zoom = 1.0 }
+                .keyboardShortcut("0", modifiers: .command)
+        }
+        .opacity(0)
+        .frame(width: 0, height: 0)
+        .accessibilityHidden(true)
     }
 }

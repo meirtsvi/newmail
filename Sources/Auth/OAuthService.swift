@@ -10,10 +10,12 @@ import AppKit
 actor OAuthService {
     static let shared = OAuthService()
 
-    /// Read + modify (move/label/read-state/trash) and send.
+    /// Read + modify (move/label/read-state/trash), send, and read-only calendar
+    /// (to show your schedule alongside meeting invitations).
     let scopes = [
         "https://www.googleapis.com/auth/gmail.modify",
         "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/calendar.readonly",
     ]
     private let authEndpoint = "https://accounts.google.com/o/oauth2/v2/auth"
     private let tokenEndpoint = "https://oauth2.googleapis.com/token"
@@ -41,6 +43,7 @@ actor OAuthService {
             .init(name: "code_challenge", value: challenge),
             .init(name: "code_challenge_method", value: "S256"),
             .init(name: "access_type", value: "offline"),
+            .init(name: "include_granted_scopes", value: "true"),
             .init(name: "prompt", value: "consent"),
         ]
         guard let url = comps.url else { throw MailError.auth("could not build authorization URL") }

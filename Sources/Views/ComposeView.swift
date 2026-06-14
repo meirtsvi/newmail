@@ -11,6 +11,7 @@ struct ComposeView: View {
 
     @StateObject private var rich = RichTextController()
     @State private var attachments: [URL] = []
+    @State private var loadingAttachments = false
     @State private var sending = false
     @State private var showImporter = false
     @State private var showLinkPrompt = false
@@ -25,7 +26,7 @@ struct ComposeView: View {
             formattingBar
             RichTextEditor(controller: rich)
                 .frame(minHeight: 240)
-            if !attachments.isEmpty {
+            if !attachments.isEmpty || loadingAttachments {
                 Divider()
                 attachmentBar
             }
@@ -49,6 +50,15 @@ struct ComposeView: View {
                     string: request.body,
                     attributes: [.font: NSFont.systemFont(ofSize: NSFont.systemFontSize)]
                 ))
+            }
+            // Carry the original message's attachments when forwarding.
+            if !request.attachments.isEmpty {
+                loadingAttachments = true
+                Task {
+                    let urls = await vm.materializeAttachments(request.attachments)
+                    attachments.append(contentsOf: urls)
+                    loadingAttachments = false
+                }
             }
         }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
@@ -78,7 +88,7 @@ struct ComposeView: View {
                 else { Label("Send", systemImage: "paperplane.fill") }
             }
             .keyboardShortcut("d", modifiers: .command)
-            .disabled(request.to.isEmpty || sending)
+            .disabled(request.to.isEmpty || sending || loadingAttachments)
         }
         .padding()
     }
@@ -121,6 +131,15 @@ struct ComposeView: View {
     private var attachmentBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack {
+                if loadingAttachments {
+                    HStack(spacing: 4) {
+                        ProgressView().controlSize(.small)
+                        Text("Attaching…").lineLimit(1)
+                    }
+                    .font(.caption)
+                    .padding(.horizontal, 8).padding(.vertical, 5)
+                    .background(.quaternary, in: Capsule())
+                }
                 ForEach(attachments, id: \.self) { url in
                     HStack(spacing: 4) {
                         Image(systemName: "doc")

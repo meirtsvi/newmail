@@ -11,6 +11,7 @@ protocol MailProvider: AnyObject {
     func listMessages(folderId: String, query: String?, pageToken: String?) async throws -> (headers: [MessageHeader], nextPageToken: String?)
     func search(query: String, pageToken: String?) async throws -> (headers: [MessageHeader], nextPageToken: String?)
     func fetchBody(id: String) async throws -> MessageBody
+    func fetchAttachment(messageId: String, attachmentId: String) async throws -> Data
 
     func setRead(ids: [String], read: Bool) async throws
     func setFlagged(ids: [String], flagged: Bool) async throws

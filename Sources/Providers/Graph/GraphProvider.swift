@@ -290,6 +290,16 @@ final class GraphProvider: MailProvider {
         return MessageBody(headerId: id, html: html, plainText: plain, attachments: attachments)
     }
 
+    func fetchAttachment(messageId: String, attachmentId: String) async throws -> Data {
+        let data = try await request("messages/\(messageId)/attachments/\(attachmentId)")
+        struct FileAttachment: Codable { var contentBytes: String? }
+        let att = try JSONDecoder().decode(FileAttachment.self, from: data)
+        guard let b64 = att.contentBytes, let bytes = Data(base64Encoded: b64) else {
+            throw MailError.other("Attachment is unavailable.")
+        }
+        return bytes
+    }
+
     // MARK: - Mutations
 
     func setRead(ids: [String], read: Bool) async throws {

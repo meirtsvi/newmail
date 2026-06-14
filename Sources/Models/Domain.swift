@@ -12,8 +12,7 @@ enum MailError: LocalizedError {
         case .auth(let m): return "Authentication error: \(m)"
         case .api(let code, let body):
             if code == 403 {
-                return "Permission denied (403). The current token scope is read-only. "
-                     + "Re-authorize with gmail.modify / gmail.send to enable writes.\n\(body.prefix(300))"
+                return "Permission denied (403): \(body.prefix(300))"
             }
             return "API error \(code): \(body.prefix(300))"
         case .other(let m): return m
