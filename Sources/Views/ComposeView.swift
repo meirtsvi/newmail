@@ -84,13 +84,23 @@ struct ComposeView: View {
     }
 
     private var fields: some View {
-        Form {
-            TextField("To", text: $request.to)
-            TextField("Cc", text: $request.cc)
-            TextField("Subject", text: $request.subject)
+        VStack(spacing: 8) {
+            RecipientField(title: "To", text: $request.to,
+                           suggest: vm.contactSuggestions, focusOnAppear: true)
+            RecipientField(title: "Cc", text: $request.cc,
+                           suggest: vm.contactSuggestions)
+            HStack(spacing: 8) {
+                Text("Subject")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 52, alignment: .trailing)
+                TextField("", text: $request.subject)
+                    .textFieldStyle(.roundedBorder)
+            }
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
+        // Keep the autocomplete dropdown above the formatting bar and editor.
+        .zIndex(1)
     }
 
     private var formattingBar: some View {

@@ -10,11 +10,24 @@ struct MessagePreviewView: View {
         return vm.messages.first { $0.id == id }
     }
 
+    /// The invite to show for this message (only requests and cancellations).
+    private func inviteFor(_ header: MessageHeader) -> CalendarInvite? {
+        guard let body = vm.currentBody, body.headerId == header.id,
+              let invite = body.calendar,
+              invite.method == .request || invite.method == .cancel else { return nil }
+        return invite
+    }
+
     var body: some View {
         if let header = selectedHeader {
             VStack(alignment: .leading, spacing: 0) {
                 headerBlock(header)
                 Divider()
+                if let invite = inviteFor(header) {
+                    CalendarInviteView(invite: invite, messageId: header.id)
+                        .padding(.vertical, 10)
+                    Divider()
+                }
                 bodyBlock
             }
         } else {

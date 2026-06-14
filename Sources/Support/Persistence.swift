@@ -124,6 +124,23 @@ final class CachedMessage {
     }
 }
 
+/// A known recipient/sender, used to autocomplete the compose To/Cc fields.
+/// Collected from message senders and the recipients of mail you've sent.
+@Model
+final class CachedContact {
+    @Attribute(.unique) var email: String   // lowercased; the match + dedupe key
+    var name: String
+    var useCount: Int
+    var lastSeen: Date
+
+    init(email: String, name: String, useCount: Int, lastSeen: Date) {
+        self.email = email
+        self.name = name
+        self.useCount = useCount
+        self.lastSeen = lastSeen
+    }
+}
+
 @Model
 final class CachedBody {
     @Attribute(.unique) var id: String
@@ -144,7 +161,8 @@ final class CachedBody {
 enum Persistence {
     static let container: ModelContainer = {
         let schema = Schema([
-            SnoozeRecord.self, CachedFolder.self, CachedMessage.self, CachedBody.self, PersistedAccount.self,
+            SnoozeRecord.self, CachedFolder.self, CachedMessage.self, CachedBody.self,
+            PersistedAccount.self, CachedContact.self,
         ])
         // Versioned store file: the multi-account schema is incompatible with the
         // single-account one, and the cache is disposable (re-fetched from the

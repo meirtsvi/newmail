@@ -231,18 +231,34 @@ final class GmailProvider: MailProvider {
 
         var html = ""
         var text = ""
+        var ics = ""
+        var icsAttachmentId: String?
         var attachments: [MailAttachment] = []
+
+        func isCalendar(_ mime: String, _ filename: String) -> Bool {
+            mime.hasPrefix("text/calendar") || mime == "application/ics"
+                || filename.lowercased().hasSuffix(".ics")
+        }
 
         func walk(_ part: GmailAPI.Part?) {
             guard let part else { return }
-            let mime = part.mimeType ?? ""
-            if let filename = part.filename, !filename.isEmpty,
-               let attId = part.body?.attachmentId {
+            let mime = (part.mimeType ?? "").lowercased()
+            let filename = part.filename ?? ""
+            // Calendar invites arrive either inline (text/calendar inside a
+            // multipart/alternative) or as an invite.ics attachment. Capture the
+            // content either way and surface it as a card, not a file chip.
+            if isCalendar(mime, filename) {
+                if let encoded = part.body?.data, let decoded = Self.decodeBase64URL(encoded) {
+                    ics += String(decoding: decoded, as: UTF8.self)
+                } else if let attId = part.body?.attachmentId, icsAttachmentId == nil {
+                    icsAttachmentId = attId
+                }
+            } else if !filename.isEmpty, let attId = part.body?.attachmentId {
                 attachments.append(MailAttachment(
                     id: attId,
                     messageId: id,
                     filename: filename,
-                    mimeType: mime,
+                    mimeType: part.mimeType ?? "",
                     sizeBytes: part.body?.size ?? 0
                 ))
             } else if let encoded = part.body?.data, let decoded = Self.decodeBase64URL(encoded) {
@@ -254,6 +270,12 @@ final class GmailProvider: MailProvider {
         }
         walk(msg.payload)
 
+        // If the invite was delivered only as an attachment, fetch its bytes.
+        if ics.isEmpty, let attId = icsAttachmentId,
+           let data = try? await fetchAttachmentData(messageId: id, attachmentId: attId) {
+            ics = String(decoding: data, as: UTF8.self)
+        }
+
         if html.isEmpty, !text.isEmpty {
             let escaped = text
                 .replacingOccurrences(of: "&", with: "&amp;")
@@ -261,7 +283,16 @@ final class GmailProvider: MailProvider {
                 .replacingOccurrences(of: ">", with: "&gt;")
             html = "<pre style=\"white-space:pre-wrap;font-family:-apple-system,sans-serif\">\(escaped)</pre>"
         }
-        return MessageBody(headerId: id, html: html, plainText: text, attachments: attachments)
+        let invite = ics.isEmpty ? nil : ICSParser.parse(ics)
+        return MessageBody(headerId: id, html: html, plainText: text, attachments: attachments, calendar: invite)
+    }
+
+    /// Downloads and decodes a single attachment's bytes (used to read an
+    /// invite.ics that wasn't inlined in the body).
+    private func fetchAttachmentData(messageId: String, attachmentId: String) async throws -> Data? {
+        let data = try await request("messages/\(messageId)/attachments/\(attachmentId)")
+        let body = try JSONDecoder().decode(GmailAPI.Body.self, from: data)
+        return body.data.flatMap(Self.decodeBase64URL)
     }
 
     // MARK: - Mutations (require write scope)

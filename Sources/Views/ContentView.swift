@@ -12,14 +12,19 @@ struct ContentView: View {
             SidebarView()
                 .frame(minWidth: 220)
         } content: {
-            MessageListView()
-                .frame(minWidth: 440, idealWidth: 540)
+            VStack(spacing: 0) {
+                MessageListView()
+                Divider()
+                StatusBar()
+            }
+            .frame(minWidth: 440, idealWidth: 540)
         } detail: {
             MessagePreviewView()
                 .frame(minWidth: 380)
         }
         .toolbar { MailToolbar(vm: vm) }
-        .searchable(text: $vm.searchText, placement: .toolbar, prompt: "Search mail")
+        .searchable(text: $vm.searchText, placement: .toolbar,
+                    prompt: "Search mail — try from:, to:, subject:")
         .searchScopes($vm.searchScope) {
             ForEach(SearchScope.allCases) { scope in
                 Text(scope.rawValue).tag(scope)
@@ -64,5 +69,48 @@ struct ContentView: View {
         } message: {
             Text(vm.authMessage ?? "")
         }
+    }
+}
+
+/// Thin bottom bar showing non-modal connection / sync status. Connection and
+/// load errors land here (orange) instead of interrupting with an alert.
+struct StatusBar: View {
+    @Environment(MailboxViewModel.self) private var vm
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if let status = vm.statusMessage {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text(status)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(status)
+                Spacer()
+                Button {
+                    Task { await vm.sync() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .help("Retry")
+            } else if vm.isLoading {
+                ProgressView().controlSize(.small)
+                Text("Updating…").foregroundStyle(.secondary)
+                Spacer()
+            } else {
+                Image(systemName: "checkmark.circle")
+                    .foregroundStyle(.secondary)
+                Text(vm.accountEmail.isEmpty ? "Ready" : vm.accountEmail)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
+            }
+        }
+        .font(.caption)
+        .padding(.horizontal, 12)
+        .frame(height: 24)
+        .background(.bar)
     }
 }

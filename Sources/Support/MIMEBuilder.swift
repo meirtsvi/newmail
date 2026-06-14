@@ -61,6 +61,22 @@ enum MIMEBuilder {
         return lines.joined(separator: "\r\n").data(using: .utf8) ?? Data()
     }
 
+    /// Builds an RSVP email carrying an iCalendar REPLY (text/calendar;
+    /// method=REPLY). Sent to the organizer; Gmail/Outlook process it to record
+    /// the response and update the calendar.
+    static func buildICSReply(from: String, to: String, subject: String, ics: String) -> Data {
+        var lines: [String] = []
+        if !from.isEmpty { lines.append("From: \(from)") }
+        lines.append("To: \(to)")
+        lines.append("Subject: \(encodeHeader(subject))")
+        lines.append("MIME-Version: 1.0")
+        lines.append("Content-Type: text/calendar; charset=utf-8; method=REPLY")
+        lines.append("Content-Transfer-Encoding: 8bit")
+        lines.append("")
+        lines.append(ics)
+        return lines.joined(separator: "\r\n").data(using: .utf8) ?? Data()
+    }
+
     /// RFC 2047 encoded-word for non-ASCII subjects.
     private static func encodeHeader(_ value: String) -> String {
         if value.allSatisfy({ $0.isASCII }) { return value }

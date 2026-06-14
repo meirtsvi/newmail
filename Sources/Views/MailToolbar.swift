@@ -49,9 +49,8 @@ struct MailToolbar: ToolbarContent {
             Button { Task { await vm.deleteMessages(ids) } } label: {
                 Label("Delete", systemImage: "trash")
             }
-            .keyboardShortcut(.delete, modifiers: [])
             .disabled(!hasSelection)
-            .help("Delete")
+            .help("Delete (⌫)")
 
             Menu {
                 MoveMenu(vm: vm, ids: ids)

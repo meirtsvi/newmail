@@ -82,6 +82,20 @@ struct MessageListView: View {
                 Task { await vm.openMessage(id) }
             }
         }
+        // Delete/Backspace removes the selected messages when the list is focused.
+        .onDeleteCommand(perform: deleteSelection)
+        // Forward-delete (fn+⌦) does the same.
+        .onKeyPress(.deleteForward) {
+            guard !vm.selection.isEmpty else { return .ignored }
+            deleteSelection()
+            return .handled
+        }
+    }
+
+    private func deleteSelection() {
+        let ids = Array(vm.selection)
+        guard !ids.isEmpty else { return }
+        Task { await vm.deleteMessages(ids) }
     }
 
     @TableColumnBuilder<MessageHeader, KeyPathComparator<MessageHeader>>

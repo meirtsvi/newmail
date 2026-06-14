@@ -23,6 +23,11 @@ struct MessageDetailView: View {
             }
             headerBlock
             Divider()
+            if let invite = inviteForModal {
+                CalendarInviteView(invite: invite, messageId: header.id)
+                    .padding(.vertical, 10)
+                Divider()
+            }
             bodyBlock
         }
         .frame(minWidth: 720, idealWidth: 840, minHeight: 560, idealHeight: 720)
@@ -93,6 +98,14 @@ struct MessageDetailView: View {
             Text(header.date.mailFullString).font(.caption).foregroundStyle(.secondary)
         }
         .padding(16)
+    }
+
+    /// The invite to show for the opened message (only requests and cancellations).
+    private var inviteForModal: CalendarInvite? {
+        guard let body = vm.modalBody, body.headerId == header.id,
+              let invite = body.calendar,
+              invite.method == .request || invite.method == .cancel else { return nil }
+        return invite
     }
 
     @ViewBuilder

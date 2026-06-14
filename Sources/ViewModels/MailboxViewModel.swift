@@ -20,6 +20,7 @@ final class MailboxViewModel {
     }
 
     let store = MailStore()
+    let contactStore = ContactStore()
     let accountStore = AccountStore()
     private var refreshTimer: Timer?
 
@@ -68,6 +69,9 @@ final class MailboxViewModel {
     // Status
     var isLoading = false
     var errorMessage: String?
+    // Non-modal status-bar message for connection / sync / load problems (shown
+    // in the bottom bar instead of an alert). Cleared on the next success.
+    var statusMessage: String?
     var authMessage: String?
     var isSigningIn = false
     var hasWriteScope = true
@@ -116,7 +120,9 @@ final class MailboxViewModel {
         }
         recomputeFavorites()
 
-        // Reconcile each account from the network.
+        // Reconcile each account from the network. Connection failures here go to
+        // the status bar (non-modal) rather than an interrupting alert.
+        statusMessage = nil
         for session in sessions {
             do {
                 try await session.provider.loadProfile()
@@ -124,7 +130,7 @@ final class MailboxViewModel {
                 try await loadFolders(for: session)
                 startSnooze(for: session)
             } catch {
-                errorMessage = error.localizedDescription
+                statusMessage = "Couldn’t connect \(connectLabel(session)): \(error.localizedDescription)"
             }
         }
 
@@ -387,11 +393,13 @@ final class MailboxViewModel {
             messages = result.headers
             nextPageToken = result.nextPageToken
             store.saveHeaders(result.headers)
+            recordContacts(from: result.headers, folder: folder)
+            statusMessage = nil
         } catch {
             if messages.isEmpty {
                 messages = store.cachedHeaders(folderId: folder.id, accountId: folder.accountId)
             }
-            errorMessage = error.localizedDescription
+            statusMessage = "Couldn’t load \(folder.name): \(error.localizedDescription)"
         }
     }
 
@@ -405,8 +413,10 @@ final class MailboxViewModel {
             messages.append(contentsOf: result.headers)
             nextPageToken = result.nextPageToken
             store.saveHeaders(result.headers)
+            recordContacts(from: result.headers, folder: folder)
+            statusMessage = nil
         } catch {
-            errorMessage = error.localizedDescription
+            statusMessage = "Couldn’t load more: \(error.localizedDescription)"
         }
     }
 
@@ -578,6 +588,11 @@ final class MailboxViewModel {
 
     // MARK: - Compose
 
+    /// Ranked address suggestions for the compose To/Cc autocomplete.
+    func contactSuggestions(_ query: String) -> [MailAddress] {
+        contactStore.suggestions(matching: query)
+    }
+
     func startNewMail() {
         activeSheet = .compose(ComposeRequest(kind: .new))
     }
@@ -632,6 +647,8 @@ final class MailboxViewModel {
     }
 
     func sendComposed(to: String, cc: String, subject: String, html: String, attachments: [URL]) async {
+        // Remember who we send to so they autocomplete next time.
+        contactStore.record(MailAddress.parseList(to) + MailAddress.parseList(cc))
         let scoped = attachments.filter { $0.startAccessingSecurityScopedResource() }
         defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
         let mime = MIMEBuilder.buildHTML(
@@ -640,7 +657,54 @@ final class MailboxViewModel {
         await withProvider { try await $0.send(rawMIME: mime) }
     }
 
+    // MARK: - Calendar invites
+
+    /// Sends an RSVP to the invitation's organizer as an iCalendar REPLY email.
+    /// Returns whether the reply was sent (the caller updates its UI state).
+    @discardableResult
+    func respondToInvite(_ invite: CalendarInvite, response: InviteResponse) async -> Bool {
+        guard let provider = currentProvider else {
+            errorMessage = "No account is selected."
+            return false
+        }
+        guard let organizer = invite.organizer, !organizer.email.isEmpty else {
+            errorMessage = "This invitation has no organizer to reply to."
+            return false
+        }
+        let me = MailAddress(name: "", email: accountEmail)
+        let ics = ICSReplyBuilder.reply(to: invite, attendee: me, response: response, now: Date())
+        let subject = "\(response.subjectPrefix): \(invite.summary)"
+        let mime = MIMEBuilder.buildICSReply(
+            from: accountEmail, to: organizer.email, subject: subject, ics: ics
+        )
+        do {
+            try await provider.send(rawMIME: mime)
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
     // MARK: - Helpers
+
+    /// Feeds the autocomplete address book: senders of every message, plus the
+    /// recipients of mail in the Sent folder ("addresses I've sent mail to").
+    private func recordContacts(from headers: [MessageHeader], folder: MailFolder) {
+        contactStore.record(headers.map(\.from))
+        if folder.kind == .sent {
+            contactStore.record(headers.flatMap(\.to))
+        }
+    }
+
+    /// A human label for an account used in connection status messages.
+    private func connectLabel(_ session: Session) -> String {
+        let email = session.provider.accountEmail
+        if !email.isEmpty, email != "me" { return email }
+        return session.account.displayName.isEmpty
+            ? session.account.providerKind.providerName
+            : session.account.displayName
+    }
 
     private func selectedAllFlagged(_ ids: [String]) -> Bool {
         let set = Set(ids)
@@ -673,10 +737,24 @@ final class MailboxViewModel {
 
     private func removeLocal(ids: [String]) {
         let set = Set(ids)
+        // Remember where the removed rows sat (in the visible order) so we can
+        // land the selection on whatever message takes their place.
+        let firstRemovedIndex = displayedMessages.firstIndex { set.contains($0.id) }
+
         messages.removeAll { set.contains($0.id) }
         selection.subtract(set)
         if let body = currentBody, set.contains(body.headerId) { currentBody = nil }
         store.deleteMessages(ids: ids)
+
+        // If the removal cleared the selection, advance to the next message (or
+        // the last one when the tail was removed) so the list keeps a focused row
+        // and the preview follows along.
+        if selection.isEmpty, let idx = firstRemovedIndex {
+            let remaining = displayedMessages
+            if !remaining.isEmpty {
+                selection = [remaining[min(idx, remaining.count - 1)].id]
+            }
+        }
     }
 }
 

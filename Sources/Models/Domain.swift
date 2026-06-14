@@ -149,6 +149,8 @@ struct MessageBody {
     var html: String
     var plainText: String
     var attachments: [MailAttachment]
+    /// A calendar invitation parsed from a `text/calendar` part, if present.
+    var calendar: CalendarInvite? = nil
 }
 
 // MARK: - Search
