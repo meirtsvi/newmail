@@ -11,6 +11,13 @@ final class RichTextController: ObservableObject {
         textView?.textStorage?.setAttributedString(attributed)
     }
 
+    /// Moves keyboard focus into the body editor (used to jump straight from the
+    /// Subject field to the body, skipping the formatting buttons).
+    func focus() {
+        guard let textView else { return }
+        textView.window?.makeFirstResponder(textView)
+    }
+
     func toggleBold() { toggleTrait(.boldFontMask) }
     func toggleItalic() { toggleTrait(.italicFontMask) }
 

@@ -19,6 +19,30 @@ struct MessageListView: View {
             header
             Divider()
             table
+            loadOlderFooter
+        }
+    }
+
+    /// Footer shown while the current folder has more pages on the server. The
+    /// initial open auto-pages up to a target (see `loadMessages`); this lets the
+    /// user pull the rest in on demand.
+    @ViewBuilder
+    private var loadOlderFooter: some View {
+        if vm.canLoadMore {
+            Divider()
+            Button {
+                Task { await vm.loadMore() }
+            } label: {
+                HStack(spacing: 6) {
+                    if vm.isLoading { ProgressView().controlSize(.small) }
+                    Text(vm.isLoading ? "Loading…" : "Load older messages")
+                        .font(.caption)
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderless)
+            .disabled(vm.isLoading)
+            .padding(.vertical, 8)
         }
     }
 
@@ -91,6 +115,14 @@ struct MessageListView: View {
                 Task { await vm.openMessage(id) }
             }
         }
+        // ⌘A selects every message in the current folder's list.
+        .onKeyPress(phases: .down) { press in
+            guard press.key == KeyEquivalent("a"), press.modifiers.contains(.command) else {
+                return .ignored
+            }
+            vm.selection = Set(vm.displayedMessages.map(\.id))
+            return .handled
+        }
         // Delete/Backspace removes the selected messages when the list is focused.
         .onDeleteCommand(perform: deleteSelection)
         // Forward-delete (fn+⌦) does the same.
@@ -111,9 +143,11 @@ struct MessageListView: View {
     private var columns: some TableColumnContent<MessageHeader, KeyPathComparator<MessageHeader>> {
         TableColumn("", value: \MessageHeader.readSort) { msg in unreadCell(msg) }
             .width(16)
-        TableColumn("⚑", value: \MessageHeader.flagSort) { msg in flagCell(msg) }
+        TableColumn(Text("\(Image(systemName: "flag.fill"))").font(.body),
+                    value: \MessageHeader.flagSort) { msg in flagCell(msg) }
             .width(24)
-        TableColumn("◷", value: \MessageHeader.attachmentSort) { msg in attachmentCell(msg) }
+        TableColumn(Text("\(Image(systemName: "paperclip"))").font(.body),
+                    value: \MessageHeader.attachmentSort) { msg in attachmentCell(msg) }
             .width(24)
         TableColumn("From", value: \MessageHeader.from.display) { msg in fromCell(msg) }
             .width(min: 120, ideal: 240)

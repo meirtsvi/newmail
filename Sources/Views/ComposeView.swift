@@ -105,6 +105,12 @@ struct ComposeView: View {
                     .frame(width: 52, alignment: .trailing)
                 TextField("", text: $request.subject)
                     .textFieldStyle(.roundedBorder)
+                    // Tab from the subject jumps straight to the body, skipping
+                    // the bold/italic/underline/link/attach buttons.
+                    .onKeyPress(.tab) {
+                        rich.focus()
+                        return .handled
+                    }
             }
         }
         .padding(.horizontal)

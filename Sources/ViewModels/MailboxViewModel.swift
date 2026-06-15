@@ -63,6 +63,10 @@ final class MailboxViewModel {
     ]
     var nextPageToken: String?
 
+    /// Whether the list can pull an older page on demand. False while searching,
+    /// since `loadMore()` pages the folder listing, not the search results.
+    var canLoadMore: Bool { !isSearching && nextPageToken != nil }
+
     // Preview
     var currentBody: MessageBody?
     var isLoadingBody = false
@@ -454,16 +458,34 @@ final class MailboxViewModel {
 
     // MARK: - Message loading
 
+    /// How many headers to pull when first opening a folder. Providers page in
+    /// small batches (Graph 50, Gmail 100), so we keep fetching until we reach
+    /// this many — otherwise the list stops a week or two back and older mail is
+    /// only reachable via search. Further pages load on demand via `loadMore()`.
+    private static let initialLoadTarget = 300
+
     func loadMessages() async {
         guard let folder = currentFolder, let provider = currentProvider else { return }
         isLoading = true
         defer { isLoading = false }
         do {
-            let result = try await provider.listMessages(folderId: folder.id, query: nil, pageToken: nil)
+            var result = try await provider.listMessages(folderId: folder.id, query: nil, pageToken: nil)
             messages = result.headers
             nextPageToken = result.nextPageToken
             store.saveHeaders(result.headers)
             recordContacts(from: result.headers, folder: folder)
+
+            // Keep paging until we hit the target or run out of mail. Bail if the
+            // user navigated to a different folder while we were fetching.
+            while messages.count < Self.initialLoadTarget,
+                  let token = result.nextPageToken,
+                  currentFolder?.id == folder.id {
+                result = try await provider.listMessages(folderId: folder.id, query: nil, pageToken: token)
+                messages.append(contentsOf: result.headers)
+                nextPageToken = result.nextPageToken
+                store.saveHeaders(result.headers)
+                recordContacts(from: result.headers, folder: folder)
+            }
             statusMessage = nil
         } catch {
             if messages.isEmpty {
@@ -500,16 +522,23 @@ final class MailboxViewModel {
 
     func openMessage(_ id: String) async {
         guard let provider = currentProvider else { return }
-        isLoadingBody = true
-        defer { isLoadingBody = false }
+        // Paint the cached body instantly so the preview is immediate; only show the
+        // loading spinner when there's nothing cached to display yet.
         if let cached = store.cachedBody(id: id) {
             currentBody = cached
+            isLoadingBody = false
+        } else {
+            isLoadingBody = true
         }
+        defer { isLoadingBody = false }
         do {
             let body = try await provider.fetchBody(id: id)
-            currentBody = body
             store.saveBody(body)
-            await loadInviteContextIfNeeded(headerId: id, body: body)
+            // Ignore a late network result if the user has moved to another message.
+            if selection.count == 1, selection.first == id {
+                currentBody = body
+                await loadInviteContextIfNeeded(headerId: id, body: body)
+            }
             if let header = messages.first(where: { $0.id == id }), !header.isRead {
                 try? await provider.setRead(ids: [id], read: true)
                 mutateLocal(ids: [id]) { $0.isRead = true }
@@ -517,6 +546,27 @@ final class MailboxViewModel {
             }
         } catch {
             if currentBody == nil { errorMessage = error.localizedDescription }
+        }
+        prefetchAdjacentBodies(around: id)
+    }
+
+    /// Bodies for which a background prefetch is already in flight (avoids
+    /// duplicate fetches when navigating back and forth).
+    private var prefetchingBodies: Set<String> = []
+
+    /// Warms the on-disk body cache for the messages immediately above and below
+    /// `id` so navigating to a neighbour (arrow keys or click) is instant.
+    private func prefetchAdjacentBodies(around id: String) {
+        guard let provider = currentProvider else { return }
+        let ids = displayedMessages.map(\.id)
+        guard let idx = ids.firstIndex(of: id) else { return }
+        let neighbours = [idx - 1, idx + 1].filter(ids.indices.contains).map { ids[$0] }
+        for nid in neighbours where store.cachedBody(id: nid) == nil && !prefetchingBodies.contains(nid) {
+            prefetchingBodies.insert(nid)
+            Task {
+                defer { prefetchingBodies.remove(nid) }
+                if let body = try? await provider.fetchBody(id: nid) { store.saveBody(body) }
+            }
         }
     }
 

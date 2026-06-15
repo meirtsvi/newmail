@@ -13,10 +13,10 @@ struct ContentView: View {
                 .frame(minWidth: 220)
         } content: {
             VStack(spacing: 0) {
-                if !vm.selection.isEmpty {
-                    MoveBarView()
-                    Divider()
-                }
+                // Always visible so it's ready the instant you switch folders —
+                // tap a chip to move the selection, or drag messages onto one.
+                MoveBarView()
+                Divider()
                 MessageListView()
                 Divider()
                 StatusBar()
@@ -26,16 +26,12 @@ struct ContentView: View {
             MessagePreviewView()
                 .frame(minWidth: 380)
         }
-        .toolbar { MailToolbar(vm: vm) }
-        .searchable(text: $vm.searchText, placement: .toolbar,
-                    prompt: "Search mail — try from:, to:, subject:")
-        .searchScopes($vm.searchScope) {
-            ForEach(SearchScope.allCases) { scope in
-                Text(scope.rawValue).tag(scope)
+        .toolbar {
+            MailToolbar(vm: vm)
+            // Centered search field in the title bar (the toolbar's principal slot).
+            ToolbarItem(placement: .principal) {
+                ToolbarSearchField(vm: vm)
             }
-        }
-        .onSubmit(of: .search) {
-            Task { await vm.runSearch() }
         }
         // Clearing the search field (the X button) reloads the folder's list.
         .onChange(of: vm.searchText) { _, newValue in
@@ -82,6 +78,57 @@ struct ContentView: View {
             Button("OK") { vm.authMessage = nil }
         } message: {
             Text(vm.authMessage ?? "")
+        }
+    }
+}
+
+/// Centered toolbar search field (replaces the system `.searchable`) with a
+/// scope menu (current folder / all folders) and an inline clear button.
+private struct ToolbarSearchField: View {
+    @Bindable var vm: MailboxViewModel
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("Search mail — try from:, to:, subject:", text: $vm.searchText)
+                .textFieldStyle(.plain)
+                .focused($focused)
+                .onSubmit { Task { await vm.runSearch() } }
+                .onKeyPress(.escape) {
+                    guard !vm.searchText.isEmpty else { return .ignored }
+                    vm.searchText = ""
+                    return .handled
+                }
+                .frame(minWidth: 600)
+            if !vm.searchText.isEmpty {
+                Button { vm.searchText = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
+            Menu {
+                Picker("Scope", selection: $vm.searchScope) {
+                    ForEach(SearchScope.allCases) { scope in
+                        Text(scope.rawValue).tag(scope)
+                    }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                Image(systemName: "line.3.horizontal.decrease.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Search scope")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .frame(maxWidth: 1000)
+        // Re-run the search when the scope changes while a query is active.
+        .onChange(of: vm.searchScope) { _, _ in
+            if !vm.searchText.isEmpty { Task { await vm.runSearch() } }
         }
     }
 }

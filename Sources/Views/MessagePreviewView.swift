@@ -32,7 +32,7 @@ struct MessagePreviewView: View {
                         .padding(.vertical, 10)
                     Divider()
                 }
-                bodyBlock
+                bodyBlock(header)
             }
             .background(zoomShortcuts)
         } else {
@@ -86,11 +86,13 @@ struct MessagePreviewView: View {
     }
 
     @ViewBuilder
-    private var bodyBlock: some View {
-        if vm.isLoadingBody {
-            VStack { Spacer(); ProgressView(); Spacer() }.frame(maxWidth: .infinity)
-        } else if let body = vm.currentBody {
+    private func bodyBlock(_ header: MessageHeader) -> some View {
+        // Show the body the moment we have it for this message (from cache it's
+        // instant); the spinner only appears while fetching with nothing to show.
+        if let body = vm.currentBody, body.headerId == header.id {
             HTMLView(html: body.html, zoom: zoom)
+        } else if vm.isLoadingBody {
+            VStack { Spacer(); ProgressView(); Spacer() }.frame(maxWidth: .infinity)
         } else {
             Color.clear
         }
