@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Middle pane: a sortable, multi-select Table of message headers with a
 /// folder-title header bar. Sorting is driven by the column headers; hovering a
@@ -6,6 +7,8 @@ import SwiftUI
 struct MessageListView: View {
     @Environment(MailboxViewModel.self) private var vm
     @State private var hoveredId: String?
+    /// Anchor row for ⇧-click range selection (the last plainly/⌘-clicked row).
+    @State private var selectionAnchor: String?
     @State private var columnCustomization = TableColumnCustomization<MessageHeader>()
 
     private static let columnsKey = "messageColumnCustomization"
@@ -61,6 +64,12 @@ struct MessageListView: View {
 
     private var table: some View {
         @Bindable var vm = vm
+        // Every cell fills its row and is a drag source (see `rowInteraction`), so a
+        // press-drag anywhere on a row moves the message(s) — single or multi — and the
+        // Table never falls back to its rubber-band multi-row selection. The price of a
+        // cell-wide `.onDrag` is that it eats the mouse-down the Table would use to
+        // select the row, so selection is driven manually in `handleClick`. Row order
+        // matches `displayedMessages`, already sorted by the view model.
         return Table(
             vm.displayedMessages,
             selection: $vm.selection,
@@ -136,35 +145,80 @@ struct MessageListView: View {
         }
     }
 
+    /// Drag payload for a row: the whole selection if this message is part of it,
+    /// otherwise just this message. `rowInteraction` puts this on every cell so the
+    /// entire row is a drag source.
+    private func rowDrag(_ msg: MessageHeader) -> NSItemProvider {
+        let ids = vm.selection.contains(msg.id) ? Array(vm.selection) : [msg.id]
+        return MessageDragPayload.itemProvider(ids: ids)
+    }
+
+    /// Shared per-cell treatment: fill the row, drag the message(s) from anywhere,
+    /// and select on click. Selection is manual because the cell-wide `.onDrag`
+    /// swallows the click the Table would otherwise use to select the row.
+    private func rowInteraction(_ msg: MessageHeader) -> RowInteraction {
+        RowInteraction(
+            onDrag: { rowDrag(msg) },
+            onClick: { handleClick(msg) },
+            onOpen: { vm.openInWindow(msg.id) },
+            onHover: { setHover($0, id: msg.id) }
+        )
+    }
+
+    /// Click-to-select, mirroring the usual list behaviour: a plain click selects
+    /// one row, ⌘ toggles it, ⇧ extends a range from the anchor (last plain/⌘ click).
+    private func handleClick(_ msg: MessageHeader) {
+        let flags = NSEvent.modifierFlags
+        if flags.contains(.command) {
+            if vm.selection.contains(msg.id) { vm.selection.remove(msg.id) }
+            else { vm.selection.insert(msg.id) }
+            selectionAnchor = msg.id
+        } else if flags.contains(.shift), let anchor = selectionAnchor {
+            vm.selection = Set(rangeIds(from: anchor, to: msg.id))
+        } else {
+            vm.selection = [msg.id]
+            selectionAnchor = msg.id
+        }
+    }
+
+    /// Ids of the displayed rows between two messages, inclusive (order-independent).
+    private func rangeIds(from: String, to: String) -> [String] {
+        let ids = vm.displayedMessages.map(\.id)
+        guard let a = ids.firstIndex(of: from), let b = ids.firstIndex(of: to) else { return [to] }
+        return Array(ids[min(a, b)...max(a, b)])
+    }
+
     @ViewBuilder
     private func unreadCell(_ msg: MessageHeader) -> some View {
         Circle()
             .fill(msg.isRead ? Color.clear : Color.accentColor)
             .frame(width: 8, height: 8)
+            .modifier(rowInteraction(msg))
     }
 
-    @ViewBuilder
     private func flagCell(_ msg: MessageHeader) -> some View {
-        if msg.isFlagged {
-            Image(systemName: "flag.fill").foregroundStyle(.red).help("Flagged")
+        Group {
+            if msg.isFlagged {
+                Image(systemName: "flag.fill").foregroundStyle(.red).help("Flagged")
+            }
         }
+        .modifier(rowInteraction(msg))
     }
 
-    @ViewBuilder
     private func attachmentCell(_ msg: MessageHeader) -> some View {
-        if msg.hasAttachments {
-            Image(systemName: "paperclip").foregroundStyle(.secondary).help("Has attachment")
+        Group {
+            if msg.hasAttachments {
+                Image(systemName: "paperclip").foregroundStyle(.secondary).help("Has attachment")
+            }
         }
+        .modifier(rowInteraction(msg))
     }
 
-    @ViewBuilder
     private func dateCell(_ msg: MessageHeader) -> some View {
         Text(msg.date.mailListString)
             .foregroundStyle(.secondary)
             .font(msg.isRead ? .body : .body.weight(.semibold))
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .onHover { setHover($0, id: msg.id) }
+            .modifier(rowInteraction(msg))
     }
 
     private func setHover(_ inside: Bool, id: String) {
@@ -172,24 +226,20 @@ struct MessageListView: View {
         else if hoveredId == id { hoveredId = nil }
     }
 
-    @ViewBuilder
     private func snoozedUntilCell(_ msg: MessageHeader) -> some View {
-        if let wake = vm.snoozedUntil(msg.id) {
-            Text(wake.mailFullString).foregroundStyle(.secondary)
-        } else {
-            Text("—").foregroundStyle(.tertiary)
+        Group {
+            if let wake = vm.snoozedUntil(msg.id) {
+                Text(wake.mailFullString).foregroundStyle(.secondary)
+            } else {
+                Text("—").foregroundStyle(.tertiary)
+            }
         }
+        .modifier(rowInteraction(msg))
     }
 
     private func fromCell(_ msg: MessageHeader) -> some View {
         HStack(spacing: 8) {
-            // The avatar is the drag handle (dragging the whole cell would steal
-            // the click the Table needs for row selection).
             Avatar(address: msg.from)
-                .onDrag {
-                    let ids = vm.selection.contains(msg.id) ? Array(vm.selection) : [msg.id]
-                    return MessageDragPayload.itemProvider(ids: ids)
-                }
             Text(msg.from.display)
                 .font(msg.isRead ? .body : .body.weight(.bold))
                 .lineLimit(1)
@@ -202,18 +252,36 @@ struct MessageListView: View {
                     .transition(.opacity)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-        .onHover { setHover($0, id: msg.id) }
+        .modifier(rowInteraction(msg))
     }
 
     private func subjectCell(_ msg: MessageHeader) -> some View {
         Text(msg.subject)
             .font(msg.isRead ? .body : .body.weight(.semibold))
             .lineLimit(1)
+            .modifier(rowInteraction(msg))
+    }
+}
+
+/// Per-cell interaction shared by every column: fill the row, drag the message(s)
+/// from anywhere in the row, open on double-click, and route single-clicks to
+/// manual selection. A cell-wide `.onDrag` eats the click the Table would use for
+/// native selection, so `onClick` re-implements it. `simultaneousGesture` lets the
+/// tap and the drag coexist — a stationary click selects, a press-drag drags.
+private struct RowInteraction: ViewModifier {
+    let onDrag: () -> NSItemProvider
+    let onClick: () -> Void
+    let onOpen: () -> Void
+    let onHover: (Bool) -> Void
+
+    func body(content: Content) -> some View {
+        content
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .onHover { setHover($0, id: msg.id) }
+            .onHover(perform: onHover)
+            .onDrag(onDrag)
+            .simultaneousGesture(TapGesture(count: 2).onEnded(onOpen))
+            .simultaneousGesture(TapGesture(count: 1).onEnded(onClick))
     }
 }
 
