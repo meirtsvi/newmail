@@ -24,6 +24,8 @@ final class MailboxViewModel {
     let contactStore = ContactStore()
     let accountStore = AccountStore()
     private var refreshTimer: Timer?
+    /// Polls every account's inbox for new mail to raise top-right popups.
+    private var inboxPollTimer: Timer?
     /// Background pass that flags the current folder's calendar invites.
     private var calendarScanTask: Task<Void, Never>?
 
@@ -51,6 +53,16 @@ final class MailboxViewModel {
     // Currently presented modal sheet (compose / message window / custom snooze).
     var activeSheet: ActiveSheet?
     var modalBody: MessageBody?
+
+    // New-mail popups shown in a floating panel pinned to the top-right of the screen.
+    var notifications: [MailNotification] = []
+    // Inbox message ids already seen per account, so only genuinely new mail pops.
+    private var seenInboxIds: [String: Set<String>] = [:]
+    @ObservationIgnored private var notificationPanel: NotificationPanelController?
+    // Per-popup auto-dismiss timers (cancelled if the user starts a reply).
+    @ObservationIgnored private var dismissTasks: [String: Task<Void, Never>] = [:]
+    private static let maxNotifications = 5
+    private static let autoDismissSeconds = 5
 
     // Sidebar selection (tag like "acct:<accountId>\u{1}<folderId>").
     var sidebarSelection: String?
@@ -222,6 +234,13 @@ final class MailboxViewModel {
             sidebarSelection = "acct:\(inbox.compositeId)"
             await selectFolder(inbox)
         }
+
+        // Float the new-mail popup panel and record a baseline of what's already
+        // in each inbox (so the existing backlog doesn't pop on launch).
+        notificationPanel = NotificationPanelController(
+            rootView: NotificationStackView().environment(self)
+        )
+        await pollInboxes()
         startPeriodicRefresh()
     }
 
@@ -382,6 +401,11 @@ final class MailboxViewModel {
         refreshTimer?.invalidate()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
             Task { await self?.reloadCurrentFolder() }
+        }
+        // Poll inboxes more often than the folder refresh so new-mail popups feel timely.
+        inboxPollTimer?.invalidate()
+        inboxPollTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { await self?.pollInboxes() }
         }
     }
 
@@ -954,6 +978,97 @@ final class MailboxViewModel {
         await withProvider { try await $0.send(rawMIME: mime) }
     }
 
+    // MARK: - New-mail notifications
+
+    /// Polls every account's inbox for newly-arrived unread mail and raises a
+    /// top-right popup for each. The first poll per account only records a
+    /// baseline (so the existing inbox doesn't pop on launch).
+    private func pollInboxes() async {
+        for session in sessions {
+            guard let inbox = foldersByAccount[session.account.id]?.first(where: { $0.kind == .inbox }) else { continue }
+            guard let result = try? await session.provider.listMessages(folderId: inbox.id, query: nil, pageToken: nil) else { continue }
+            let headers = result.headers
+            let currentIds = Set(headers.map(\.id))
+            guard let seen = seenInboxIds[session.account.id] else {
+                seenInboxIds[session.account.id] = currentIds
+                continue
+            }
+            let fresh = headers.filter { !seen.contains($0.id) && !$0.isRead }
+            seenInboxIds[session.account.id] = seen.union(currentIds)
+            // Present oldest-first so the newest message ends up on top of the stack.
+            for header in fresh.reversed() {
+                presentNotification(header, accountId: session.account.id)
+            }
+        }
+    }
+
+    private func presentNotification(_ header: MessageHeader, accountId: String) {
+        guard !notifications.contains(where: { $0.id == header.id }) else { return }
+        notifications.insert(MailNotification(header: header, accountId: accountId), at: 0)
+        if notifications.count > Self.maxNotifications {
+            notifications.removeLast(notifications.count - Self.maxNotifications)
+        }
+        syncNotificationPanel()
+        // Auto-dismiss the card after a few seconds (unless the user starts a reply).
+        dismissTasks[header.id] = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.autoDismissSeconds))
+            guard !Task.isCancelled else { return }
+            self?.dismissNotification(header.id)
+        }
+    }
+
+    func dismissNotification(_ id: String) {
+        cancelAutoDismiss(id)
+        notifications.removeAll { $0.id == id }
+        syncNotificationPanel()
+    }
+
+    /// Stops a card's auto-dismiss timer — called when the user opens its reply
+    /// editor so it doesn't disappear while they're typing.
+    func cancelAutoDismiss(_ id: String) {
+        dismissTasks[id]?.cancel()
+        dismissTasks[id] = nil
+    }
+
+    /// Sends a quick plain-text reply to a popup's message via the account that
+    /// received it (not necessarily the currently-selected one).
+    func sendQuickReply(_ note: MailNotification, text: String) async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let session = sessions.first(where: { $0.account.id == note.accountId }) else { return }
+        let header = note.header
+        let subject = header.subject.hasPrefix("Re:") ? header.subject : "Re: \(header.subject)"
+        let mime = MIMEBuilder.buildHTML(
+            from: session.account.email, to: header.from.email, cc: "",
+            subject: subject, html: quickReplyHTML(text: trimmed, replyingTo: header), attachments: []
+        )
+        do {
+            try await session.provider.send(rawMIME: mime)
+            contactStore.record([header.from])
+            dismissNotification(note.id)
+        } catch {
+            errorMessage = "Couldn’t send reply: \(error.localizedDescription)"
+        }
+    }
+
+    /// The typed reply followed by a simple attribution + snippet quote of the
+    /// original (the popup quotes the list snippet rather than fetching the full body).
+    private func quickReplyHTML(text: String, replyingTo header: MessageHeader) -> String {
+        let typed = escape(text).replacingOccurrences(of: "\n", with: "<br>")
+        let quoted = """
+        <p>On \(header.date.mailFullString), \(escape(header.from.display)) &lt;\(escape(header.from.email))&gt; wrote:</p>
+        <blockquote style="margin:0 0 0 8px;padding-left:10px;border-left:2px solid #ccc">
+        <p>\(escape(header.snippet))</p>
+        </blockquote>
+        """
+        return "<html><head><meta charset=\"utf-8\"></head><body><p>\(typed)</p><br>\(quoted)</body></html>"
+    }
+
+    private func syncNotificationPanel() {
+        if notifications.isEmpty { notificationPanel?.hide() }
+        else { notificationPanel?.show() }
+    }
+
     // MARK: - Calendar invites
 
     private var currentAccountIsGmail: Bool {
@@ -1193,6 +1308,13 @@ final class MailboxViewModel {
             }
         }
     }
+}
+
+/// A newly-arrived message shown as a top-right popup card.
+struct MailNotification: Identifiable, Hashable {
+    let header: MessageHeader
+    let accountId: String
+    var id: String { header.id }
 }
 
 enum ActiveSheet: Identifiable {
