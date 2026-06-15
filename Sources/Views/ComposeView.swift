@@ -25,27 +25,22 @@ struct ComposeView: View {
             Divider()
             formattingBar
             RichTextEditor(controller: rich)
-                .frame(minHeight: 240)
+                .frame(minHeight: 160)
             if !attachments.isEmpty || loadingAttachments {
                 Divider()
                 attachmentBar
             }
-        }
-        .frame(width: 640, height: 560)
-        .onAppear {
             if !request.quotedHTML.isEmpty {
-                // Render the original message as a rich preview in the editable body.
-                let wrapped = "<br><br>\(request.quotedHTML)"
-                if let data = wrapped.data(using: .utf8),
-                   let attr = try? NSAttributedString(
-                       data: data,
-                       options: [.documentType: NSAttributedString.DocumentType.html,
-                                 .characterEncoding: String.Encoding.utf8.rawValue],
-                       documentAttributes: nil
-                   ) {
-                    rich.setInitial(attr)
-                }
-            } else if !request.body.isEmpty {
+                Divider()
+                quotedPreview
+            }
+        }
+        .frame(width: 640, height: request.quotedHTML.isEmpty ? 560 : 680)
+        .onAppear {
+            // The quoted original is no longer dropped into the editor (the HTML
+            // round-trip degraded its formatting). It's shown read-only below and
+            // appended verbatim at send time; the editor holds only the new reply.
+            if !request.body.isEmpty {
                 rich.setInitial(NSAttributedString(
                     string: request.body,
                     attributes: [.font: NSFont.systemFont(ofSize: NSFont.systemFontSize)]
@@ -74,7 +69,7 @@ struct ComposeView: View {
             Button("Cancel") { dismiss() }
             Button {
                 sending = true
-                let html = rich.exportHTML()
+                let html = composedHTML()
                 Task {
                     await vm.sendComposed(
                         to: request.to, cc: request.cc, subject: request.subject,
@@ -164,6 +159,28 @@ struct ComposeView: View {
             .padding(.horizontal, 12)
         }
         .frame(height: 36)
+    }
+
+    /// Read-only, faithful render of the original message that will be quoted. It
+    /// is not editable (so its formatting can't be degraded); it's appended exactly
+    /// as-is when sending.
+    private var quotedPreview: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(request.kind == .forward ? "Forwarded message" : "Original message")
+                .font(.caption).foregroundStyle(.secondary)
+                .padding(.horizontal, 12).padding(.top, 6)
+            HTMLView(html: request.quotedHTML)
+                .frame(height: 180)
+        }
+    }
+
+    /// The reply the user typed, followed by the original message appended verbatim
+    /// so its formatting (and inline images) survive intact.
+    private func composedHTML() -> String {
+        let userHTML = rich.exportHTML()
+        guard !request.quotedHTML.isEmpty else { return userHTML }
+        let userInner = PlainTextHTML.bodyFragment(userHTML)
+        return "<html><head><meta charset=\"utf-8\"></head><body>\(userInner)\(request.quotedHTML)</body></html>"
     }
 
     private var linkPrompt: some View {

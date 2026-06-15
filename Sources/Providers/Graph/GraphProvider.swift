@@ -259,35 +259,36 @@ final class GraphProvider: MailProvider {
         let contentType = (msg.body?.contentType ?? "").lowercased()
         let content = msg.body?.content ?? ""
 
-        let html: String
-        let plain: String
-        if contentType == "html" {
-            html = content
-            plain = msg.bodyPreview ?? ""
-        } else {
-            plain = content
-            html = PlainTextHTML.render(content)
-        }
+        let rawHTML = contentType == "html" ? content : ""
+        let plain = contentType == "html" ? (msg.bodyPreview ?? "") : content
 
         var attachments: [MailAttachment] = []
+        var images: [InlineImage] = []
         if msg.hasAttachments == true {
             let aData = try await request("messages/\(id)/attachments", query: [
-                URLQueryItem(name: "$select", value: "id,name,contentType,size,isInline")
+                URLQueryItem(name: "$select", value: "id,name,contentType,size,isInline,contentId")
             ])
             let list = try JSONDecoder().decode(GraphAPI.AttachmentList.self, from: aData)
-            attachments = list.value
-                .filter { !($0.isInline ?? false) }
-                .map {
-                    MailAttachment(
-                        id: $0.id,
-                        messageId: id,
-                        filename: $0.name ?? "attachment",
-                        mimeType: $0.contentType ?? "application/octet-stream",
-                        sizeBytes: $0.size ?? 0
-                    )
+            for att in list.value {
+                let mime = att.contentType ?? "application/octet-stream"
+                if mime.lowercased().hasPrefix("image/"), let bytes = try? await fetchAttachment(messageId: id, attachmentId: att.id) {
+                    // Inline (cid:) and standalone images both get embedded/previewed.
+                    let cid = att.contentId?.trimmingCharacters(in: CharacterSet(charactersIn: "<> "))
+                    images.append(InlineImage(
+                        cid: (cid?.isEmpty ?? true) ? nil : cid,
+                        mime: mime, data: bytes, filename: att.name ?? "image", attachmentId: att.id
+                    ))
+                } else if !(att.isInline ?? false) {
+                    attachments.append(MailAttachment(
+                        id: att.id, messageId: id, filename: att.name ?? "attachment",
+                        mimeType: mime, sizeBytes: att.size ?? 0
+                    ))
                 }
+            }
         }
-        return MessageBody(headerId: id, html: html, plainText: plain, attachments: attachments)
+        let assembled = BodyHTML.assemble(rawHTML: rawHTML, plainText: plain, images: images, messageId: id)
+        return MessageBody(headerId: id, html: assembled.html, plainText: plain,
+                           attachments: attachments + assembled.imageAttachments)
     }
 
     func fetchAttachment(messageId: String, attachmentId: String) async throws -> Data {
@@ -298,6 +299,28 @@ final class GraphProvider: MailProvider {
             throw MailError.other("Attachment is unavailable.")
         }
         return bytes
+    }
+
+    /// Casts the folder's message collection to the `eventMessage` derived type, so
+    /// the server returns only meeting requests/cancellations/responses — no body fetch.
+    func calendarInviteIds(folderId: String) async throws -> Set<String> {
+        var ids: Set<String> = []
+        var nextURL: URL? = nil
+        repeat {
+            let data: Data
+            if let nextURL {
+                data = try await request("", absoluteURL: nextURL)
+            } else {
+                data = try await request("mailFolders/\(folderId)/messages/microsoft.graph.eventMessage", query: [
+                    URLQueryItem(name: "$select", value: "id"),
+                    URLQueryItem(name: "$top", value: "100"),
+                ])
+            }
+            let list = try JSONDecoder().decode(GraphAPI.MessageList.self, from: data)
+            ids.formUnion(list.value.map(\.id))
+            nextURL = list.nextLink.flatMap { URL(string: $0) }
+        } while nextURL != nil
+        return ids
     }
 
     // MARK: - Mutations
@@ -327,6 +350,10 @@ final class GraphProvider: MailProvider {
 
     func move(ids: [String], toFolderId: String, fromFolderId: String?) async throws {
         try await moveAll(ids: ids, to: toFolderId)
+    }
+
+    func markNotSpam(ids: [String]) async throws {
+        try await moveAll(ids: ids, to: "inbox")
     }
 
     private func moveAll(ids: [String], to destination: String) async throws {

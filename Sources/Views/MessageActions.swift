@@ -134,6 +134,10 @@ struct MessageContextMenu: View {
             Button("Reply All") { vm.selection = Set(ids); vm.startReply(all: true) }
             Button("Forward") { vm.selection = Set(ids); vm.startForward() }
             Divider()
+            if vm.currentFolder?.kind == .junk {
+                Button("Mark as Not Spam") { Task { await vm.markNotSpam(ids) } }
+                Divider()
+            }
             Button("Mark Read") { Task { await vm.markRead(ids, read: true) } }
             Button("Mark Unread") { Task { await vm.markRead(ids, read: false) } }
             Button("Flag") { Task { await vm.toggleFlag(ids) } }

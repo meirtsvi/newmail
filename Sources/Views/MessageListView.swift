@@ -141,14 +141,19 @@ struct MessageListView: View {
 
     @TableColumnBuilder<MessageHeader, KeyPathComparator<MessageHeader>>
     private var columns: some TableColumnContent<MessageHeader, KeyPathComparator<MessageHeader>> {
-        TableColumn("", value: \MessageHeader.readSort) { msg in unreadCell(msg) }
-            .width(16)
+        TableColumn(Text("\(Image(systemName: "circle.fill"))").font(.caption2),
+                    value: \MessageHeader.readSort) { msg in unreadCell(msg) }
+            .width(18)
         TableColumn(Text("\(Image(systemName: "flag.fill"))").font(.body),
                     value: \MessageHeader.flagSort) { msg in flagCell(msg) }
             .width(24)
         TableColumn(Text("\(Image(systemName: "paperclip"))").font(.body),
                     value: \MessageHeader.attachmentSort) { msg in attachmentCell(msg) }
             .width(24)
+        TableColumn(Text("\(Image(systemName: "calendar"))").font(.body),
+                    value: \MessageHeader.calendarSort) { msg in calendarCell(msg) }
+            .width(24)
+            .customizationID("calendar")
         TableColumn("From", value: \MessageHeader.from.display) { msg in fromCell(msg) }
             .width(min: 120, ideal: 240)
             .customizationID("from")
@@ -243,6 +248,15 @@ struct MessageListView: View {
         Group {
             if msg.hasAttachments {
                 Image(systemName: "paperclip").foregroundStyle(.secondary).help("Has attachment")
+            }
+        }
+        .modifier(rowInteraction(msg))
+    }
+
+    private func calendarCell(_ msg: MessageHeader) -> some View {
+        Group {
+            if vm.isCalendarEvent(msg.id) {
+                Image(systemName: "calendar").foregroundStyle(.secondary).help("Calendar event")
             }
         }
         .modifier(rowInteraction(msg))

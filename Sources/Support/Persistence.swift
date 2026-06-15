@@ -147,12 +147,17 @@ final class CachedBody {
     var html: String
     var plainText: String
     var attachmentsJSON: String
+    /// Whether this message carries a calendar invitation (drives the list's
+    /// calendar-event column). Defaulted so the additive schema change migrates
+    /// in place without discarding the cache.
+    var isCalendar: Bool = false
 
-    init(id: String, html: String, plainText: String, attachmentsJSON: String) {
+    init(id: String, html: String, plainText: String, attachmentsJSON: String, isCalendar: Bool = false) {
         self.id = id
         self.html = html
         self.plainText = plainText
         self.attachmentsJSON = attachmentsJSON
+        self.isCalendar = isCalendar
     }
 }
 

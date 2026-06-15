@@ -128,11 +128,15 @@ struct MessageHeader: Identifiable, Hashable {
     var hasAttachments: Bool
     var labelIds: [String]
     var accountId: String = ""
+    /// Whether this message is a calendar invitation. Derived at runtime from the
+    /// view model's invite set (not from the provider), so the column can sort.
+    var isCalendarEvent: Bool = false
 
     // Comparable sort keys for boolean columns (Bool isn't Comparable).
     var readSort: Int { isRead ? 1 : 0 }
     var flagSort: Int { isFlagged ? 1 : 0 }
     var attachmentSort: Int { hasAttachments ? 1 : 0 }
+    var calendarSort: Int { isCalendarEvent ? 1 : 0 }
 }
 
 struct MailAttachment: Identifiable, Hashable, Codable {

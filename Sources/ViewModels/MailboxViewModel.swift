@@ -24,6 +24,8 @@ final class MailboxViewModel {
     let contactStore = ContactStore()
     let accountStore = AccountStore()
     private var refreshTimer: Timer?
+    /// Background pass that flags the current folder's calendar invites.
+    private var calendarScanTask: Task<Void, Never>?
 
     // Accounts / folders
     private(set) var sessions: [Session] = []
@@ -58,6 +60,9 @@ final class MailboxViewModel {
     // Message list
     var messages: [MessageHeader] = []
     var selection: Set<String> = []
+    /// Message ids known to be calendar invitations (drives the calendar column).
+    /// Populated lazily from cached bodies and as bodies are fetched this session.
+    var calendarMessageIds: Set<String> = []
     var sortOrder: [KeyPathComparator<MessageHeader>] = [
         .init(\MessageHeader.date, order: .reverse)
     ]
@@ -115,11 +120,71 @@ final class MailboxViewModel {
                 return a.date > b.date
             }
         }
+        if let primary = sortOrder.first, primary.keyPath == \MessageHeader.calendarSort {
+            let eventsFirst = primary.order == .forward
+            return messages.sorted { a, b in
+                if a.isCalendarEvent != b.isCalendarEvent {
+                    return eventsFirst ? a.isCalendarEvent : b.isCalendarEvent
+                }
+                return a.date > b.date
+            }
+        }
         return messages.sorted(using: sortOrder)
     }
 
     var selectedHeaders: [MessageHeader] {
         messages.filter { selection.contains($0.id) }
+    }
+
+    /// Whether the message is a known calendar invitation.
+    func isCalendarEvent(_ id: String) -> Bool { calendarMessageIds.contains(id) }
+
+    /// Remembers a fetched body's calendar status so the column updates as soon as
+    /// a message is opened (and across launches via the cache).
+    private func noteCalendar(_ body: MessageBody) {
+        if body.calendar != nil {
+            calendarMessageIds.insert(body.headerId)
+            applyCalendarFlags()
+        }
+    }
+
+    /// Hydrates the calendar-event set from already-cached bodies for the listed ids.
+    private func hydrateCalendarIds() {
+        calendarMessageIds.formUnion(store.calendarMessageIds(among: messages.map(\.id)))
+        applyCalendarFlags()
+    }
+
+    /// Mirrors the invite set onto the loaded headers so the calendar column reads
+    /// and (when sorted) orders correctly.
+    private func applyCalendarFlags() {
+        for i in messages.indices {
+            let isEvent = calendarMessageIds.contains(messages[i].id)
+            if messages[i].isCalendarEvent != isEvent { messages[i].isCalendarEvent = isEvent }
+        }
+    }
+
+    /// Background pass: asks the provider which messages in the folder are invites
+    /// and flags the column for the whole list (cancelled/superseded on folder change).
+    private func scanCalendarEvents(for folder: MailFolder) {
+        calendarScanTask?.cancel()
+        guard let provider = currentProvider else { return }
+        let folderId = folder.id
+        let accountId = folder.accountId
+        calendarScanTask = Task { [weak self] in
+            guard let ids = try? await provider.calendarInviteIds(folderId: folderId) else { return }
+            guard let self, !Task.isCancelled,
+                  self.currentFolder?.id == folderId, self.currentAccountId == accountId else { return }
+            self.calendarMessageIds.formUnion(ids)
+            self.applyCalendarFlags()
+        }
+    }
+
+    /// Sums unread in every account's inbox and reflects it on the Dock icon.
+    private func updateDockBadge() {
+        let unread = sessions.reduce(0) { sum, session in
+            sum + (foldersByAccount[session.account.id]?.first { $0.kind == .inbox }?.unreadCount ?? 0)
+        }
+        NSApplication.shared.dockTile.badgeLabel = unread > 0 ? "\(unread)" : nil
     }
 
     // MARK: - Bootstrap & accounts
@@ -205,6 +270,7 @@ final class MailboxViewModel {
         foldersByAccount[session.account.id] = folders
         store.saveFolders(folders, accountId: session.account.id)
         recomputeFavorites()
+        updateDockBadge()
     }
 
     private func startSnooze(for session: Session) {
@@ -433,6 +499,8 @@ final class MailboxViewModel {
         searchText = ""
         isSearching = false
         messages = store.cachedHeaders(folderId: folder.id, accountId: folder.accountId)
+        hydrateCalendarIds()
+        scanCalendarEvents(for: folder)
         await loadMessages()
         await refreshCurrentFolderCount()
     }
@@ -454,6 +522,7 @@ final class MailboxViewModel {
             foldersByAccount[folder.accountId]?[i].unreadCount = count.unread
             foldersByAccount[folder.accountId]?[i].totalCount = count.total
         }
+        updateDockBadge()
     }
 
     // MARK: - Message loading
@@ -473,6 +542,7 @@ final class MailboxViewModel {
             messages = result.headers
             nextPageToken = result.nextPageToken
             store.saveHeaders(result.headers)
+            hydrateCalendarIds()
             recordContacts(from: result.headers, folder: folder)
 
             // Keep paging until we hit the target or run out of mail. Bail if the
@@ -505,6 +575,7 @@ final class MailboxViewModel {
             messages.append(contentsOf: result.headers)
             nextPageToken = result.nextPageToken
             store.saveHeaders(result.headers)
+            hydrateCalendarIds()
             recordContacts(from: result.headers, folder: folder)
             statusMessage = nil
         } catch {
@@ -517,6 +588,7 @@ final class MailboxViewModel {
         if let session = sessions.first(where: { $0.account.id == currentAccountId }) {
             try? await loadFolders(for: session)
         }
+        if let folder = currentFolder { scanCalendarEvents(for: folder) }
         await refreshCurrentFolderCount()
     }
 
@@ -534,6 +606,7 @@ final class MailboxViewModel {
         do {
             let body = try await provider.fetchBody(id: id)
             store.saveBody(body)
+            noteCalendar(body)
             // Ignore a late network result if the user has moved to another message.
             if selection.count == 1, selection.first == id {
                 currentBody = body
@@ -565,7 +638,10 @@ final class MailboxViewModel {
             prefetchingBodies.insert(nid)
             Task {
                 defer { prefetchingBodies.remove(nid) }
-                if let body = try? await provider.fetchBody(id: nid) { store.saveBody(body) }
+                if let body = try? await provider.fetchBody(id: nid) {
+                    store.saveBody(body)
+                    noteCalendar(body)
+                }
             }
         }
     }
@@ -589,6 +665,7 @@ final class MailboxViewModel {
                 let body = try await provider.fetchBody(id: id)
                 modalBody = body
                 store.saveBody(body)
+                noteCalendar(body)
                 await loadInviteContextIfNeeded(headerId: id, body: body)
             } catch {
                 if modalBody == nil { errorMessage = error.localizedDescription }
@@ -691,6 +768,12 @@ final class MailboxViewModel {
         if currentFolder?.kind == .inbox { removeLocal(ids: ids) }
     }
 
+    /// Junk-folder action: removes the messages from Spam and files them in the Inbox.
+    func markNotSpam(_ ids: [String]) async {
+        await withProvider { try await $0.markNotSpam(ids: ids) }
+        removeLocal(ids: ids)
+    }
+
     func move(_ ids: [String], to folder: MailFolder) async {
         await withProvider {
             try await $0.move(ids: ids, toFolderId: folder.id, fromFolderId: self.currentFolder?.id)
@@ -788,15 +871,18 @@ final class MailboxViewModel {
         guard let provider = currentProvider else { return nil }
         if let body = try? await provider.fetchBody(id: header.id) {
             store.saveBody(body)
+            noteCalendar(body)
             return body
         }
         return nil
     }
 
     /// The original content to quote: HTML when present, else plain text, else the
-    /// list snippet as a last resort.
+    /// list snippet as a last resort. The HTML is carried through verbatim (only the
+    /// `<body>` fragment is taken so it nests cleanly), preserving the original
+    /// formatting — including inline images, which `fetchBody` has already embedded.
     private func quotedBody(_ body: MessageBody?, fallbackSnippet snippet: String) -> String {
-        if let html = body?.html, !html.isEmpty { return html }
+        if let html = body?.html, !html.isEmpty { return PlainTextHTML.bodyFragment(html) }
         if let text = body?.plainText, !text.isEmpty {
             return "<p>\(escape(text).replacingOccurrences(of: "\n", with: "<br>"))</p>"
         }

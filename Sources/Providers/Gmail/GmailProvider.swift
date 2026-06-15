@@ -235,9 +235,18 @@ final class GmailProvider: MailProvider {
         var icsAttachmentId: String?
         var attachments: [MailAttachment] = []
 
+        // Image parts (inline or standalone): captured separately so we can fetch
+        // their bytes and either embed them (cid:) or preview them below the body.
+        struct ImagePart { var attachmentId: String?; var inlineData: Data?; var mime: String; var cid: String?; var filename: String }
+        var imageParts: [ImagePart] = []
+
         func isCalendar(_ mime: String, _ filename: String) -> Bool {
             mime.hasPrefix("text/calendar") || mime == "application/ics"
                 || filename.lowercased().hasSuffix(".ics")
+        }
+
+        func headerValue(_ part: GmailAPI.Part, _ name: String) -> String? {
+            part.headers?.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }?.value
         }
 
         func walk(_ part: GmailAPI.Part?) {
@@ -253,6 +262,16 @@ final class GmailProvider: MailProvider {
                 } else if let attId = part.body?.attachmentId, icsAttachmentId == nil {
                     icsAttachmentId = attId
                 }
+            } else if mime.hasPrefix("image/"), part.body?.attachmentId != nil || part.body?.data != nil {
+                let rawCID = headerValue(part, "Content-ID") ?? headerValue(part, "X-Attachment-Id")
+                let cid = rawCID?.trimmingCharacters(in: CharacterSet(charactersIn: "<> "))
+                imageParts.append(ImagePart(
+                    attachmentId: part.body?.attachmentId,
+                    inlineData: part.body?.data.flatMap(Self.decodeBase64URL),
+                    mime: part.mimeType ?? "image/png",
+                    cid: (cid?.isEmpty ?? true) ? nil : cid,
+                    filename: filename
+                ))
             } else if !filename.isEmpty, let attId = part.body?.attachmentId {
                 attachments.append(MailAttachment(
                     id: attId,
@@ -276,11 +295,26 @@ final class GmailProvider: MailProvider {
             ics = String(decoding: data, as: UTF8.self)
         }
 
-        if html.isEmpty, !text.isEmpty {
-            html = PlainTextHTML.render(text)
+        // Pull the bytes for each image part, then embed/preview them.
+        var images: [InlineImage] = []
+        for part in imageParts {
+            let data: Data?
+            if let inline = part.inlineData {
+                data = inline
+            } else if let attId = part.attachmentId {
+                data = try? await fetchAttachmentData(messageId: id, attachmentId: attId)
+            } else {
+                data = nil
+            }
+            guard let data else { continue }
+            images.append(InlineImage(cid: part.cid, mime: part.mime, data: data,
+                                      filename: part.filename, attachmentId: part.attachmentId))
         }
+
+        let assembled = BodyHTML.assemble(rawHTML: html, plainText: text, images: images, messageId: id)
         let invite = ics.isEmpty ? nil : ICSParser.parse(ics)
-        return MessageBody(headerId: id, html: html, plainText: text, attachments: attachments, calendar: invite)
+        return MessageBody(headerId: id, html: assembled.html, plainText: text,
+                           attachments: attachments + assembled.imageAttachments, calendar: invite)
     }
 
     /// Downloads and decodes a single attachment's bytes (used to read an
@@ -296,6 +330,26 @@ final class GmailProvider: MailProvider {
             throw MailError.other("Attachment is unavailable.")
         }
         return data
+    }
+
+    /// Matches invites carrying an `.ics` attachment (the common Google Calendar
+    /// case) with a single paged listing — no per-message body fetch.
+    func calendarInviteIds(folderId: String) async throws -> Set<String> {
+        var ids: Set<String> = []
+        var pageToken: String?
+        repeat {
+            var items = [
+                URLQueryItem(name: "maxResults", value: "500"),
+                URLQueryItem(name: "labelIds", value: folderId),
+                URLQueryItem(name: "q", value: "filename:ics"),
+            ]
+            if let pageToken { items.append(URLQueryItem(name: "pageToken", value: pageToken)) }
+            let data = try await request("messages", query: items)
+            let list = try JSONDecoder().decode(GmailAPI.MessagesList.self, from: data)
+            ids.formUnion((list.messages ?? []).map(\.id))
+            pageToken = list.nextPageToken
+        } while pageToken != nil
+        return ids
     }
 
     // MARK: - Mutations (require write scope)
@@ -326,6 +380,10 @@ final class GmailProvider: MailProvider {
         for id in ids {
             _ = try await request("messages/\(id)/trash", method: "POST")
         }
+    }
+
+    func markNotSpam(ids: [String]) async throws {
+        try await batchModify(ids: ids, add: ["INBOX"], remove: ["SPAM"])
     }
 
     private func batchModify(ids: [String], add: [String], remove: [String]) async throws {

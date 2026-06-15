@@ -58,12 +58,14 @@ struct HTMLView: NSViewRepresentable {
             decidePolicyFor navigationAction: WKNavigationAction,
             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
         ) {
-            // Allow the initial in-memory HTML load; route real navigations out.
+            // Open only links the user actually clicks in the default browser.
+            // Everything else — the initial in-memory load, and subframe loads such
+            // as embedded YouTube/video iframes — must render inline; opening those
+            // would launch the browser the moment a message with an embed is viewed.
             guard let url = navigationAction.request.url else {
                 decisionHandler(.allow); return
             }
-            let isWebLink = url.scheme == "http" || url.scheme == "https" || url.scheme == "mailto"
-            if navigationAction.navigationType == .linkActivated || isWebLink {
+            if navigationAction.navigationType == .linkActivated {
                 NSWorkspace.shared.open(url)
                 decisionHandler(.cancel)
                 return

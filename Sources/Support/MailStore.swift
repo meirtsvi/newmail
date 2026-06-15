@@ -159,14 +159,26 @@ final class MailStore {
     func saveBody(_ body: MessageBody) {
         let attachmentsJSON = (try? JSONEncoder().encode(body.attachments)).map { String(decoding: $0, as: UTF8.self) } ?? "[]"
         let id = body.headerId
+        let isCalendar = body.calendar != nil
         if let row = try? context.fetch(FetchDescriptor<CachedBody>(predicate: #Predicate { $0.id == id })).first {
             row.html = body.html
             row.plainText = body.plainText
             row.attachmentsJSON = attachmentsJSON
+            row.isCalendar = isCalendar
         } else {
-            context.insert(CachedBody(id: id, html: body.html, plainText: body.plainText, attachmentsJSON: attachmentsJSON))
+            context.insert(CachedBody(id: id, html: body.html, plainText: body.plainText,
+                                      attachmentsJSON: attachmentsJSON, isCalendar: isCalendar))
         }
         try? context.save()
+    }
+
+    /// Of the given message ids, those whose cached body is a calendar invitation.
+    func calendarMessageIds(among ids: [String]) -> Set<String> {
+        guard !ids.isEmpty else { return [] }
+        let rows = (try? context.fetch(
+            FetchDescriptor<CachedBody>(predicate: #Predicate { ids.contains($0.id) && $0.isCalendar })
+        )) ?? []
+        return Set(rows.map(\.id))
     }
 
     // MARK: Mapping

@@ -77,6 +77,8 @@ enum GraphAPI {
         var contentType: String?
         var size: Int?
         var isInline: Bool?
+        var contentId: String?
+        var contentBytes: String?
     }
 
     struct AttachmentList: Codable {
