@@ -82,7 +82,7 @@ struct ComposeView: View {
                 if sending { ProgressView().controlSize(.small) }
                 else { Label("Send", systemImage: "paperplane.fill") }
             }
-            .keyboardShortcut("d", modifiers: .command)
+            .keyboardShortcut(.return, modifiers: .command)
             .disabled(request.to.isEmpty || sending || loadingAttachments)
         }
         .padding()
