@@ -584,12 +584,54 @@ final class MailboxViewModel {
     }
 
     func reloadCurrentFolder() async {
-        if isSearching { await runSearch() } else { await loadMessages() }
+        // An auto/periodic refresh must not disturb what the user is looking at:
+        //  - while searching, leave the result list alone — re-running the search
+        //    would replace it (briefly flashing folder mail) and reset scroll;
+        //  - otherwise merge fresh mail in place so scroll position is preserved.
+        if !isSearching {
+            await refreshMessages()
+        }
         if let session = sessions.first(where: { $0.account.id == currentAccountId }) {
             try? await loadFolders(for: session)
         }
-        if let folder = currentFolder { scanCalendarEvents(for: folder) }
+        if !isSearching, let folder = currentFolder { scanCalendarEvents(for: folder) }
         await refreshCurrentFolderCount()
+    }
+
+    /// In-place refresh used by the periodic timer and manual sync: updates the
+    /// headers already on screen and prepends any new mail without rebuilding the
+    /// list, so the scroll position is preserved. (A full `loadMessages` momentarily
+    /// shrinks the list to the first page, which snaps the table back to the top.)
+    private func refreshMessages() async {
+        guard let folder = currentFolder, let provider = currentProvider else { return }
+        do {
+            let result = try await provider.listMessages(folderId: folder.id, query: nil, pageToken: nil)
+            // Bail if the user navigated away or started a search meanwhile.
+            guard currentFolder?.id == folder.id, !isSearching else { return }
+            mergeFresh(result.headers)
+            store.saveHeaders(result.headers)
+            recordContacts(from: result.headers, folder: folder)
+            hydrateCalendarIds()
+            statusMessage = nil
+        } catch {
+            statusMessage = "Couldn’t refresh \(folder.name): \(error.localizedDescription)"
+        }
+    }
+
+    /// Merges a freshly fetched first page into `messages`: updates the fields of
+    /// messages still present (read/flag/…) and prepends genuinely new mail, leaving
+    /// already-loaded older messages — and the array's order/identity — intact.
+    private func mergeFresh(_ fresh: [MessageHeader]) {
+        let freshById = Dictionary(fresh.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        for i in messages.indices {
+            guard var updated = freshById[messages[i].id] else { continue }
+            // Keep the runtime-derived calendar flag (not part of list metadata).
+            updated.isCalendarEvent = messages[i].isCalendarEvent
+            if updated != messages[i] { messages[i] = updated }
+        }
+        let existingIds = Set(messages.map(\.id))
+        let additions = fresh.filter { !existingIds.contains($0.id) }
+        if !additions.isEmpty { messages.insert(contentsOf: additions, at: 0) }
     }
 
     func openMessage(_ id: String) async {
