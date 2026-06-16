@@ -47,7 +47,6 @@ private struct MailNotificationCard: View {
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .lineLimit(3)
-                            .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 0)
                 }
@@ -66,6 +65,12 @@ private struct MailNotificationCard: View {
             } else {
                 HStack {
                     Spacer()
+                    Button(role: .destructive) {
+                        Task { await vm.deleteNotification(note) }
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                    .controlSize(.small)
                     Button {
                         vm.cancelAutoDismiss(note.id)
                         replying = true

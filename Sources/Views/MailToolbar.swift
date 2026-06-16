@@ -52,6 +52,12 @@ struct MailToolbar: ToolbarContent {
             .disabled(!hasSelection)
             .help("Delete (⌫)")
 
+            Button { Task { await vm.cleanupConversation() } } label: {
+                Label("Cleanup", systemImage: "wand.and.rays")
+            }
+            .disabled(vm.selection.count != 1 || vm.isCleaningUp)
+            .help("Cleanup")
+
             Menu {
                 MoveMenu(vm: vm, ids: ids)
             } label: {

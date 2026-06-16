@@ -75,6 +75,7 @@ enum ICSParser {
 
         var uid = "", summary = "", location = "", details = "", sequence = "0"
         var start: Date?, end: Date?, allDay = false
+        var durationSeconds: TimeInterval?
         var organizer: MailAddress?, organizerLine: String?
         var dtStartLine: String?, dtEndLine: String?
         var attendees: [MailAddress] = []
@@ -104,6 +105,8 @@ enum ICSParser {
                 start = parsed.date; allDay = parsed.allDay; dtStartLine = line
             case "DTEND" where inEvent:
                 end = parseDate(value: value, params: params).date; dtEndLine = line
+            case "DURATION" where inEvent:
+                durationSeconds = parseDuration(value)
             case "ORGANIZER" where inEvent:
                 organizer = address(value: value, params: params); organizerLine = line
             case "ATTENDEE" where inEvent:
@@ -111,6 +114,12 @@ enum ICSParser {
             default:
                 break
             }
+        }
+
+        // RFC 5545 allows DURATION in place of DTEND; derive the end so the
+        // timeline hatch spans the meeting's full length rather than a guessed default.
+        if end == nil, let s = start, let dur = durationSeconds {
+            end = s.addingTimeInterval(dur)
         }
 
         guard sawEvent else { return nil }
@@ -183,6 +192,36 @@ enum ICSParser {
             f.timeZone = params["TZID"].flatMap { TimeZone(identifier: $0) } ?? .current
         }
         return (f.date(from: value), false)
+    }
+
+    /// Parses an RFC 5545 DURATION value (`PT1H`, `PT30M`, `P1DT2H`, `P2W`, …) into
+    /// seconds. Months/years aren't valid in a duration, so `M` always means minutes.
+    private static func parseDuration(_ raw: String) -> TimeInterval? {
+        var s = raw.trimmingCharacters(in: .whitespaces).uppercased()
+        var sign = 1.0
+        if s.hasPrefix("-") { sign = -1; s.removeFirst() }
+        else if s.hasPrefix("+") { s.removeFirst() }
+        guard s.hasPrefix("P") else { return nil }
+        s.removeFirst()
+        var total = 0.0
+        var number = ""
+        var sawUnit = false
+        for ch in s {
+            if ch == "T" { continue }            // separates the date and time parts
+            if ch.isNumber { number.append(ch); continue }
+            guard let n = Double(number) else { return nil }
+            number = ""
+            sawUnit = true
+            switch ch {
+            case "W": total += n * 7 * 86_400
+            case "D": total += n * 86_400
+            case "H": total += n * 3_600
+            case "M": total += n * 60
+            case "S": total += n
+            default: return nil
+            }
+        }
+        return sawUnit ? sign * total : nil
     }
 
     private static func unescapeText(_ s: String) -> String {

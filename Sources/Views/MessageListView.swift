@@ -9,6 +9,11 @@ struct MessageListView: View {
     @State private var hoveredId: String?
     /// Anchor row for ⇧-click range selection (the last plainly/⌘-clicked row).
     @State private var selectionAnchor: String?
+    /// Drives keyboard focus onto the table. Because selection is set manually (the
+    /// cell-wide `.onDrag` swallows the mouse-down the Table would use to select and
+    /// focus itself), a click leaves the list unfocused — the row highlights gray and
+    /// arrow keys do nothing. Setting this on every click restores focus.
+    @FocusState private var tableFocused: Bool
     @State private var columnCustomization = TableColumnCustomization<MessageHeader>()
 
     private static let columnsKey = "messageColumnCustomization"
@@ -102,6 +107,7 @@ struct MessageListView: View {
         ) {
             columns
         }
+        .focused($tableFocused)
         .onAppear(perform: loadColumns)
         .onChange(of: columnCustomization) { _, value in saveColumns(value) }
         .contextMenu(forSelectionType: String.self) { ids in
@@ -218,6 +224,8 @@ struct MessageListView: View {
             vm.selection = [msg.id]
             selectionAnchor = msg.id
         }
+        // Take keyboard focus so the selection highlights blue and arrow keys work.
+        tableFocused = true
     }
 
     /// Ids of the displayed rows between two messages, inclusive (order-independent).

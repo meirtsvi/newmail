@@ -173,6 +173,13 @@ struct StatusBar: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .help(status)
+        } else if vm.isCleaningUp {
+            ProgressView().controlSize(.small)
+            Text("Cleaning up conversation…").foregroundStyle(.secondary)
+        } else if let result = vm.cleanupResult {
+            Image(systemName: "checkmark.circle")
+                .foregroundStyle(.secondary)
+            Text(result).foregroundStyle(.secondary).lineLimit(1)
         } else if vm.isLoading {
             ProgressView().controlSize(.small)
             Text("Updating…").foregroundStyle(.secondary)

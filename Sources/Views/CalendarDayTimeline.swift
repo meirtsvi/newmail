@@ -30,25 +30,24 @@ struct CalendarDayTimeline: View {
             }
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: true) {
-                    HStack(alignment: .top, spacing: 0) {
-                        hourGutter
-                        ZStack(alignment: .topLeading) {
-                            gridLines
-                            ForEach(packed, id: \.ev.id) { item in
-                                eventBlock(item, startOfDay: startOfDay)
-                            }
-                            if let s = inviteStart, let e = inviteEnd {
-                                inviteBand(start: s, end: e, startOfDay: startOfDay)
-                            }
+                    ZStack(alignment: .topLeading) {
+                        // Invite hatch sits behind the gutter labels.
+                        if let s = inviteStart, let e = inviteEnd {
+                            inviteBand(start: s, end: e, startOfDay: startOfDay)
                         }
-                        .background(widthReader)
+                        // Hour grid (gutter labels + lane separators) — defines height.
+                        hourGrid
+                        // Events overlaid on the lane.
+                        ForEach(packed, id: \.ev.id) { item in
+                            eventBlock(item, startOfDay: startOfDay)
+                        }
                     }
-                    .frame(height: 24 * hourHeight)
+                    .background(widthReader)
                 }
                 .onAppear {
                     if let s = inviteStart {
                         let hour = max(0, cal.component(.hour, from: s) - 1)
-                        withAnimation { proxy.scrollTo(hour, anchor: .top) }
+                        proxy.scrollTo(hour, anchor: .top)
                     }
                 }
             }
@@ -88,33 +87,32 @@ struct CalendarDayTimeline: View {
 
     // MARK: Grid
 
-    private var hourGutter: some View {
+    /// One row per hour: the bold gutter label plus the lane's top separator.
+    /// This single VStack defines the scroll content's height (24 × hourHeight),
+    /// so the timeline always starts at 00:00 and scrolls cleanly to 23:00.
+    private var hourGrid: some View {
         VStack(spacing: 0) {
             ForEach(0..<24, id: \.self) { hour in
-                Text(hourLabel(hour))
-                    .font(.caption2).foregroundStyle(.secondary)
-                    .frame(width: gutter, height: hourHeight, alignment: .topTrailing)
-                    .padding(.trailing, 4)
-                    .id(hour)
+                HStack(alignment: .top, spacing: 0) {
+                    Text(hourLabel(hour))
+                        .font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+                        .frame(width: gutter, height: hourHeight, alignment: .topTrailing)
+                        .padding(.trailing, 4)
+                    Divider().frame(maxWidth: .infinity, alignment: .top)
+                }
+                .frame(height: hourHeight)
+                .id(hour)
             }
         }
     }
 
-    private var gridLines: some View {
-        VStack(spacing: 0) {
-            ForEach(0..<24, id: \.self) { _ in
-                Divider().frame(maxWidth: .infinity, alignment: .top)
-                Spacer(minLength: 0)
-            }
-            .frame(height: hourHeight)
-        }
-    }
+    private var gutterWidth: CGFloat { gutter + 4 }
 
     private var widthReader: some View {
         GeometryReader { geo in
             Color.clear
-                .onAppear { laneWidth = geo.size.width }
-                .onChange(of: geo.size.width) { _, w in laneWidth = w }
+                .onAppear { laneWidth = max(1, geo.size.width - gutterWidth) }
+                .onChange(of: geo.size.width) { _, w in laneWidth = max(1, w - gutterWidth) }
         }
     }
 
@@ -127,21 +125,19 @@ struct CalendarDayTimeline: View {
             .lineLimit(3)
             .padding(.horizontal, 4).padding(.vertical, 2)
             .frame(width: colW - 2, height: max(16, height(item.ev.start, item.ev.end)), alignment: .topLeading)
-            .background(Color.secondary.opacity(0.18), in: RoundedRectangle(cornerRadius: 4))
-            .overlay(alignment: .leading) { Rectangle().fill(.secondary).frame(width: 2) }
-            .offset(x: CGFloat(item.col) * colW + 2, y: offset(item.ev.start, from: startOfDay))
+            .background(Color.blue.opacity(0.18), in: RoundedRectangle(cornerRadius: 4))
+            .overlay(alignment: .leading) { Rectangle().fill(Color.blue).frame(width: 2) }
+            .offset(x: gutterWidth + CGFloat(item.col) * colW + 2, y: offset(item.ev.start, from: startOfDay))
     }
 
     private func inviteBand(start: Date, end: Date, startOfDay: Date) -> some View {
-        RoundedRectangle(cornerRadius: 5)
-            .fill(Color.accentColor.opacity(0.22))
-            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [4, 2])))
-            .overlay(alignment: .topLeading) {
-                Text("This invite").font(.caption2.weight(.semibold)).foregroundStyle(Color.accentColor)
-                    .padding(.horizontal, 4).padding(.top, 2)
-            }
-            .frame(width: max(1, laneWidth - 4), height: max(18, height(start, end)))
-            .offset(x: 2, y: offset(start, from: startOfDay))
+        DiagonalStripes(spacing: 6, lineWidth: 2)
+            .stroke(Color.gray.opacity(0.45), lineWidth: 1.5)
+            .background(Color.gray.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 3))
+            .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(Color.gray.opacity(0.35), lineWidth: 1))
+            .frame(width: gutter, height: max(18, height(start, end)))
+            .offset(x: 0, y: offset(start, from: startOfDay))
     }
 
     // MARK: Geometry helpers
@@ -194,5 +190,26 @@ struct CalendarDayTimeline: View {
             i = j
         }
         return result
+    }
+}
+
+/// A repeating diagonal hatch pattern, used to mark the clicked event's slot
+/// without obscuring existing events with a title.
+private struct DiagonalStripes: Shape {
+    var spacing: CGFloat = 6
+    var lineWidth: CGFloat = 2
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let step = spacing + lineWidth
+        // Draw lines from bottom-left to top-right, sweeping across so the whole
+        // rect is covered regardless of its aspect ratio.
+        var x = -rect.height
+        while x < rect.width {
+            path.move(to: CGPoint(x: x, y: rect.height))
+            path.addLine(to: CGPoint(x: x + rect.height, y: 0))
+            x += step
+        }
+        return path
     }
 }

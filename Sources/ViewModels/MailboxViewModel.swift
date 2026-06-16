@@ -109,6 +109,9 @@ final class MailboxViewModel {
     var authMessage: String?
     var isSigningIn = false
     var hasWriteScope = true
+    // Conversation-cleanup progress and its transient result line in the status bar.
+    var isCleaningUp = false
+    var cleanupResult: String?
 
     init() {}
 
@@ -829,6 +832,80 @@ final class MailboxViewModel {
         removeLocal(ids: ids)
     }
 
+    /// Removes redundant messages in the selected message's conversation: any earlier
+    /// message whose content is quoted in full by the selected message (e.g. an
+    /// intermediate reply still sitting in the folder) is trashed. Reports the count
+    /// in the status bar and shows progress while it runs. Single-selection only.
+    func cleanupConversation() async {
+        guard selection.count == 1, let selectedId = selection.first,
+              let selected = messages.first(where: { $0.id == selectedId }) else { return }
+        isCleaningUp = true
+        cleanupResult = nil
+        defer { isCleaningUp = false }
+
+        guard let selectedBody = await ensureBody(for: selected) else {
+            setCleanupResult("Cleanup: couldn’t load the selected message.")
+            return
+        }
+        let target = canonicalContent(selectedBody)
+        guard target.count >= 8 else { setCleanupResult("Cleanup: nothing to compare."); return }
+
+        // Only messages in the same conversation can be quoted by this one; an older
+        // message that's a substring of the selected one is redundant.
+        let candidates = messages.filter {
+            $0.id != selectedId && $0.threadId == selected.threadId && $0.date <= selected.date
+        }
+        var toDelete: [String] = []
+        for cand in candidates {
+            guard let body = await ensureBody(for: cand) else { continue }
+            let content = canonicalContent(body)
+            guard content.count >= 8, content.count <= target.count else { continue }
+            if target.contains(content) { toDelete.append(cand.id) }
+        }
+
+        if toDelete.isEmpty {
+            setCleanupResult("Cleanup: no redundant messages found.")
+        } else {
+            await deleteMessages(toDelete)
+            let n = toDelete.count
+            setCleanupResult("Cleanup: deleted \(n) message\(n == 1 ? "" : "s").")
+        }
+    }
+
+    /// Shows a cleanup result in the status bar, auto-clearing after a few seconds.
+    private func setCleanupResult(_ message: String) {
+        cleanupResult = message
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(6))
+            if self?.cleanupResult == message { self?.cleanupResult = nil }
+        }
+    }
+
+    /// Normalizes a body to a comparable token stream: strips quote markers, collapses
+    /// whitespace, and lowercases — so a quoted copy matches the original regardless of
+    /// re-wrapping. Prefers the plain-text part, falling back to crudely stripped HTML.
+    private func canonicalContent(_ body: MessageBody) -> String {
+        let text = body.plainText.isEmpty ? Self.stripHTML(body.html) : body.plainText
+        return text
+            .replacingOccurrences(of: ">", with: " ")
+            .lowercased()
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    /// Crude tag strip for bodies with no plain-text part (drops style/script blocks
+    /// first so their contents don't leak into the comparison).
+    private static func stripHTML(_ html: String) -> String {
+        html.replacingOccurrences(of: "<style[^>]*>[\\s\\S]*?</style>", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "<script[^>]*>[\\s\\S]*?</script>", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "&nbsp;", with: " ")
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+    }
+
     func archiveMessages(_ ids: [String]) async {
         await withProvider { try await $0.archive(ids: ids) }
         if currentFolder?.kind == .inbox { removeLocal(ids: ids) }
@@ -1014,6 +1091,20 @@ final class MailboxViewModel {
             try? await Task.sleep(for: .seconds(Self.autoDismissSeconds))
             guard !Task.isCancelled else { return }
             self?.dismissNotification(header.id)
+        }
+    }
+
+    /// Trashes a popup's message via the account that received it (not necessarily
+    /// the currently-selected one) and closes the card.
+    func deleteNotification(_ note: MailNotification) async {
+        guard let session = sessions.first(where: { $0.account.id == note.accountId }) else { return }
+        do {
+            try await session.provider.trash(ids: [note.id])
+            // Reflect the removal in the list if that account's folder is on screen.
+            if currentAccountId == note.accountId { removeLocal(ids: [note.id]) }
+            dismissNotification(note.id)
+        } catch {
+            errorMessage = "Couldn’t delete message: \(error.localizedDescription)"
         }
     }
 
