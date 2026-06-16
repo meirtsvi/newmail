@@ -46,7 +46,8 @@ final class CalendarReminderService {
         tickTimer = tick
         Task {
             await refreshSchedule()
-            tick()
+            // `self.` disambiguates the method from the local `tick` timer above.
+            self.tick()
         }
     }
 

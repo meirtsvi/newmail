@@ -262,13 +262,14 @@ final class MailboxViewModel {
         )
         await pollInboxes()
         startPeriodicRefresh()
-        startCalendarReminders()
+        await startCalendarReminders()
     }
 
     /// Begins the background calendar-reminder scheduler for the Google account
     /// (no-op unless the token carries the calendar scope).
-    private func startCalendarReminders() {
-        guard reminderService == nil, (try? GoogleAuth.shared.hasCalendarScope) == true else { return }
+    private func startCalendarReminders() async {
+        guard reminderService == nil,
+              (try? await GoogleAuth.shared.hasCalendarScope) == true else { return }
         let service = CalendarReminderService()
         service.onFire = { [weak self] reminders in self?.presentReminders(reminders) }
         service.start()
