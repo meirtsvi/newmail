@@ -76,7 +76,10 @@ final class MailboxViewModel {
     /// Populated lazily from cached bodies and as bodies are fetched this session.
     var calendarMessageIds: Set<String> = []
     var sortOrder: [KeyPathComparator<MessageHeader>] = [
-        .init(\MessageHeader.date, order: .reverse)
+        .init(\MessageHeader.date, order: .reverse),
+        // Unique tiebreaker: see `stableComparators`. Keeping it in the bound
+        // sort order makes the Table's own click→row resolution unambiguous too.
+        .init(\MessageHeader.id)
     ]
     var nextPageToken: String?
 
@@ -132,7 +135,8 @@ final class MailboxViewModel {
                 if a.isFlagged != b.isFlagged {
                     return flaggedFirst ? a.isFlagged : b.isFlagged
                 }
-                return a.date > b.date
+                if a.date != b.date { return a.date > b.date }
+                return a.id < b.id
             }
         }
         if let primary = sortOrder.first, primary.keyPath == \MessageHeader.calendarSort {
@@ -141,10 +145,20 @@ final class MailboxViewModel {
                 if a.isCalendarEvent != b.isCalendarEvent {
                     return eventsFirst ? a.isCalendarEvent : b.isCalendarEvent
                 }
-                return a.date > b.date
+                if a.date != b.date { return a.date > b.date }
+                return a.id < b.id
             }
         }
-        return messages.sorted(using: sortOrder)
+        return messages.sorted(using: stableComparators)
+    }
+
+    /// The active sort with a unique `id` tiebreaker appended so no two rows ever
+    /// compare equal. Messages that share a sort value (e.g. the same timestamp)
+    /// are otherwise ambiguous to the Table, and a click can land on the wrong
+    /// tied row — selecting/opening a different message than the one clicked.
+    private var stableComparators: [KeyPathComparator<MessageHeader>] {
+        if sortOrder.contains(where: { $0.keyPath == \MessageHeader.id }) { return sortOrder }
+        return sortOrder + [KeyPathComparator(\MessageHeader.id)]
     }
 
     var selectedHeaders: [MessageHeader] {
@@ -776,11 +790,12 @@ final class MailboxViewModel {
 
     // MARK: - Search
 
-    /// Called when the search field is cleared (the X button): drop search mode
-    /// and reload the folder's message list.
+    /// Called when the user clears the search field (the X button or Escape):
+    /// empties the field, drops search mode, and reloads the folder's full
+    /// message list.
     func clearSearch() async {
-        guard isSearching else { return }
         isSearching = false
+        searchText = ""
         await loadMessages()
     }
 
@@ -828,8 +843,22 @@ final class MailboxViewModel {
     }
 
     func deleteMessages(_ ids: [String]) async {
-        await withProvider { try await $0.trash(ids: ids) }
+        guard let provider = currentProvider else {
+            errorMessage = "No account is selected."
+            return
+        }
+        // Remove from the list right away so deletion feels instant, then trash on
+        // the server in the background. `removeLocal` runs synchronously before the
+        // first `await`, so the UI updates immediately; if the trash fails we put
+        // the messages back and report the error.
+        let removed = messages.filter { ids.contains($0.id) }
         removeLocal(ids: ids)
+        do {
+            try await provider.trash(ids: ids)
+        } catch {
+            restoreLocal(removed)
+            errorMessage = "Couldn’t delete: \(error.localizedDescription)"
+        }
     }
 
     /// Removes redundant messages in the selected message's conversation: any earlier
@@ -1394,6 +1423,17 @@ final class MailboxViewModel {
         for i in messages.indices where set.contains(messages[i].id) {
             change(&messages[i])
         }
+    }
+
+    /// Re-inserts headers that were optimistically removed (e.g. a delete whose
+    /// server trash failed). The list's sort restores their display position; the
+    /// selection is left wherever it landed after the optimistic removal.
+    private func restoreLocal(_ headers: [MessageHeader]) {
+        let existing = Set(messages.map(\.id))
+        let toAdd = headers.filter { !existing.contains($0.id) }
+        guard !toAdd.isEmpty else { return }
+        messages.append(contentsOf: toAdd)
+        store.saveHeaders(toAdd)
     }
 
     private func removeLocal(ids: [String]) {

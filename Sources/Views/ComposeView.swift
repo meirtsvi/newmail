@@ -16,6 +16,9 @@ struct ComposeView: View {
     @State private var showImporter = false
     @State private var showLinkPrompt = false
     @State private var linkURL = ""
+    /// Shared keyboard focus across the To/Cc/Subject fields so Tab and Shift-Tab
+    /// move between them in order; the body editor is reached via `rich`.
+    @FocusState private var focus: ComposeField?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -37,6 +40,8 @@ struct ComposeView: View {
         }
         .frame(width: 640, height: request.quotedHTML.isEmpty ? 560 : 680)
         .onAppear {
+            // Shift-Tab out of the body editor returns to the Subject field.
+            rich.onShiftTab = { focus = .subject }
             // The quoted original is no longer dropped into the editor (the HTML
             // round-trip degraded its formatting). It's shown read-only below and
             // appended verbatim at send time; the editor holds only the new reply.
@@ -91,19 +96,31 @@ struct ComposeView: View {
     private var fields: some View {
         VStack(spacing: 8) {
             RecipientField(title: "To", text: $request.to,
-                           suggest: vm.contactSuggestions, focusOnAppear: true)
+                           suggest: vm.contactSuggestions, focus: $focus,
+                           field: .to, next: .cc, focusOnAppear: true)
             RecipientField(title: "Cc", text: $request.cc,
-                           suggest: vm.contactSuggestions)
+                           suggest: vm.contactSuggestions, focus: $focus,
+                           field: .cc, next: .subject, previous: .to)
             HStack(spacing: 8) {
                 Text("Subject")
                     .foregroundStyle(.secondary)
                     .frame(width: 52, alignment: .trailing)
                 TextField("", text: $request.subject)
                     .textFieldStyle(.roundedBorder)
-                    // Tab from the subject jumps straight to the body, skipping
-                    // the bold/italic/underline/link/attach buttons.
-                    .onKeyPress(.tab) {
-                        rich.focus()
+                    .focused($focus, equals: .subject)
+                    // Tab or Return from the subject jumps straight to the body,
+                    // skipping the bold/italic/underline/link/attach buttons;
+                    // Shift-Tab goes back to the Cc field.
+                    .onKeyPress(keys: [.tab], phases: .down) { press in
+                        if press.modifiers.contains(.shift) {
+                            focus = .cc
+                            return .handled
+                        }
+                        focusBody()
+                        return .handled
+                    }
+                    .onKeyPress(.return) {
+                        focusBody()
                         return .handled
                     }
             }
@@ -112,6 +129,14 @@ struct ComposeView: View {
         .padding(.vertical, 8)
         // Keep the autocomplete dropdown above the formatting bar and editor.
         .zIndex(1)
+    }
+
+    /// Moves keyboard focus from a compose field into the body editor. The SwiftUI
+    /// focus is released first, then the body is made first responder on the next
+    /// runloop — otherwise SwiftUI's focus pass runs afterwards and steals it back.
+    private func focusBody() {
+        focus = nil
+        DispatchQueue.main.async { rich.focus() }
     }
 
     private var formattingBar: some View {

@@ -6,6 +6,9 @@ import AppKit
 @MainActor
 final class RichTextController: ObservableObject {
     weak var textView: NSTextView?
+    /// Invoked when the user presses Shift-Tab in the body, to move focus back to
+    /// the preceding compose field.
+    var onShiftTab: (() -> Void)?
 
     func setInitial(_ attributed: NSAttributedString) {
         textView?.textStorage?.setAttributedString(attributed)
@@ -74,6 +77,8 @@ final class RichTextController: ObservableObject {
 struct RichTextEditor: NSViewRepresentable {
     @ObservedObject var controller: RichTextController
 
+    func makeCoordinator() -> Coordinator { Coordinator(controller: controller) }
+
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSTextView.scrollableTextView()
         guard let textView = scrollView.documentView as? NSTextView else { return scrollView }
@@ -83,9 +88,26 @@ struct RichTextEditor: NSViewRepresentable {
         textView.textContainerInset = NSSize(width: 8, height: 8)
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
+        textView.delegate = context.coordinator
         controller.textView = textView
         return scrollView
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {}
+
+    /// Routes Shift-Tab in the editor to the controller so compose can move focus
+    /// back to the Subject field instead of inserting a back-tab.
+    @MainActor
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        let controller: RichTextController
+        init(controller: RichTextController) { self.controller = controller }
+
+        func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSResponder.insertBacktab(_:)), let onShiftTab = controller.onShiftTab {
+                onShiftTab()
+                return true
+            }
+            return false
+        }
+    }
 }

@@ -33,14 +33,10 @@ struct ContentView: View {
                 ToolbarSearchField(vm: vm)
             }
         }
-        // Clearing the search field (the X button) reloads the folder's list.
-        .onChange(of: vm.searchText) { _, newValue in
-            if newValue.isEmpty { Task { await vm.clearSearch() } }
-        }
-        // Escape empties the search field (which reloads the folder via onChange).
+        // Escape clears the search field and reloads the folder's full list.
         .onKeyPress(.escape) {
             guard !vm.searchText.isEmpty else { return .ignored }
-            vm.searchText = ""
+            Task { await vm.clearSearch() }
             return .handled
         }
         // A single sheet driven by an enum — reliably presents compose, the
@@ -98,12 +94,12 @@ private struct ToolbarSearchField: View {
                 .onSubmit { Task { await vm.runSearch() } }
                 .onKeyPress(.escape) {
                     guard !vm.searchText.isEmpty else { return .ignored }
-                    vm.searchText = ""
+                    Task { await vm.clearSearch() }
                     return .handled
                 }
                 .frame(minWidth: 600)
             if !vm.searchText.isEmpty {
-                Button { vm.searchText = "" } label: {
+                Button { Task { await vm.clearSearch() } } label: {
                     Image(systemName: "xmark.circle.fill")
                 }
                 .buttonStyle(.plain)

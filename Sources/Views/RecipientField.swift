@@ -1,23 +1,35 @@
 import SwiftUI
 
+/// Fields in the compose form that share keyboard focus, so Tab / Shift-Tab can
+/// move between them in order (To → Cc → Subject → body, and back).
+enum ComposeField: Hashable { case to, cc, subject }
+
 /// A labeled recipient text field (To / Cc) with inline address autocomplete.
 /// Recipients are comma-separated; suggestions match the token currently being
 /// typed (the text after the last comma). Arrow keys move the highlight, Return
-/// or a click accepts, Escape dismisses.
+/// or a click accepts, Escape dismisses. Tab moves to `next`, Shift-Tab to `previous`.
 struct RecipientField: View {
     let title: String
     @Binding var text: String
     /// Returns ranked suggestions for a partial address.
     let suggest: (String) -> [MailAddress]
+    /// Shared focus across the compose fields.
+    var focus: FocusState<ComposeField?>.Binding
+    /// This field's identity in the shared focus.
+    let field: ComposeField
+    /// Field to focus on Tab (nil when Tab should leave the recipient fields).
+    var next: ComposeField? = nil
+    /// Field to focus on Shift-Tab (nil for the first field).
+    var previous: ComposeField? = nil
     /// Focus this field when it appears (used for the To field on open).
     var focusOnAppear = false
 
-    @FocusState private var focused: Bool
     @State private var matches: [MailAddress] = []
     @State private var highlighted = 0
     @State private var fieldHeight: CGFloat = 24
 
-    private var showSuggestions: Bool { focused && !matches.isEmpty }
+    private var isFocused: Bool { focus.wrappedValue == field }
+    private var showSuggestions: Bool { isFocused && !matches.isEmpty }
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -25,20 +37,20 @@ struct RecipientField: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 52, alignment: .trailing)
                 .padding(.top, 3)
-            field
+            fieldView
         }
         // Raise the focused field (and its floating suggestion list) above the
         // sibling rows and the compose body so the dropdown is never clipped.
-        .zIndex(focused ? 1 : 0)
+        .zIndex(isFocused ? 1 : 0)
     }
 
-    private var field: some View {
+    private var fieldView: some View {
         TextField("", text: $text)
             .textFieldStyle(.roundedBorder)
-            .focused($focused)
-            .onAppear { if focusOnAppear { focused = true } }
-            .onChange(of: text) { _, _ in if focused { recompute() } }
-            .onChange(of: focused) { _, isFocused in if !isFocused { matches = [] } }
+            .focused(focus, equals: field)
+            .onAppear { if focusOnAppear { focus.wrappedValue = field } }
+            .onChange(of: text) { _, _ in if isFocused { recompute() } }
+            .onChange(of: focus.wrappedValue) { _, value in if value != field { matches = [] } }
             .onKeyPress(.downArrow) {
                 guard showSuggestions else { return .ignored }
                 highlighted = min(highlighted + 1, matches.count - 1)
@@ -54,9 +66,20 @@ struct RecipientField: View {
                 accept(matches[highlighted])
                 return .handled
             }
-            .onKeyPress(.tab) {
-                guard showSuggestions, matches.indices.contains(highlighted) else { return .ignored }
-                accept(matches[highlighted])
+            // Tab moves to the next field (accepting a highlighted suggestion first);
+            // Shift-Tab moves to the previous field.
+            .onKeyPress(keys: [.tab], phases: .down) { press in
+                if press.modifiers.contains(.shift) {
+                    matches = []
+                    if let previous { focus.wrappedValue = previous }
+                    return .handled
+                }
+                if showSuggestions, matches.indices.contains(highlighted) {
+                    accept(matches[highlighted])
+                    return .handled
+                }
+                matches = []
+                if let next { focus.wrappedValue = next }
                 return .handled
             }
             .onKeyPress(.escape) {

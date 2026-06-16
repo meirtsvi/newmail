@@ -110,6 +110,15 @@ struct MessageListView: View {
         .focused($tableFocused)
         .onAppear(perform: loadColumns)
         .onChange(of: columnCustomization) { _, value in saveColumns(value) }
+        // Re-sorting via a column header replaces the sort order with just that
+        // column, dropping the unique `id` tiebreaker. Re-append it so rows sharing
+        // a value (e.g. the same timestamp) never compare equal — otherwise a click
+        // can resolve to the wrong tied row.
+        .onChange(of: vm.sortOrder) { _, order in
+            if !order.contains(where: { $0.keyPath == \MessageHeader.id }) {
+                vm.sortOrder = order + [KeyPathComparator(\MessageHeader.id)]
+            }
+        }
         .contextMenu(forSelectionType: String.self) { ids in
             MessageContextMenu(vm: vm, ids: ids.isEmpty ? Array(vm.selection) : Array(ids))
         } primaryAction: { ids in
