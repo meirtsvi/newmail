@@ -56,6 +56,9 @@ final class MailboxViewModel {
 
     // New-mail popups shown in a floating panel pinned to the top-right of the screen.
     var notifications: [MailNotification] = []
+    // Calendar event reminder popups shown in the same floating panel.
+    var eventReminders: [EventReminder] = []
+    @ObservationIgnored private var reminderService: CalendarReminderService?
     // Inbox message ids already seen per account, so only genuinely new mail pops.
     private var seenInboxIds: [String: Set<String>] = [:]
     @ObservationIgnored private var notificationPanel: NotificationPanelController?
@@ -245,6 +248,17 @@ final class MailboxViewModel {
         )
         await pollInboxes()
         startPeriodicRefresh()
+        startCalendarReminders()
+    }
+
+    /// Begins the background calendar-reminder scheduler for the Google account
+    /// (no-op unless the token carries the calendar scope).
+    private func startCalendarReminders() {
+        guard reminderService == nil, (try? GoogleAuth.shared.hasCalendarScope) == true else { return }
+        let service = CalendarReminderService()
+        service.onFire = { [weak self] reminders in self?.presentReminders(reminders) }
+        service.start()
+        reminderService = service
     }
 
     /// Loads persisted accounts, seeding a Gmail account on first launch (the app
@@ -1174,8 +1188,37 @@ final class MailboxViewModel {
     }
 
     private func syncNotificationPanel() {
-        if notifications.isEmpty { notificationPanel?.hide() }
+        if notifications.isEmpty && eventReminders.isEmpty { notificationPanel?.hide() }
         else { notificationPanel?.show() }
+    }
+
+    // MARK: - Calendar reminders
+
+    /// Raises a popup card for each fired reminder. Unlike mail popups, reminder
+    /// cards have no auto-dismiss timer — they persist until the user acts.
+    private func presentReminders(_ reminders: [EventReminder]) {
+        for reminder in reminders where !eventReminders.contains(where: { $0.id == reminder.id }) {
+            eventReminders.insert(reminder, at: 0)
+        }
+        syncNotificationPanel()
+    }
+
+    func snoozeReminder(_ reminder: EventReminder, preset: CalendarReminderService.SnoozePreset) {
+        reminderService?.snooze(reminder, preset: preset)
+        eventReminders.removeAll { $0.id == reminder.id }
+        syncNotificationPanel()
+    }
+
+    func dismissReminder(_ id: String) {
+        reminderService?.dismiss(id)
+        eventReminders.removeAll { $0.id == id }
+        syncNotificationPanel()
+    }
+
+    func dismissAllReminders() {
+        for reminder in eventReminders { reminderService?.dismiss(reminder.id) }
+        eventReminders.removeAll()
+        syncNotificationPanel()
     }
 
     // MARK: - Calendar invites

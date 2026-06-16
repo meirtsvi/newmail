@@ -6,11 +6,81 @@ struct NotificationStackView: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 10) {
+            ForEach(vm.eventReminders) { reminder in
+                EventReminderCard(reminder: reminder, showDismissAll: vm.eventReminders.count > 1)
+            }
             ForEach(vm.notifications) { note in
                 MailNotificationCard(note: note)
             }
         }
         .padding(12)
+    }
+}
+
+/// A single calendar-event reminder card: the event title and time, with Snooze
+/// (5 min / 10 min / 1 hour / tomorrow), Dismiss, and Dismiss All.
+private struct EventReminderCard: View {
+    @Environment(MailboxViewModel.self) private var vm
+    let reminder: EventReminder
+    let showDismissAll: Bool
+
+    private var whenText: String {
+        let time = reminder.start.formatted(.dateTime.weekday(.abbreviated).hour().minute())
+        let relative = reminder.start.formatted(.relative(presentation: .named))
+        return "\(time) · \(relative)"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "calendar")
+                    .font(.title)
+                    .foregroundStyle(.tint)
+                    .frame(width: 40)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(reminder.title.isEmpty ? "(no title)" : reminder.title)
+                        .font(.headline)
+                        .lineLimit(2)
+                    Text(whenText)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+
+                Button { vm.dismissReminder(reminder.id) } label: {
+                    Image(systemName: "xmark").font(.caption2.weight(.bold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Menu("Snooze") {
+                    ForEach(CalendarReminderService.SnoozePreset.allCases) { preset in
+                        Button(preset.rawValue) { vm.snoozeReminder(reminder, preset: preset) }
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .controlSize(.small)
+
+                Spacer()
+
+                if showDismissAll {
+                    Button("Dismiss All") { vm.dismissAllReminders() }
+                        .controlSize(.small)
+                }
+                Button("Dismiss") { vm.dismissReminder(reminder.id) }
+                    .controlSize(.small)
+            }
+        }
+        .padding(14)
+        .frame(width: 340, alignment: .leading)
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.black.opacity(0.08)))
+        .shadow(color: .black.opacity(0.20), radius: 12, y: 5)
     }
 }
 
