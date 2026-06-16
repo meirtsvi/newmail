@@ -1030,6 +1030,24 @@ final class MailboxViewModel {
         dismissTasks[id] = nil
     }
 
+    /// Clicking a popup brings the app forward and selects the message in its
+    /// account's inbox (loading it into the preview), then closes the card.
+    func focusMessage(_ note: MailNotification) async {
+        NSApp.activate(ignoringOtherApps: true)
+        // Bring the main window (not our floating panel) to the front.
+        for window in NSApp.windows where !(window is FloatingPanel) && window.canBecomeMain {
+            window.makeKeyAndOrderFront(nil)
+            break
+        }
+        if let inbox = foldersByAccount[note.accountId]?.first(where: { $0.kind == .inbox }) {
+            sidebarSelection = "acct:\(inbox.compositeId)"
+            await selectFolder(inbox)
+        }
+        selection = [note.id]
+        await openMessage(note.id)
+        dismissNotification(note.id)
+    }
+
     /// Sends a quick plain-text reply to a popup's message via the account that
     /// received it (not necessarily the currently-selected one).
     func sendQuickReply(_ note: MailNotification, text: String) async {

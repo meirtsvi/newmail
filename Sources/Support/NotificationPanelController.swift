@@ -50,7 +50,9 @@ final class NotificationPanelController: NSObject, NSWindowDelegate {
     }
 
     private func reposition() {
-        guard let screen = panel.screen ?? NSScreen.main else { return }
+        // The macOS "main" display (menu bar / origin at zero), not the
+        // focus-following NSScreen.main.
+        guard let screen = NSScreen.screens.first(where: { $0.frame.origin == .zero }) ?? NSScreen.main else { return }
         let visible = screen.visibleFrame
         let margin: CGFloat = 14
         let size = panel.frame.size

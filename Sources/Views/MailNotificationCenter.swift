@@ -29,26 +29,30 @@ private struct MailNotificationCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(nsImage: NSApplication.shared.applicationIconImage)
-                    .resizable()
-                    .frame(width: 48, height: 48)
+            HStack(alignment: .top, spacing: 8) {
+                // Tapping the message area opens the app focused on this message.
+                HStack(alignment: .top, spacing: 12) {
+                    Image(nsImage: NSApplication.shared.applicationIconImage)
+                        .resizable()
+                        .frame(width: 48, height: 48)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(header.subject.isEmpty ? "(no subject)" : header.subject)
-                        .font(.headline)
-                        .lineLimit(1)
-                    Text(header.from.display)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                    Text(header.snippet)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                        .fixedSize(horizontal: false, vertical: true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(header.subject.isEmpty ? "(no subject)" : header.subject)
+                            .font(.headline)
+                            .lineLimit(1)
+                        Text(header.from.display)
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                        Text(header.snippet)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(3)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
                 }
-
-                Spacer(minLength: 0)
+                .contentShape(Rectangle())
+                .onTapGesture { Task { await vm.focusMessage(note) } }
 
                 Button { vm.dismissNotification(note.id) } label: {
                     Image(systemName: "xmark").font(.caption2.weight(.bold))
