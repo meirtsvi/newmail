@@ -50,9 +50,12 @@ final class MailboxViewModel {
     /// Email of the currently selected account (used as the compose "from").
     var accountEmail = ""
 
-    // Currently presented modal sheet (compose / message window / custom snooze).
+    // Currently presented modal sheet (message window / custom snooze).
     var activeSheet: ActiveSheet?
     var modalBody: MessageBody?
+
+    // Compose/reply/forward open in their own non-modal, movable, resizable windows.
+    @ObservationIgnored private let composeWindows = ComposeWindowController()
 
     // New-mail popups shown in a floating panel pinned to the top-right of the screen.
     var notifications: [MailNotification] = []
@@ -65,7 +68,7 @@ final class MailboxViewModel {
     // Per-popup auto-dismiss timers (cancelled if the user starts a reply).
     @ObservationIgnored private var dismissTasks: [String: Task<Void, Never>] = [:]
     private static let maxNotifications = 5
-    private static let autoDismissSeconds = 5
+    private static let autoDismissSeconds = 10
 
     // Sidebar selection (tag like "acct:<accountId>\u{1}<folderId>").
     var sidebarSelection: String?
@@ -582,6 +585,24 @@ final class MailboxViewModel {
         updateDockBadge()
     }
 
+    /// Refreshes the current account's Drafts folder count so its sidebar badge
+    /// reflects a just-saved or just-sent draft (the periodic per-folder refresh
+    /// only covers the folder currently on screen).
+    private func refreshDraftsCount() async {
+        guard let accountId = currentAccountId, let provider = currentProvider,
+              let draftsId = foldersByAccount[accountId]?.first(where: { $0.kind == .drafts })?.id,
+              let count = try? await provider.folderCount(id: draftsId) else { return }
+        if let i = foldersByAccount[accountId]?.firstIndex(where: { $0.id == draftsId }) {
+            foldersByAccount[accountId]?[i].unreadCount = count.unread
+            foldersByAccount[accountId]?[i].totalCount = count.total
+        }
+        if currentFolder?.id == draftsId {
+            currentFolder?.unreadCount = count.unread
+            currentFolder?.totalCount = count.total
+        }
+        recomputeFavorites()
+    }
+
     // MARK: - Message loading
 
     /// How many headers to pull when first opening a folder. Providers page in
@@ -1034,7 +1055,7 @@ final class MailboxViewModel {
     }
 
     func startNewMail() {
-        activeSheet = .compose(ComposeRequest(kind: .new))
+        composeWindows.open(ComposeRequest(kind: .new), vm: self)
     }
 
     func startReply(all: Bool) {
@@ -1050,12 +1071,12 @@ final class MailboxViewModel {
             \(quotedBody(body, fallbackSnippet: header.snippet))
             </blockquote>
             """
-            activeSheet = .compose(ComposeRequest(
+            composeWindows.open(ComposeRequest(
                 kind: all ? .replyAll : .reply,
                 to: to,
                 subject: subject,
                 quotedHTML: quoted
-            ))
+            ), vm: self)
         }
     }
 
@@ -1070,12 +1091,12 @@ final class MailboxViewModel {
             Date: \(header.date.mailFullString)<br>
             Subject: \(escape(header.subject))</p>
             """
-            activeSheet = .compose(ComposeRequest(
+            composeWindows.open(ComposeRequest(
                 kind: .forward,
                 subject: subject,
                 quotedHTML: forwardHeader + quotedBody(body, fallbackSnippet: header.snippet),
                 attachments: body?.attachments ?? []
-            ))
+            ), vm: self)
         }
     }
 
@@ -1133,7 +1154,10 @@ final class MailboxViewModel {
         do {
             try await provider.send(rawMIME: mime)
             // Only drop the saved draft once the send actually succeeds.
-            if let draftId { try? await provider.deleteDraft(id: draftId) }
+            if let draftId {
+                try? await provider.deleteDraft(id: draftId)
+                await refreshDraftsCount()
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -1150,7 +1174,11 @@ final class MailboxViewModel {
         let mime = MIMEBuilder.buildHTML(
             from: accountEmail, to: to, cc: cc, subject: subject, html: html, attachments: attachments
         )
-        return (try? await provider.saveDraft(id: draftId, rawMIME: mime)) ?? draftId
+        let newId = (try? await provider.saveDraft(id: draftId, rawMIME: mime)) ?? draftId
+        // A brand-new draft (no prior id) changes the Drafts folder count; an
+        // in-place update of an existing draft leaves the count unchanged.
+        if draftId == nil, newId != nil { await refreshDraftsCount() }
+        return newId
     }
 
     // MARK: - New-mail notifications
@@ -1296,15 +1324,23 @@ final class MailboxViewModel {
     }
 
     func snoozeReminder(_ reminder: EventReminder, preset: CalendarReminderService.SnoozePreset) {
-        reminderService?.snooze(reminder, preset: preset)
+        // Close the popup first; defer the bookkeeping to the next runloop tick so
+        // the card disappears immediately instead of after the service work.
         eventReminders.removeAll { $0.id == reminder.id }
         syncNotificationPanel()
+        DispatchQueue.main.async { [weak self] in
+            self?.reminderService?.snooze(reminder, preset: preset)
+        }
     }
 
     func dismissReminder(_ id: String) {
-        reminderService?.dismiss(id)
+        // Close the popup first; defer the bookkeeping to the next runloop tick so
+        // the card disappears immediately instead of after the service work.
         eventReminders.removeAll { $0.id == id }
         syncNotificationPanel()
+        DispatchQueue.main.async { [weak self] in
+            self?.reminderService?.dismiss(id)
+        }
     }
 
     func dismissAllReminders() {
@@ -1582,13 +1618,11 @@ struct MailNotification: Identifiable, Hashable {
 }
 
 enum ActiveSheet: Identifiable {
-    case compose(ComposeRequest)
     case message(MessageHeader)
     case customSnooze([String])
 
     var id: String {
         switch self {
-        case .compose(let r): return "compose-\(r.id)"
         case .message(let h): return "message-\(h.id)"
         case .customSnooze: return "snooze"
         }

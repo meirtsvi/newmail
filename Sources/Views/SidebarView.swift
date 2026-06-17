@@ -95,8 +95,11 @@ struct SidebarView: View {
                     .lineLimit(1)
             }
             Spacer()
-            if folder.unreadCount > 0 {
-                Text("\(folder.unreadCount)")
+            // Drafts badge the number of drafts (total items); every other folder
+            // badges its unread count.
+            let badge = folder.kind == .drafts ? folder.totalCount : folder.unreadCount
+            if badge > 0 {
+                Text("\(badge)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()

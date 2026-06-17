@@ -48,7 +48,14 @@ struct RecipientField: View {
         TextField("", text: $text)
             .textFieldStyle(.roundedBorder)
             .focused(focus, equals: field)
-            .onAppear { if focusOnAppear { focus.wrappedValue = field } }
+            // Defer to the next runloop so the focus lands after the freshly
+            // opened compose window has become key (setting it inline races the
+            // window activation and the field ends up unfocused).
+            .onAppear {
+                if focusOnAppear {
+                    DispatchQueue.main.async { focus.wrappedValue = field }
+                }
+            }
             .onChange(of: text) { _, _ in if isFocused { recompute() } }
             .onChange(of: focus.wrappedValue) { _, value in if value != field { matches = [] } }
             .onKeyPress(.downArrow) {

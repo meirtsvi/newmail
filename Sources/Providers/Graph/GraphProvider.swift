@@ -265,18 +265,22 @@ final class GraphProvider: MailProvider {
         var attachments: [MailAttachment] = []
         var images: [InlineImage] = []
         if msg.hasAttachments == true {
+            // `contentId` lives on the derived `fileAttachment` type, not the base
+            // `attachment`, so it can't be $select'd from the collection (doing so
+            // returns 400). It's read per-image from the full attachment fetch below.
             let aData = try await request("messages/\(id)/attachments", query: [
-                URLQueryItem(name: "$select", value: "id,name,contentType,size,isInline,contentId")
+                URLQueryItem(name: "$select", value: "id,name,contentType,size,isInline")
             ])
             let list = try JSONDecoder().decode(GraphAPI.AttachmentList.self, from: aData)
             for att in list.value {
                 let mime = att.contentType ?? "application/octet-stream"
-                if mime.lowercased().hasPrefix("image/"), let bytes = try? await fetchAttachment(messageId: id, attachmentId: att.id) {
+                if mime.lowercased().hasPrefix("image/"),
+                   let file = try? await fetchFileAttachment(messageId: id, attachmentId: att.id) {
                     // Inline (cid:) and standalone images both get embedded/previewed.
-                    let cid = att.contentId?.trimmingCharacters(in: CharacterSet(charactersIn: "<> "))
+                    let cid = file.contentId?.trimmingCharacters(in: CharacterSet(charactersIn: "<> "))
                     images.append(InlineImage(
                         cid: (cid?.isEmpty ?? true) ? nil : cid,
-                        mime: mime, data: bytes, filename: att.name ?? "image", attachmentId: att.id
+                        mime: mime, data: file.bytes, filename: att.name ?? "image", attachmentId: att.id
                     ))
                 } else {
                     // Everything that isn't an embeddable picture shows as an
@@ -296,13 +300,19 @@ final class GraphProvider: MailProvider {
     }
 
     func fetchAttachment(messageId: String, attachmentId: String) async throws -> Data {
+        try await fetchFileAttachment(messageId: messageId, attachmentId: attachmentId).bytes
+    }
+
+    /// Fetches a single attachment's full representation — its decoded bytes plus
+    /// the `Content-ID` (present only on the derived `fileAttachment` type), used to
+    /// place inline images into the HTML body.
+    private func fetchFileAttachment(messageId: String, attachmentId: String) async throws -> (bytes: Data, contentId: String?) {
         let data = try await request("messages/\(messageId)/attachments/\(attachmentId)")
-        struct FileAttachment: Codable { var contentBytes: String? }
-        let att = try JSONDecoder().decode(FileAttachment.self, from: data)
+        let att = try JSONDecoder().decode(GraphAPI.Attachment.self, from: data)
         guard let b64 = att.contentBytes, let bytes = Data(base64Encoded: b64) else {
             throw MailError.other("Attachment is unavailable.")
         }
-        return bytes
+        return (bytes, att.contentId)
     }
 
     /// Casts the folder's message collection to the `eventMessage` derived type, so

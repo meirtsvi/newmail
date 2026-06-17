@@ -41,6 +41,13 @@ final class RichTextController: ObservableObject {
     /// real family name, so it's special-cased when applied.
     static let systemFamily = "System"
 
+    /// The default body font for new compose/reply/forward messages.
+    static let defaultFamily = "Arial"
+    static let defaultSize: CGFloat = 16
+    static var defaultFont: NSFont {
+        NSFont(name: defaultFamily, size: defaultSize) ?? .systemFont(ofSize: defaultSize)
+    }
+
     /// Font families offered in the compose toolbar (kept short and cross-platform).
     static let fontFamilies = [
         systemFamily, "Helvetica", "Arial", "Times New Roman",
@@ -128,7 +135,8 @@ struct RichTextEditor: NSViewRepresentable {
         guard let textView = scrollView.documentView as? NSTextView else { return scrollView }
         textView.isRichText = true
         textView.allowsUndo = true
-        textView.font = .systemFont(ofSize: NSFont.systemFontSize)
+        textView.font = RichTextController.defaultFont
+        textView.typingAttributes[.font] = RichTextController.defaultFont
         textView.textContainerInset = NSSize(width: 8, height: 8)
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false

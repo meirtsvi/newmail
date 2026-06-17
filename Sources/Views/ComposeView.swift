@@ -6,8 +6,10 @@ import UniformTypeIdentifiers
 /// HTML and sent as multipart/mixed via Gmail.
 struct ComposeView: View {
     @Environment(MailboxViewModel.self) private var vm
-    @Environment(\.dismiss) private var dismiss
     @Bindable var request: ComposeRequest
+    /// Closes the compose window (it lives in its own non-modal NSWindow, so there's
+    /// no SwiftUI `dismiss` to fall back on).
+    let onClose: () -> Void
 
     @StateObject private var rich = RichTextController()
     @State private var attachments: [URL] = []
@@ -16,8 +18,8 @@ struct ComposeView: View {
     @State private var showImporter = false
     @State private var showLinkPrompt = false
     @State private var linkURL = ""
-    @State private var fontFamily = RichTextController.systemFamily
-    @State private var fontSize: CGFloat = NSFont.systemFontSize
+    @State private var fontFamily = RichTextController.defaultFamily
+    @State private var fontSize: CGFloat = RichTextController.defaultSize
     /// Snapshot of the fields at the last successful draft save, so the 10-second
     /// autosave skips when nothing has changed.
     @State private var lastSavedSnapshot = ""
@@ -43,7 +45,8 @@ struct ComposeView: View {
                 quotedPreview
             }
         }
-        .frame(width: 640, height: request.quotedHTML.isEmpty ? 560 : 680)
+        .frame(minWidth: 480, idealWidth: 640, minHeight: 380,
+               idealHeight: request.quotedHTML.isEmpty ? 560 : 680)
         .onAppear {
             // Shift-Tab out of the body editor returns to the Subject field.
             rich.onShiftTab = { focus = .subject }
@@ -53,7 +56,7 @@ struct ComposeView: View {
             if !request.body.isEmpty {
                 rich.setInitial(NSAttributedString(
                     string: request.body,
-                    attributes: [.font: NSFont.systemFont(ofSize: NSFont.systemFontSize)]
+                    attributes: [.font: RichTextController.defaultFont]
                 ))
             }
             // Carry the original message's attachments when forwarding.
@@ -74,6 +77,12 @@ struct ComposeView: View {
             // ⌘S saves the draft immediately; the hidden button just carries the shortcut.
             Button("") { Task { await autosaveDraft() } }
                 .keyboardShortcut("s", modifiers: .command)
+                .hidden()
+            // Escape closes the window, saving whatever's been typed as a draft
+            // first so it isn't lost. (When the autocomplete dropdown is open,
+            // RecipientField consumes Escape to dismiss it before it reaches here.)
+            Button("") { closeKeepingDraft() }
+                .keyboardShortcut(.cancelAction)
                 .hidden()
         }
         // Autosave the draft to the server every 10 seconds while composing; the
@@ -108,11 +117,20 @@ struct ComposeView: View {
         lastSavedSnapshot = snapshot
     }
 
+    /// Escape handler: persist whatever's been typed as a draft (if anything),
+    /// then close the window — so dismissing never loses work.
+    private func closeKeepingDraft() {
+        Task {
+            await autosaveDraft()
+            onClose()
+        }
+    }
+
     private var titleBar: some View {
         HStack {
             Text(request.kind.title).font(.headline)
             Spacer()
-            Button("Cancel") { dismiss() }
+            Button("Cancel") { onClose() }
             Button {
                 sending = true
                 let html = composedHTML()
@@ -122,7 +140,7 @@ struct ComposeView: View {
                         html: html, attachments: attachments, draftId: request.draftId
                     )
                     sending = false
-                    dismiss()
+                    onClose()
                 }
             } label: {
                 if sending { ProgressView().controlSize(.small) }

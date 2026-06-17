@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Root 3-pane layout: Sidebar | Message list | Preview, with the toolbar,
-/// search field, compose sheet, and error alert.
+/// search field, and error alert. (Compose opens in its own window.)
 struct ContentView: View {
     @Environment(MailboxViewModel.self) private var vm
     @State private var customSnoozeDate = Date().addingTimeInterval(3600)
@@ -43,8 +43,6 @@ struct ContentView: View {
         // message window, and the custom-snooze picker.
         .sheet(item: $vm.activeSheet) { sheet in
             switch sheet {
-            case .compose(let request):
-                ComposeView(request: request).environment(vm)
             case .message(let header):
                 MessageDetailView(header: header).environment(vm)
             case .customSnooze(let ids):
