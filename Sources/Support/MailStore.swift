@@ -69,8 +69,18 @@ final class MailStore {
 
     func cachedHeaders(folderId: String, accountId: String, limit: Int = 200) -> [MessageHeader] {
         let needle = ",\(folderId),"
+        // Gmail's message list excludes trashed/spam mail by default, so a draft that
+        // was trashed (it keeps its DRAFT label but gains TRASH, and gets cached when
+        // Trash is viewed) must not linger in the Drafts cache view. Mirror that here:
+        // hide TRASH/SPAM rows unless the folder being viewed is itself Trash/Spam.
+        // (Graph folder ids are opaque tokens that never contain these literals.)
+        let hideTrashSpam = folderId != "TRASH" && folderId != "SPAM"
         var descriptor = FetchDescriptor<CachedMessage>(
-            predicate: #Predicate { $0.accountId == accountId && $0.labelIdsRaw.contains(needle) },
+            predicate: #Predicate {
+                $0.accountId == accountId && $0.labelIdsRaw.contains(needle)
+                    && (!hideTrashSpam
+                        || (!$0.labelIdsRaw.contains(",TRASH,") && !$0.labelIdsRaw.contains(",SPAM,")))
+            },
             sortBy: [SortDescriptor(\.date, order: .reverse)]
         )
         descriptor.fetchLimit = limit
@@ -113,6 +123,34 @@ final class MailStore {
             byId.removeValue(forKey: header.id)
         }
         try? context.save()
+    }
+
+    /// Reconciles the cache for a fully-loaded folder. When a folder is paged to the
+    /// end, `keepIds` is the complete, authoritative set of messages the server
+    /// currently has in `folderId`, so any cached row still tagged with this folder
+    /// but absent from `keepIds` has since left it (e.g. a draft that was sent, or
+    /// mail that was archived). Strip the stale folder label; drop the row if that
+    /// leaves it with no labels at all.
+    func reconcileFolder(folderId: String, accountId: String, keepIds: [String]) {
+        let needle = ",\(folderId),"
+        let keep = Set(keepIds)
+        let rows = (try? context.fetch(
+            FetchDescriptor<CachedMessage>(
+                predicate: #Predicate { $0.accountId == accountId && $0.labelIdsRaw.contains(needle) }
+            )
+        )) ?? []
+        var changed = false
+        for row in rows where !keep.contains(row.id) {
+            var labels = row.labelIdsRaw.split(separator: ",").map(String.init)
+            labels.removeAll { $0 == folderId }
+            if labels.isEmpty {
+                context.delete(row)
+            } else {
+                row.labelIdsRaw = "," + labels.joined(separator: ",") + ","
+            }
+            changed = true
+        }
+        if changed { try? context.save() }
     }
 
     func deleteMessages(ids: [String]) {

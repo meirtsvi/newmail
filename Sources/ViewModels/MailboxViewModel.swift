@@ -617,25 +617,37 @@ final class MailboxViewModel {
         defer { isLoading = false }
         do {
             var result = try await provider.listMessages(folderId: folder.id, query: nil, pageToken: nil)
+            // Network fetches suspend at `await`, during which the user may switch
+            // folders (which starts a fresh `loadMessages` for the new folder). Bail
+            // before touching the shared `messages`/`nextPageToken` so this folder's
+            // results never overwrite the one now on screen.
+            guard currentFolder?.id == folder.id else { return }
             messages = result.headers
             nextPageToken = result.nextPageToken
             store.saveHeaders(result.headers)
             hydrateCalendarIds()
             recordContacts(from: result.headers, folder: folder)
 
-            // Keep paging until we hit the target or run out of mail. Bail if the
-            // user navigated to a different folder while we were fetching.
-            while messages.count < Self.initialLoadTarget,
-                  let token = result.nextPageToken,
-                  currentFolder?.id == folder.id {
+            // Keep paging until we hit the target or run out of mail, re-checking the
+            // folder after each fetch for the same reason as above.
+            while messages.count < Self.initialLoadTarget, let token = result.nextPageToken {
                 result = try await provider.listMessages(folderId: folder.id, query: nil, pageToken: token)
+                guard currentFolder?.id == folder.id else { return }
                 messages.append(contentsOf: result.headers)
                 nextPageToken = result.nextPageToken
                 store.saveHeaders(result.headers)
                 recordContacts(from: result.headers, folder: folder)
             }
             statusMessage = nil
+            // Paged to the end without navigating away: `messages` is now the complete
+            // server-side contents of this folder, so reconcile the cache to evict rows
+            // that have since left it (e.g. a sent draft keeping a stale DRAFT label).
+            if result.nextPageToken == nil {
+                store.reconcileFolder(folderId: folder.id, accountId: folder.accountId,
+                                      keepIds: messages.map(\.id))
+            }
         } catch {
+            guard currentFolder?.id == folder.id else { return }
             if messages.isEmpty {
                 messages = store.cachedHeaders(folderId: folder.id, accountId: folder.accountId)
             }
@@ -650,6 +662,9 @@ final class MailboxViewModel {
         defer { isLoading = false }
         do {
             let result = try await provider.listMessages(folderId: folder.id, query: nil, pageToken: token)
+            // Don't append this folder's older page onto a list the user has since
+            // switched away from.
+            guard currentFolder?.id == folder.id else { return }
             messages.append(contentsOf: result.headers)
             nextPageToken = result.nextPageToken
             store.saveHeaders(result.headers)
