@@ -87,7 +87,11 @@ actor GoogleCalendarService {
     /// opt in to the calendar's defaults (`useDefault`) inherit `defaultReminders`;
     /// email-method reminders are ignored. All-day events are skipped (their
     /// reminder timing is day-based and out of scope here).
-    func upcomingReminders(within window: TimeInterval = 36 * 3600) async throws -> [EventReminder] {
+    ///
+    /// The window must be at least as large as the longest reminder lead time, or
+    /// long-lead reminders (e.g. "2 days before") would never be discovered for
+    /// events further out than the window. Google allows leads up to 4 weeks.
+    func upcomingReminders(within window: TimeInterval = 28 * 24 * 3600) async throws -> [EventReminder] {
         let now = Date()
         let iso = ISO8601DateFormatter()
         var comps = URLComponents(string: "https://www.googleapis.com/calendar/v3/calendars/primary/events")!
