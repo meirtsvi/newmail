@@ -63,9 +63,17 @@ struct CustomSnoozeSheet: View {
 struct MoveMenu: View {
     let vm: MailboxViewModel
     let ids: [String]
+    /// When true, list only the user's quick-move folders (used by the row's move
+    /// icon); otherwise list every folder in the account (the right-click menu).
+    var quickOnly = false
+
+    private var folders: [MailFolder] {
+        quickOnly ? vm.quickMoveForCurrentAccount
+                  : vm.currentFolders.filter { $0.kind != .inbox }
+    }
 
     var body: some View {
-        ForEach(vm.currentFolders.filter { $0.kind != .inbox }, id: \.compositeId) { folder in
+        ForEach(folders, id: \.compositeId) { folder in
             Button {
                 Task { await vm.move(ids, to: folder) }
             } label: {
@@ -89,7 +97,7 @@ struct HoverActions: View {
                 Task { await vm.toggleFlag([id]) }
             }
             Menu {
-                MoveMenu(vm: vm, ids: [id])
+                MoveMenu(vm: vm, ids: [id], quickOnly: true)
             } label: {
                 icon("folder")
             }

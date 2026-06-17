@@ -37,6 +37,50 @@ final class RichTextController: ObservableObject {
                         range: range)
     }
 
+    /// The label used for the default UI/system font in the family picker; it has no
+    /// real family name, so it's special-cased when applied.
+    static let systemFamily = "System"
+
+    /// Font families offered in the compose toolbar (kept short and cross-platform).
+    static let fontFamilies = [
+        systemFamily, "Helvetica", "Arial", "Times New Roman",
+        "Georgia", "Courier New", "Verdana", "Menlo",
+    ]
+
+    /// Point sizes offered in the compose toolbar.
+    static let fontSizes: [CGFloat] = [9, 10, 11, 12, 13, 14, 16, 18, 24, 36]
+
+    /// Changes the family of the selected text (or of new typing if nothing is
+    /// selected), preserving each run's size and bold/italic traits.
+    func setFontFamily(_ family: String) {
+        applyFont { font in
+            if family == Self.systemFamily { return .systemFont(ofSize: font.pointSize) }
+            return NSFontManager.shared.convert(font, toFamily: family)
+        }
+    }
+
+    /// Changes the size of the selected text (or of new typing if nothing is selected).
+    func setFontSize(_ size: CGFloat) {
+        applyFont { NSFontManager.shared.convert($0, toSize: size) }
+    }
+
+    /// Applies a font transform to the selection, or — when the selection is empty —
+    /// to the typing attributes so the next characters typed pick it up.
+    private func applyFont(_ transform: (NSFont) -> NSFont) {
+        guard let tv = textView else { return }
+        let range = tv.selectedRange()
+        let fallback = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        if range.length == 0 {
+            let current = (tv.typingAttributes[.font] as? NSFont) ?? fallback
+            tv.typingAttributes[.font] = transform(current)
+            return
+        }
+        guard let ts = tv.textStorage else { return }
+        ts.enumerateAttribute(.font, in: range) { value, subRange, _ in
+            ts.addAttribute(.font, value: transform((value as? NSFont) ?? fallback), range: subRange)
+        }
+    }
+
     func applyLink(_ urlString: String) {
         guard let tv = textView, let ts = tv.textStorage,
               let url = URL(string: urlString) else { return }

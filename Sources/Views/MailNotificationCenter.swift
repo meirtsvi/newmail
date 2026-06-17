@@ -24,9 +24,12 @@ private struct EventReminderCard: View {
     let reminder: EventReminder
     let showDismissAll: Bool
 
-    private var whenText: String {
+    /// "Thu 3:00 PM · in 14 minutes". The relative part is recomputed against
+    /// `now` so a per-minute timeline can tick it down as the event approaches.
+    private func whenText(now: Date) -> String {
         let time = reminder.start.formatted(.dateTime.weekday(.abbreviated).hour().minute())
         let relative = reminder.start.formatted(.relative(presentation: .named))
+        _ = now // `.relative` is anchored to the current date; `now` just retriggers the render.
         return "\(time) · \(relative)"
     }
 
@@ -42,10 +45,12 @@ private struct EventReminderCard: View {
                     Text(reminder.title.isEmpty ? "(no title)" : reminder.title)
                         .font(.headline)
                         .lineLimit(2)
-                    Text(whenText)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    TimelineView(.periodic(from: reminder.start, by: 60)) { context in
+                        Text(whenText(now: context.date))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
                 Spacer(minLength: 0)
 
@@ -54,6 +59,19 @@ private struct EventReminderCard: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
+            }
+
+            if let url = reminder.joinURL, let provider = MeetingProvider(url: url) {
+                Button {
+                    NSWorkspace.shared.open(url)
+                    vm.dismissReminder(reminder.id)
+                } label: {
+                    Label(provider.label, systemImage: "video.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.blue)
+                .controlSize(.regular)
             }
 
             HStack {

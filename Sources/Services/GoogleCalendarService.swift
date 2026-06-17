@@ -8,6 +8,29 @@ struct CalEvent: Identifiable, Hashable {
     var start: Date
     var end: Date
     var isAllDay: Bool
+    var joinURL: URL?       // video-meeting link (Zoom/Meet/Teams), if any
+}
+
+/// A recognized video-conferencing provider for an event's join link.
+enum MeetingProvider {
+    case zoom, meet, teams
+
+    var label: String {
+        switch self {
+        case .zoom:  return "Connect to Zoom"
+        case .meet:  return "Connect to Meet"
+        case .teams: return "Connect to Teams"
+        }
+    }
+
+    /// Classifies a URL by host; nil for links we don't recognize.
+    init?(url: URL) {
+        let host = (url.host ?? "").lowercased()
+        if host.contains("zoom.us") { self = .zoom }
+        else if host.contains("meet.google.com") { self = .meet }
+        else if host.contains("teams.microsoft.com") || host.contains("teams.live.com") { self = .teams }
+        else { return nil }
+    }
 }
 
 /// One popup reminder for a calendar event: a title/time plus the moment the
@@ -19,6 +42,7 @@ struct EventReminder: Identifiable, Hashable {
     var start: Date
     var isAllDay: Bool
     var fireDate: Date      // mutable: snooze reschedules it
+    var joinURL: URL?       // video-meeting link (Zoom/Meet/Teams), if any
 }
 
 /// Reads the user's primary Google Calendar (read-only) to show their schedule
@@ -106,11 +130,33 @@ actor GoogleCalendarService {
                 out.append(EventReminder(
                     id: "\(event.id)#\(minutes)",
                     eventId: event.id, title: event.title,
-                    start: event.start, isAllDay: false, fireDate: fireDate
+                    start: event.start, isAllDay: false, fireDate: fireDate,
+                    joinURL: event.joinURL
                 ))
             }
         }
         return out
+    }
+
+    /// Whether the event still exists on the calendar. Returns `false` only when the
+    /// server confirms it's gone (404) or cancelled; any transient/network error
+    /// returns `true` so a hiccup never wrongly dismisses a live reminder.
+    func eventExists(id: String) async -> Bool {
+        var comps = URLComponents(string: "https://www.googleapis.com/calendar/v3/calendars/primary/events")!
+        comps.path += "/" + id
+        guard let url = comps.url else { return true }
+        var req = URLRequest(url: url)
+        guard let token = try? await auth.accessToken() else { return true }
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse else { return true }
+        if http.statusCode == 404 || http.statusCode == 410 { return false }
+        guard (200..<300).contains(http.statusCode) else { return true }
+        if let item = try? JSONDecoder().decode(Item.self, from: data), item.status == "cancelled" {
+            return false
+        }
+        return true
     }
 
     // MARK: - JSON
@@ -126,6 +172,17 @@ actor GoogleCalendarService {
         var start: When?
         var end: When?
         var reminders: Reminders?
+        var location: String?
+        var description: String?
+        var hangoutLink: String?
+        var conferenceData: ConferenceData?
+    }
+    private struct ConferenceData: Codable {
+        var entryPoints: [EntryPoint]?
+    }
+    private struct EntryPoint: Codable {
+        var entryPointType: String?     // "video" | "phone" | "more" | …
+        var uri: String?
     }
     private struct When: Codable {
         var dateTime: String?   // timed events
@@ -142,15 +199,44 @@ actor GoogleCalendarService {
 
     private static func event(from item: Item) -> CalEvent? {
         guard item.status != "cancelled", let start = item.start, let end = item.end else { return nil }
+        let join = meetingURL(from: item)
         if let s = start.dateTime, let e = end.dateTime,
            let sd = parseDateTime(s), let ed = parseDateTime(e) {
             return CalEvent(id: item.id ?? UUID().uuidString,
-                            title: item.summary ?? "(busy)", start: sd, end: ed, isAllDay: false)
+                            title: item.summary ?? "(busy)", start: sd, end: ed,
+                            isAllDay: false, joinURL: join)
         }
         if let s = start.date, let sd = parseDate(s) {
             let ed = parseDate(end.date ?? s) ?? sd
             return CalEvent(id: item.id ?? UUID().uuidString,
-                            title: item.summary ?? "(busy)", start: sd, end: ed, isAllDay: true)
+                            title: item.summary ?? "(busy)", start: sd, end: ed,
+                            isAllDay: true, joinURL: join)
+        }
+        return nil
+    }
+
+    /// Best video-meeting link for an event, preferring the structured conference
+    /// data, then the Hangouts/Meet link, then any recognized provider URL found in
+    /// the location or description text.
+    private static func meetingURL(from item: Item) -> URL? {
+        if let uri = item.conferenceData?.entryPoints?
+            .first(where: { ($0.entryPointType ?? "") == "video" })?.uri,
+           let url = URL(string: uri), MeetingProvider(url: url) != nil {
+            return url
+        }
+        if let link = item.hangoutLink, let url = URL(string: link) { return url }
+        for text in [item.location, item.description].compactMap({ $0 }) {
+            if let url = firstMeetingLink(in: text) { return url }
+        }
+        return nil
+    }
+
+    /// Scans free text for the first URL belonging to a recognized provider.
+    private static func firstMeetingLink(in text: String) -> URL? {
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return nil }
+        let range = NSRange(text.startIndex..., in: text)
+        for match in detector.matches(in: text, range: range) {
+            if let url = match.url, MeetingProvider(url: url) != nil { return url }
         }
         return nil
     }

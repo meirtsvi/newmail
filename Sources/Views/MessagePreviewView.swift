@@ -48,6 +48,7 @@ struct MessagePreviewView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(header.subject).font(.title3.weight(.semibold))
+                    .textSelection(.enabled)
                 Spacer()
                 Text(header.date.mailFullString)
                     .font(.caption).foregroundStyle(.secondary)

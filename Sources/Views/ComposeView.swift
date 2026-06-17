@@ -16,6 +16,11 @@ struct ComposeView: View {
     @State private var showImporter = false
     @State private var showLinkPrompt = false
     @State private var linkURL = ""
+    @State private var fontFamily = RichTextController.systemFamily
+    @State private var fontSize: CGFloat = NSFont.systemFontSize
+    /// Snapshot of the fields at the last successful draft save, so the 10-second
+    /// autosave skips when nothing has changed.
+    @State private var lastSavedSnapshot = ""
     /// Shared keyboard focus across the To/Cc/Subject fields so Tab and Shift-Tab
     /// move between them in order; the body editor is reached via `rich`.
     @FocusState private var focus: ComposeField?
@@ -65,6 +70,42 @@ struct ComposeView: View {
             if case .success(let urls) = result { attachments.append(contentsOf: urls) }
         }
         .sheet(isPresented: $showLinkPrompt) { linkPrompt }
+        .background {
+            // ⌘S saves the draft immediately; the hidden button just carries the shortcut.
+            Button("") { Task { await autosaveDraft() } }
+                .keyboardShortcut("s", modifiers: .command)
+                .hidden()
+        }
+        // Autosave the draft to the server every 10 seconds while composing; the
+        // task is cancelled automatically when the window closes.
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(10))
+                await autosaveDraft()
+            }
+        }
+    }
+
+    /// True once there's anything worth keeping (recipients, subject, or body).
+    private var hasDraftContent: Bool {
+        !request.to.isEmpty || !request.cc.isEmpty
+            || !request.subject.isEmpty || !rich.exportHTML().isEmpty
+    }
+
+    /// Saves the in-progress message as a server draft if it has content and has
+    /// changed since the last save. Records the returned draft id on the request so
+    /// later saves replace it and it can be deleted on send.
+    private func autosaveDraft() async {
+        guard !sending, hasDraftContent else { return }
+        let html = composedHTML()
+        let snapshot = [request.to, request.cc, request.subject, html].joined(separator: "\u{1}")
+        guard snapshot != lastSavedSnapshot else { return }
+        let id = await vm.saveDraft(
+            to: request.to, cc: request.cc, subject: request.subject,
+            html: html, attachments: attachments, draftId: request.draftId
+        )
+        request.draftId = id
+        lastSavedSnapshot = snapshot
     }
 
     private var titleBar: some View {
@@ -78,7 +119,7 @@ struct ComposeView: View {
                 Task {
                     await vm.sendComposed(
                         to: request.to, cc: request.cc, subject: request.subject,
-                        html: html, attachments: attachments
+                        html: html, attachments: attachments, draftId: request.draftId
                     )
                     sending = false
                     dismiss()
@@ -146,12 +187,35 @@ struct ComposeView: View {
             Button { rich.toggleUnderline() } label: { Image(systemName: "underline") }.help("Underline")
             Button { showLinkPrompt = true } label: { Image(systemName: "link") }.help("Insert link")
             Divider().frame(height: 16)
+            fontPickers
+            Divider().frame(height: 16)
             Button { showImporter = true } label: { Image(systemName: "paperclip") }.help("Attach file")
             Spacer()
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
+    }
+
+    /// Font-family and size pickers; selecting one applies it to the selected text
+    /// (or to subsequent typing when nothing is selected).
+    private var fontPickers: some View {
+        HStack(spacing: 6) {
+            Picker("Font", selection: $fontFamily) {
+                ForEach(RichTextController.fontFamilies, id: \.self) { Text($0).tag($0) }
+            }
+            .labelsHidden()
+            .frame(width: 130)
+            .onChange(of: fontFamily) { _, family in rich.setFontFamily(family) }
+
+            Picker("Size", selection: $fontSize) {
+                ForEach(RichTextController.fontSizes, id: \.self) { Text("\(Int($0))").tag($0) }
+            }
+            .labelsHidden()
+            .frame(width: 60)
+            .onChange(of: fontSize) { _, size in rich.setFontSize(size) }
+        }
+        .font(.body)
     }
 
     private var attachmentBar: some View {

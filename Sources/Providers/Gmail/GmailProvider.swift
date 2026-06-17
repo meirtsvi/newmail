@@ -382,6 +382,14 @@ final class GmailProvider: MailProvider {
         }
     }
 
+    /// Untrash restores the message's prior labels (e.g. INBOX), so the message
+    /// returns to the folder it was deleted from; `toFolderId` is unused here.
+    func untrash(ids: [String], toFolderId: String) async throws {
+        for id in ids {
+            _ = try await request("messages/\(id)/untrash", method: "POST")
+        }
+    }
+
     func markNotSpam(ids: [String]) async throws {
         try await batchModify(ids: ids, add: ["INBOX"], remove: ["SPAM"])
     }
@@ -407,6 +415,31 @@ final class GmailProvider: MailProvider {
             .replacingOccurrences(of: "=", with: "")
         let body = try JSONEncoder().encode(Body(raw: raw))
         _ = try await request("messages/send", method: "POST", jsonBody: body)
+    }
+
+    // MARK: - Drafts
+
+    func saveDraft(id: String?, rawMIME: Data) async throws -> String {
+        struct Message: Codable { var raw: String }
+        struct Body: Codable { var message: Message }
+        struct DraftResponse: Codable { var id: String }
+        let raw = rawMIME.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        let body = try JSONEncoder().encode(Body(message: Message(raw: raw)))
+        // PUT replaces an existing draft in place (same id); POST creates a new one.
+        let data: Data
+        if let id {
+            data = try await request("drafts/\(id)", method: "PUT", jsonBody: body)
+        } else {
+            data = try await request("drafts", method: "POST", jsonBody: body)
+        }
+        return try JSONDecoder().decode(DraftResponse.self, from: data).id
+    }
+
+    func deleteDraft(id: String) async throws {
+        _ = try await request("drafts/\(id)", method: "DELETE")
     }
 
     // MARK: - Mapping helpers

@@ -272,6 +272,7 @@ final class MailboxViewModel {
               (try? await GoogleAuth.shared.hasCalendarScope) == true else { return }
         let service = CalendarReminderService()
         service.onFire = { [weak self] reminders in self?.presentReminders(reminders) }
+        service.onCancelled = { [weak self] ids in self?.cancelReminders(ids) }
         service.start()
         reminderService = service
     }
@@ -867,12 +868,41 @@ final class MailboxViewModel {
         // first `await`, so the UI updates immediately; if the trash fails we put
         // the messages back and report the error.
         let removed = messages.filter { ids.contains($0.id) }
+        let sourceFolderId = currentFolder?.id
+        let sourceAccountId = currentAccountId
         removeLocal(ids: ids)
         do {
             try await provider.trash(ids: ids)
+            // Remember this delete so ⌘Z can put it back where it came from.
+            if let sourceFolderId, let sourceAccountId {
+                lastDeleted = (removed, sourceFolderId, sourceAccountId)
+            }
         } catch {
             restoreLocal(removed)
             errorMessage = "Couldn’t delete: \(error.localizedDescription)"
+        }
+    }
+
+    /// The most recent delete, retained so ⌘Z can restore it to its source folder.
+    private var lastDeleted: (headers: [MessageHeader], folderId: String, accountId: String)?
+
+    /// ⌘Z: restores the most recently deleted messages to the folder they were
+    /// deleted from, then forgets them (single-level undo).
+    func undoLastDelete() async {
+        guard let batch = lastDeleted,
+              let session = sessions.first(where: { $0.account.id == batch.accountId }) else { return }
+        lastDeleted = nil
+        do {
+            try await session.provider.untrash(ids: batch.headers.map(\.id), toFolderId: batch.folderId)
+            // Reappear instantly if that folder is still on screen. (For Graph the
+            // restored copy has a fresh id, so these rows are cosmetic until the
+            // next folder refresh reconciles them; Gmail keeps the same id.)
+            if currentAccountId == batch.accountId, currentFolder?.id == batch.folderId {
+                restoreLocal(batch.headers)
+            }
+            await refreshCurrentFolderCount()
+        } catch {
+            errorMessage = "Couldn’t undo delete: \(error.localizedDescription)"
         }
     }
 
@@ -1088,15 +1118,39 @@ final class MailboxViewModel {
         return nil
     }
 
-    func sendComposed(to: String, cc: String, subject: String, html: String, attachments: [URL]) async {
+    func sendComposed(to: String, cc: String, subject: String, html: String, attachments: [URL], draftId: String? = nil) async {
         // Remember who we send to so they autocomplete next time.
         contactStore.record(MailAddress.parseList(to) + MailAddress.parseList(cc))
+        guard let provider = currentProvider else {
+            errorMessage = "No account is selected."
+            return
+        }
         let scoped = attachments.filter { $0.startAccessingSecurityScopedResource() }
         defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
         let mime = MIMEBuilder.buildHTML(
             from: accountEmail, to: to, cc: cc, subject: subject, html: html, attachments: attachments
         )
-        await withProvider { try await $0.send(rawMIME: mime) }
+        do {
+            try await provider.send(rawMIME: mime)
+            // Only drop the saved draft once the send actually succeeds.
+            if let draftId { try? await provider.deleteDraft(id: draftId) }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Saves (or replaces) the autosaved draft for an in-progress compose, returning
+    /// the draft's id so the caller can keep updating and later delete it. Returns the
+    /// prior id unchanged on failure so a transient error doesn't orphan the draft.
+    func saveDraft(to: String, cc: String, subject: String, html: String,
+                   attachments: [URL], draftId: String?) async -> String? {
+        guard let provider = currentProvider else { return draftId }
+        let scoped = attachments.filter { $0.startAccessingSecurityScopedResource() }
+        defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
+        let mime = MIMEBuilder.buildHTML(
+            from: accountEmail, to: to, cc: cc, subject: subject, html: html, attachments: attachments
+        )
+        return (try? await provider.saveDraft(id: draftId, rawMIME: mime)) ?? draftId
     }
 
     // MARK: - New-mail notifications
@@ -1177,6 +1231,14 @@ final class MailboxViewModel {
         if let inbox = foldersByAccount[note.accountId]?.first(where: { $0.kind == .inbox }) {
             sidebarSelection = "acct:\(inbox.compositeId)"
             await selectFolder(inbox)
+            // The message may have arrived after the inbox last listed (or selectFolder
+            // was a no-op because we were already there), so its row can be absent from
+            // the list. Seed it from the notification's header so the row exists and is
+            // selectable — the open below then fetches the body.
+            if !messages.contains(where: { $0.id == note.id }) {
+                messages.append(note.header)
+                store.saveHeaders([note.header])
+            }
         }
         selection = [note.id]
         await openMessage(note.id)
@@ -1248,6 +1310,15 @@ final class MailboxViewModel {
     func dismissAllReminders() {
         for reminder in eventReminders { reminderService?.dismiss(reminder.id) }
         eventReminders.removeAll()
+        syncNotificationPanel()
+    }
+
+    /// Pulls cards for reminders the service found are backed by a now-deleted
+    /// calendar event (verified once a minute while a popup is showing).
+    private func cancelReminders(_ ids: [String]) {
+        guard !ids.isEmpty else { return }
+        let gone = Set(ids)
+        eventReminders.removeAll { gone.contains($0.id) }
         syncNotificationPanel()
     }
 
@@ -1548,6 +1619,8 @@ final class ComposeRequest: Identifiable {
     /// Remote attachments to carry over (used when forwarding); fetched and
     /// attached by the compose view on appear.
     var attachments: [MailAttachment]
+    /// Server-side id of the autosaved draft for this compose, once one exists.
+    var draftId: String?
 
     init(kind: ComposeKind, to: String = "", subject: String = "", quoted: String = "",
          quotedHTML: String = "", attachments: [MailAttachment] = []) {

@@ -130,13 +130,19 @@ struct MessageListView: View {
                 Task { await vm.openMessage(id) }
             }
         }
-        // ⌘A selects every message in the current folder's list.
+        // ⌘A selects every message in the list; ⌘Z undoes the last delete.
         .onKeyPress(phases: .down) { press in
-            guard press.key == KeyEquivalent("a"), press.modifiers.contains(.command) else {
+            guard press.modifiers.contains(.command) else { return .ignored }
+            switch press.key {
+            case KeyEquivalent("a"):
+                vm.selection = Set(vm.displayedMessages.map(\.id))
+                return .handled
+            case KeyEquivalent("z"):
+                Task { await vm.undoLastDelete() }
+                return .handled
+            default:
                 return .ignored
             }
-            vm.selection = Set(vm.displayedMessages.map(\.id))
-            return .handled
         }
         // Delete/Backspace removes the selected messages when the list is focused.
         .onDeleteCommand(perform: deleteSelection)

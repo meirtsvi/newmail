@@ -278,7 +278,11 @@ final class GraphProvider: MailProvider {
                         cid: (cid?.isEmpty ?? true) ? nil : cid,
                         mime: mime, data: bytes, filename: att.name ?? "image", attachmentId: att.id
                     ))
-                } else if !(att.isInline ?? false) {
+                } else {
+                    // Everything that isn't an embeddable picture shows as an
+                    // attachment chip — including files the server marks "inline"
+                    // (only images get embedded, so an inline non-picture would
+                    // otherwise vanish), and images we couldn't download.
                     attachments.append(MailAttachment(
                         id: att.id, messageId: id, filename: att.name ?? "attachment",
                         mimeType: mime, sizeBytes: att.size ?? 0
@@ -341,7 +345,23 @@ final class GraphProvider: MailProvider {
     }
 
     func trash(ids: [String]) async throws {
-        try await moveAll(ids: ids, to: "deleteditems")
+        for id in ids {
+            // Graph assigns a new id to the moved copy; remember it so ⌘Z can
+            // find the message in Deleted Items and move it back.
+            trashedIds[id] = try await moveCapturing(id: id, to: "deleteditems")
+        }
+    }
+
+    /// Original message id → its id in Deleted Items, captured at trash time so a
+    /// later `untrash` can locate the moved copy.
+    private var trashedIds: [String: String] = [:]
+
+    func untrash(ids: [String], toFolderId: String) async throws {
+        for id in ids {
+            let trashedId = trashedIds[id] ?? id
+            _ = try await moveCapturing(id: trashedId, to: toFolderId)
+            trashedIds[id] = nil
+        }
     }
 
     func archive(ids: [String]) async throws {
@@ -358,10 +378,19 @@ final class GraphProvider: MailProvider {
 
     private func moveAll(ids: [String], to destination: String) async throws {
         guard !ids.isEmpty else { return }
-        let body = try JSONSerialization.data(withJSONObject: ["destinationId": destination])
         for id in ids {
-            try await request("messages/\(id)/move", method: "POST", jsonBody: body)
+            _ = try await moveCapturing(id: id, to: destination)
         }
+    }
+
+    /// Moves one message and returns the id of the moved copy (Graph mints a new
+    /// id for the destination message).
+    @discardableResult
+    private func moveCapturing(id: String, to destination: String) async throws -> String {
+        let body = try JSONSerialization.data(withJSONObject: ["destinationId": destination])
+        let data = try await request("messages/\(id)/move", method: "POST", jsonBody: body)
+        let moved = try JSONDecoder().decode(GraphAPI.Message.self, from: data)
+        return moved.id
     }
 
     // MARK: - Sending
@@ -372,6 +401,22 @@ final class GraphProvider: MailProvider {
         let created = try await request("messages", method: "POST", rawBody: base64, contentType: "text/plain")
         let msg = try JSONDecoder().decode(GraphAPI.Message.self, from: created)
         try await request("messages/\(msg.id)/send", method: "POST")
+    }
+
+    // MARK: - Drafts
+
+    func saveDraft(id: String?, rawMIME: Data) async throws -> String {
+        // POSTing a MIME message creates it as a draft (isDraft = true). Graph can't
+        // replace a draft's MIME in place, so an update deletes the old one and makes
+        // a fresh draft, returning the new id.
+        if let id { try? await deleteDraft(id: id) }
+        let base64 = rawMIME.base64EncodedData()
+        let created = try await request("messages", method: "POST", rawBody: base64, contentType: "text/plain")
+        return try JSONDecoder().decode(GraphAPI.Message.self, from: created).id
+    }
+
+    func deleteDraft(id: String) async throws {
+        try await request("messages/\(id)", method: "DELETE")
     }
 
     // MARK: - Mapping helpers
