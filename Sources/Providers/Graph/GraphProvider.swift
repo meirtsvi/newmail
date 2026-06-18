@@ -452,6 +452,11 @@ final class GraphProvider: MailProvider {
         try await request("messages/\(id)", method: "DELETE")
     }
 
+    /// A Graph draft is itself a message, so its message id is already the draft id.
+    func draftId(forMessageId messageId: String) async throws -> String? {
+        messageId
+    }
+
     // MARK: - Mapping helpers
 
     private static func kind(for f: GraphAPI.MailFolder) -> FolderKind {

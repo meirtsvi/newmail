@@ -445,6 +445,26 @@ final class GmailProvider: MailProvider {
         _ = try await request("drafts/\(id)", method: "DELETE")
     }
 
+    /// Maps a Drafts message id to its draft id (they differ in Gmail) by scanning
+    /// the draft list, which pairs each draft id with its underlying message.
+    func draftId(forMessageId messageId: String) async throws -> String? {
+        struct MessageRef: Decodable { var id: String }
+        struct DraftRef: Decodable { var id: String; var message: MessageRef }
+        struct ListResponse: Decodable { var drafts: [DraftRef]?; var nextPageToken: String? }
+        var pageToken: String?
+        repeat {
+            var query = [URLQueryItem(name: "maxResults", value: "500")]
+            if let pageToken { query.append(URLQueryItem(name: "pageToken", value: pageToken)) }
+            let data = try await request("drafts", query: query)
+            let resp = try JSONDecoder().decode(ListResponse.self, from: data)
+            if let match = resp.drafts?.first(where: { $0.message.id == messageId }) {
+                return match.id
+            }
+            pageToken = resp.nextPageToken
+        } while pageToken != nil
+        return nil
+    }
+
     // MARK: - Cross-account move (destination side)
 
     /// Imports a message into this mailbox via `messages.insert` (IMAP-APPEND-style):

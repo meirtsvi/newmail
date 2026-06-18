@@ -810,6 +810,12 @@ final class MailboxViewModel {
 
     func openInWindow(_ id: String) {
         guard let header = messages.first(where: { $0.id == id }), let provider = currentProvider else { return }
+        // A draft opens in the compose window so it can be edited and resent,
+        // rather than in the read-only message window.
+        if isDraft(header) {
+            openDraftForEditing(header, provider: provider)
+            return
+        }
         modalBody = store.cachedBody(id: id)
         activeSheet = .message(header)
         Task {
@@ -827,6 +833,36 @@ final class MailboxViewModel {
                 mutateLocal(ids: [id]) { $0.isRead = true }
                 store.updateRead(ids: [id], read: true)
             }
+        }
+    }
+
+    /// Whether the header is an editable draft (lives in its account's Drafts folder).
+    private func isDraft(_ header: MessageHeader) -> Bool {
+        guard let draftsId = foldersByAccount[header.accountId]?.first(where: { $0.kind == .drafts })?.id
+        else { return false }
+        return header.labelIds.contains(draftsId)
+    }
+
+    /// Opens a Drafts message in the compose window pre-filled with its recipients,
+    /// subject, body, and attachments, reusing its server draft id so continuing the
+    /// draft updates the same one (and sending removes it) instead of duplicating it.
+    private func openDraftForEditing(_ header: MessageHeader, provider: MailProvider) {
+        Task {
+            let body = await ensureBody(for: header)
+            let draftId = try? await provider.draftId(forMessageId: header.id)
+            // Seed recipients as bare addresses (like reply does): MIMEBuilder writes
+            // the To/Cc headers verbatim, so an unquoted display name with a comma
+            // would be misread as extra recipients.
+            let request = ComposeRequest(
+                kind: .draft,
+                to: header.to.map(\.email).filter { !$0.isEmpty }.joined(separator: ", "),
+                subject: header.subject,
+                attachments: body?.attachments ?? []
+            )
+            request.cc = (body?.cc ?? []).map(\.email).filter { !$0.isEmpty }.joined(separator: ", ")
+            request.bodyHTML = body?.html ?? ""
+            request.draftId = draftId
+            composeWindows.open(request, vm: self)
         }
     }
 
@@ -1717,13 +1753,14 @@ enum ActiveSheet: Identifiable {
 }
 
 enum ComposeKind {
-    case new, reply, replyAll, forward
+    case new, reply, replyAll, forward, draft
     var title: String {
         switch self {
         case .new: return "New Message"
         case .reply: return "Reply"
         case .replyAll: return "Reply All"
         case .forward: return "Forward"
+        case .draft: return "Draft"
         }
     }
 }
@@ -1736,6 +1773,8 @@ final class ComposeRequest: Identifiable {
     var cc: String
     var subject: String
     var body: String
+    /// Existing HTML body to load into the editor when continuing a saved draft.
+    var bodyHTML: String = ""
     var quotedHTML: String
     /// Remote attachments to carry over (used when forwarding); fetched and
     /// attached by the compose view on appear.

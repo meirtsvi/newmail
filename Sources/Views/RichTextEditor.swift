@@ -23,6 +23,20 @@ final class RichTextController: ObservableObject {
         textView?.textStorage?.setAttributedString(attributed)
     }
 
+    /// Loads existing HTML (e.g. a saved draft) into the editor as editable rich
+    /// text. Leaves the editor empty if the HTML can't be parsed.
+    func setInitialHTML(_ html: String) {
+        guard let data = html.data(using: .utf8),
+              let attributed = try? NSAttributedString(
+                data: data,
+                options: [.documentType: NSAttributedString.DocumentType.html,
+                          .characterEncoding: String.Encoding.utf8.rawValue],
+                documentAttributes: nil)
+        else { return }
+        textView?.textStorage?.setAttributedString(attributed)
+        refreshInlineImages()
+    }
+
     /// Moves keyboard focus into the body editor (used to jump straight from the
     /// Subject field to the body, skipping the formatting buttons).
     func focus() {

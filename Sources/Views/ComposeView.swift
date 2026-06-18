@@ -53,7 +53,10 @@ struct ComposeView: View {
             // The quoted original is no longer dropped into the editor (the HTML
             // round-trip degraded its formatting). It's shown read-only below and
             // appended verbatim at send time; the editor holds only the new reply.
-            if !request.body.isEmpty {
+            if !request.bodyHTML.isEmpty {
+                // Continuing a saved draft: load its HTML as editable rich text.
+                rich.setInitialHTML(request.bodyHTML)
+            } else if !request.body.isEmpty {
                 rich.setInitial(NSAttributedString(
                     string: request.body,
                     attributes: [.font: RichTextController.defaultFont]

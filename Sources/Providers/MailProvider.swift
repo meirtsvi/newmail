@@ -46,6 +46,13 @@ protocol MailProvider: AnyObject {
     /// Removes a draft (used after the message is sent, or to discard it).
     func deleteDraft(id: String) async throws
 
+    /// Resolves the provider-specific draft id for a message that lives in the
+    /// Drafts folder, so reopening it for editing replaces/deletes the original
+    /// instead of creating a duplicate. Gmail draft ids differ from message ids;
+    /// where a draft *is* a message, this returns the message id. Nil if no
+    /// matching draft is found.
+    func draftId(forMessageId messageId: String) async throws -> String?
+
     // MARK: - Cross-account move
 
     /// The original RFC822/MIME bytes of a message, used to re-create it faithfully
