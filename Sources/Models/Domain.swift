@@ -58,8 +58,38 @@ struct MailAddress: Hashable, Identifiable {
         return MailAddress(name: "", email: s)
     }
 
+    /// Splits a recipient-list header into individual addresses, breaking only on
+    /// top-level commas. Commas inside a quoted display name (the common Exchange
+    /// `"Last, First" <user@host>` form) or inside the angle-bracketed address are
+    /// kept with their entry. Empty entries (e.g. from a trailing comma) are dropped.
     static func parseList(_ raw: String) -> [MailAddress] {
-        raw.split(separator: ",").map { parse(String($0)) }
+        var entries: [String] = []
+        var current = ""
+        var inQuote = false
+        var inAngle = false
+        for ch in raw {
+            switch ch {
+            case "\"":
+                inQuote.toggle()
+                current.append(ch)
+            case "<" where !inQuote:
+                inAngle = true
+                current.append(ch)
+            case ">" where !inQuote:
+                inAngle = false
+                current.append(ch)
+            case "," where !inQuote && !inAngle:
+                entries.append(current)
+                current = ""
+            default:
+                current.append(ch)
+            }
+        }
+        entries.append(current)
+        return entries
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .map(parse)
     }
 }
 
