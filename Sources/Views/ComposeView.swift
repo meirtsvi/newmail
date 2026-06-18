@@ -205,6 +205,9 @@ struct ComposeView: View {
             Button { rich.toggleUnderline() } label: { Image(systemName: "underline") }.help("Underline")
             Button { showLinkPrompt = true } label: { Image(systemName: "link") }.help("Insert link")
             Divider().frame(height: 16)
+            Button { rich.alignLeft() } label: { Image(systemName: "text.alignleft") }.help("Align left")
+            Button { rich.alignRight() } label: { Image(systemName: "text.alignright") }.help("Align right")
+            Divider().frame(height: 16)
             fontPickers
             Divider().frame(height: 16)
             Button { showImporter = true } label: { Image(systemName: "paperclip") }.help("Attach file")

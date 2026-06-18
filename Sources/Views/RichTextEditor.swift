@@ -46,6 +46,13 @@ final class RichTextController: ObservableObject {
                         range: range)
     }
 
+    /// Left-aligns the selected paragraphs (or the paragraph being typed). Uses
+    /// NSText's built-in action so paragraph boundaries and undo are handled for us.
+    func alignLeft() { textView?.alignLeft(nil) }
+
+    /// Right-aligns the selected paragraphs (or the paragraph being typed).
+    func alignRight() { textView?.alignRight(nil) }
+
     /// The label used for the default UI/system font in the family picker; it has no
     /// real family name, so it's special-cased when applied.
     static let systemFamily = "System"
