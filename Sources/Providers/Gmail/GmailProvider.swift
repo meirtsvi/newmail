@@ -442,6 +442,77 @@ final class GmailProvider: MailProvider {
         _ = try await request("drafts/\(id)", method: "DELETE")
     }
 
+    // MARK: - Cross-account move (destination side)
+
+    /// Imports a message into this mailbox via `messages.insert` (IMAP-APPEND-style):
+    /// it does not send anything and bypasses spam classification, so the message
+    /// keeps its original sender, headers, and date. `internalDateSource=dateHeader`
+    /// dates it by its own `Date:` header so it sorts where it belongs. The target
+    /// label is applied (plus `UNREAD` to keep it unread). Requires `gmail.modify`.
+    func importRawMessage(_ raw: Data, toFolderId: String, markUnread: Bool) async throws -> String {
+        var labels = [toFolderId]
+        if markUnread { labels.append("UNREAD") }
+        // The inline JSON insert is capped around 5 MB; larger messages (big
+        // attachments) go through the resumable/multipart upload endpoint instead.
+        if raw.count > 4_000_000 {
+            return try await uploadImport(raw: raw, labelIds: labels)
+        }
+        struct Body: Encodable { var raw: String; var labelIds: [String] }
+        let body = try JSONEncoder().encode(Body(raw: Self.base64url(raw), labelIds: labels))
+        let data = try await request(
+            "messages",
+            query: [URLQueryItem(name: "internalDateSource", value: "dateHeader")],
+            method: "POST", jsonBody: body
+        )
+        struct Inserted: Decodable { var id: String }
+        return try JSONDecoder().decode(Inserted.self, from: data).id
+    }
+
+    /// Inserts a large message through the media-upload endpoint (a different host
+    /// than the JSON API), sending the raw RFC822 bytes directly so we don't inflate
+    /// them 33% with base64 inside a JSON body.
+    private func uploadImport(raw: Data, labelIds: [String]) async throws -> String {
+        var comps = URLComponents(string: "https://gmail.googleapis.com/upload/gmail/v1/users/me/messages")!
+        comps.queryItems = [
+            URLQueryItem(name: "uploadType", value: "multipart"),
+            URLQueryItem(name: "internalDateSource", value: "dateHeader"),
+        ]
+        let boundary = "newmail-\(UUID().uuidString)"
+        var req = URLRequest(url: comps.url!)
+        req.httpMethod = "POST"
+        let token = try await auth.accessToken()
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("multipart/related; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        let meta = try JSONSerialization.data(withJSONObject: ["labelIds": labelIds])
+        var body = Data()
+        func append(_ s: String) { body.append(s.data(using: .utf8)!) }
+        append("--\(boundary)\r\n")
+        append("Content-Type: application/json; charset=UTF-8\r\n\r\n")
+        body.append(meta)
+        append("\r\n--\(boundary)\r\n")
+        append("Content-Type: message/rfc822\r\n\r\n")
+        body.append(raw)
+        append("\r\n--\(boundary)--\r\n")
+        req.httpBody = body
+
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw MailError.other("No HTTP response") }
+        guard (200..<300).contains(http.statusCode) else {
+            throw MailError.api(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+        }
+        struct Inserted: Decodable { var id: String }
+        return try JSONDecoder().decode(Inserted.self, from: data).id
+    }
+
+    /// RFC 2822 message bytes → base64url (no padding), as Gmail's `raw` field expects.
+    private static func base64url(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
     // MARK: - Mapping helpers
 
     private static let hiddenSystemLabels: Set<String> = [

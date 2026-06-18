@@ -45,4 +45,34 @@ protocol MailProvider: AnyObject {
 
     /// Removes a draft (used after the message is sent, or to discard it).
     func deleteDraft(id: String) async throws
+
+    // MARK: - Cross-account move
+
+    /// The original RFC822/MIME bytes of a message, used to re-create it faithfully
+    /// in another account (preserving sender, date, headers, and attachments).
+    func exportRawMessage(id: String) async throws -> Data
+
+    /// Imports raw RFC822/MIME into `toFolderId` (a label/folder of *this* account) as a
+    /// real received message — not a draft, not sent — preserving the original sender,
+    /// date, and headers. Pass `markUnread` to land it unread. Returns the new id.
+    func importRawMessage(_ raw: Data, toFolderId: String, markUnread: Bool) async throws -> String
+
+    /// Permanently removes messages from the server (used to delete the source copy
+    /// after it has been successfully imported into another account).
+    func permanentlyDelete(ids: [String]) async throws
+}
+
+// Default implementations so each provider only implements the directions it
+// supports. A cross-account move only exports/deletes from the source and imports
+// into the destination, so the unused half stays absent and these throw clearly.
+extension MailProvider {
+    func exportRawMessage(id: String) async throws -> Data {
+        throw MailError.other("Exporting messages isn't supported for this account.")
+    }
+    func importRawMessage(_ raw: Data, toFolderId: String, markUnread: Bool) async throws -> String {
+        throw MailError.other("Importing messages isn't supported for this account.")
+    }
+    func permanentlyDelete(ids: [String]) async throws {
+        throw MailError.other("Permanent delete isn't supported for this account.")
+    }
 }

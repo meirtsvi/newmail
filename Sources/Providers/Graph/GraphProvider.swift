@@ -378,6 +378,28 @@ final class GraphProvider: MailProvider {
         try await moveAll(ids: ids, to: "archive")
     }
 
+    // MARK: - Cross-account move (source side)
+
+    /// Returns the message's original MIME via `GET /messages/{id}/$value`. The
+    /// response body is the raw RFC822 stream, used verbatim to re-create the
+    /// message in another account.
+    func exportRawMessage(id: String) async throws -> Data {
+        try await request("messages/\(id)/$value")
+    }
+
+    /// Permanently deletes messages (purges them, skipping Deleted Items) after a
+    /// successful cross-account move. Falls back to a soft delete to Deleted Items
+    /// if the mailbox doesn't support `permanentDelete` (e.g. some consumer tenants).
+    func permanentlyDelete(ids: [String]) async throws {
+        for id in ids {
+            do {
+                _ = try await request("messages/\(id)/permanentDelete", method: "POST")
+            } catch MailError.api(let code, _) where code == 404 || code == 501 {
+                _ = try await request("messages/\(id)", method: "DELETE")
+            }
+        }
+    }
+
     func move(ids: [String], toFolderId: String, fromFolderId: String?) async throws {
         try await moveAll(ids: ids, to: toFolderId)
     }

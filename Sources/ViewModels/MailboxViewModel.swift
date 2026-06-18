@@ -515,21 +515,36 @@ final class MailboxViewModel {
         quickMoveFolders = quickMoveOrder.compactMap { byId[$0] }
     }
 
-    /// Whether `folder` can receive a drop of the current selection: same account,
-    /// and not the folder already being viewed.
+    /// Whether `folder` can receive a drop of the current selection: not the folder
+    /// already being viewed, and either in the same account or a supported
+    /// cross-account target (Outlook → Gmail).
     func isDropTarget(_ folder: MailFolder) -> Bool {
-        folder.accountId == currentAccountId && folder.compositeId != currentFolder?.compositeId
+        guard folder.compositeId != currentFolder?.compositeId else { return false }
+        return folder.accountId == currentAccountId || canMoveAcross(toAccountId: folder.accountId)
     }
 
-    /// Moves dropped/quick-moved messages, rejecting cross-account targets.
+    /// Cross-account moves are supported only Outlook → Gmail: Gmail can import a
+    /// real received message via `messages.insert`, whereas Graph would only create
+    /// a draft. The source is always the current account.
+    private func canMoveAcross(toAccountId destId: String) -> Bool {
+        guard destId != currentAccountId,
+              let src = sessions.first(where: { $0.account.id == currentAccountId }),
+              let dest = sessions.first(where: { $0.account.id == destId }) else { return false }
+        return src.account.providerKind == .graph && dest.account.providerKind == .gmail
+    }
+
+    /// Moves dropped/quick-moved messages, routing same-account moves through the
+    /// label/folder change and supported cross-account moves through a real
+    /// export → import → delete transfer.
     func moveDropped(_ ids: [String], to folder: MailFolder) async {
-        guard !ids.isEmpty else { return }
-        guard folder.accountId == currentAccountId else {
-            statusMessage = "Can’t move across accounts."
-            return
+        guard !ids.isEmpty, folder.compositeId != currentFolder?.compositeId else { return }
+        if folder.accountId == currentAccountId {
+            await move(ids, to: folder)
+        } else if canMoveAcross(toAccountId: folder.accountId) {
+            await moveAcrossAccounts(ids, to: folder)
+        } else {
+            statusMessage = "Can’t move into this account."
         }
-        guard folder.compositeId != currentFolder?.compositeId else { return }
-        await move(ids, to: folder)
     }
 
     // MARK: - Selection
@@ -1032,6 +1047,40 @@ final class MailboxViewModel {
             try await $0.move(ids: ids, toFolderId: folder.id, fromFolderId: self.currentFolder?.id)
         }
         removeLocal(ids: ids)
+    }
+
+    /// Moves messages from the current (Outlook) account into a folder of another
+    /// (Gmail) account: exports each message's original MIME, re-creates it as a real
+    /// message in the destination, then permanently deletes the source copy. The
+    /// delete only runs after the import succeeds, so a failure never loses mail; on
+    /// the first failure we stop and leave already-moved messages moved.
+    func moveAcrossAccounts(_ ids: [String], to folder: MailFolder) async {
+        guard let source = sessions.first(where: { $0.account.id == currentAccountId }),
+              let dest = sessions.first(where: { $0.account.id == folder.accountId }) else { return }
+        // Importing into Gmail needs write scope; prompt for it rather than 403-ing.
+        if dest.account.providerKind == .gmail, !gmailWriteScope {
+            statusMessage = "Grant Gmail write access to move messages into Gmail."
+            await signInForWriteAccess()
+            guard gmailWriteScope else { return }
+        }
+        let batch = messages.filter { ids.contains($0.id) }
+        var moved = 0
+        for header in batch {
+            do {
+                let raw = try await source.provider.exportRawMessage(id: header.id)
+                _ = try await dest.provider.importRawMessage(raw, toFolderId: folder.id, markUnread: !header.isRead)
+                try await source.provider.permanentlyDelete(ids: [header.id])
+                removeLocal(ids: [header.id])
+                moved += 1
+            } catch {
+                errorMessage = "Couldn’t move “\(header.subject)”: \(error.localizedDescription)"
+                break
+            }
+        }
+        if moved > 0 {
+            let name = dest.account.displayName.isEmpty ? dest.account.email : dest.account.displayName
+            statusMessage = "Moved \(moved) message\(moved == 1 ? "" : "s") to \(name)."
+        }
     }
 
     func snoozeMessages(_ ids: [String], until wake: Date) async {
