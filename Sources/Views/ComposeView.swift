@@ -36,7 +36,7 @@ struct ComposeView: View {
             formattingBar
             RichTextEditor(controller: rich)
                 .frame(minHeight: 160)
-            if !attachments.isEmpty || loadingAttachments {
+            if !attachments.isEmpty || !rich.inlineImages.isEmpty || loadingAttachments {
                 Divider()
                 attachmentBar
             }
@@ -106,12 +106,12 @@ struct ComposeView: View {
     /// later saves replace it and it can be deleted on send.
     private func autosaveDraft() async {
         guard !sending, hasDraftContent else { return }
-        let html = composedHTML()
+        let (html, inlineImages) = composedBody()
         let snapshot = [request.to, request.cc, request.subject, html].joined(separator: "\u{1}")
         guard snapshot != lastSavedSnapshot else { return }
         let id = await vm.saveDraft(
             to: request.to, cc: request.cc, subject: request.subject,
-            html: html, attachments: attachments, draftId: request.draftId
+            html: html, attachments: attachments, inlineImages: inlineImages, draftId: request.draftId
         )
         request.draftId = id
         lastSavedSnapshot = snapshot
@@ -133,11 +133,11 @@ struct ComposeView: View {
             Button("Cancel") { onClose() }
             Button {
                 sending = true
-                let html = composedHTML()
+                let (html, inlineImages) = composedBody()
                 Task {
                     await vm.sendComposed(
                         to: request.to, cc: request.cc, subject: request.subject,
-                        html: html, attachments: attachments, draftId: request.draftId
+                        html: html, attachments: attachments, inlineImages: inlineImages, draftId: request.draftId
                     )
                     sending = false
                     onClose()
@@ -248,6 +248,20 @@ struct ComposeView: View {
                     .padding(.horizontal, 8).padding(.vertical, 5)
                     .background(.quaternary, in: Capsule())
                 }
+                ForEach(rich.inlineImages) { image in
+                    HStack(spacing: 4) {
+                        Image(systemName: "photo")
+                        Text("Image").lineLimit(1)
+                        Button {
+                            rich.removeInlineImage(image.id)
+                        } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.caption)
+                    .padding(.horizontal, 8).padding(.vertical, 5)
+                    .background(.quaternary, in: Capsule())
+                }
                 ForEach(attachments, id: \.self) { url in
                     HStack(spacing: 4) {
                         Image(systemName: "doc")
@@ -281,13 +295,15 @@ struct ComposeView: View {
         }
     }
 
-    /// The reply the user typed, followed by the original message appended verbatim
+    /// The reply the user typed (with any pasted images rewritten to `cid:` refs and
+    /// returned as related parts), followed by the original message appended verbatim
     /// so its formatting (and inline images) survive intact.
-    private func composedHTML() -> String {
-        let userHTML = rich.exportHTML()
-        guard !request.quotedHTML.isEmpty else { return userHTML }
+    private func composedBody() -> (html: String, inlineImages: [ComposeInlineImage]) {
+        let (userHTML, images) = rich.exportBody()
+        guard !request.quotedHTML.isEmpty else { return (userHTML, images) }
         let userInner = PlainTextHTML.bodyFragment(userHTML)
-        return "<html><head><meta charset=\"utf-8\"></head><body>\(userInner)\(request.quotedHTML)</body></html>"
+        let html = "<html><head><meta charset=\"utf-8\"></head><body>\(userInner)\(request.quotedHTML)</body></html>"
+        return (html, images)
     }
 
     private var linkPrompt: some View {

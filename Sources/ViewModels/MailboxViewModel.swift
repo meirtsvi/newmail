@@ -62,6 +62,8 @@ final class MailboxViewModel {
     // Calendar event reminder popups shown in the same floating panel.
     var eventReminders: [EventReminder] = []
     @ObservationIgnored private var reminderService: CalendarReminderService?
+    // Last time a reminder alert sound played, to debounce simultaneous pop-ups.
+    @ObservationIgnored private var lastReminderSound: Date?
     // Inbox message ids already seen per account, so only genuinely new mail pops.
     private var seenInboxIds: [String: Set<String>] = [:]
     @ObservationIgnored private var notificationPanel: NotificationPanelController?
@@ -1203,7 +1205,7 @@ final class MailboxViewModel {
         return nil
     }
 
-    func sendComposed(to: String, cc: String, subject: String, html: String, attachments: [URL], draftId: String? = nil) async {
+    func sendComposed(to: String, cc: String, subject: String, html: String, attachments: [URL], inlineImages: [ComposeInlineImage] = [], draftId: String? = nil) async {
         // Remember who we send to so they autocomplete next time.
         contactStore.record(MailAddress.parseList(to) + MailAddress.parseList(cc))
         guard let provider = currentProvider else {
@@ -1213,7 +1215,8 @@ final class MailboxViewModel {
         let scoped = attachments.filter { $0.startAccessingSecurityScopedResource() }
         defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
         let mime = MIMEBuilder.buildHTML(
-            from: accountEmail, to: to, cc: cc, subject: subject, html: html, attachments: attachments
+            from: accountEmail, to: to, cc: cc, subject: subject, html: html,
+            attachments: attachments, inlineImages: inlineImages
         )
         do {
             try await provider.send(rawMIME: mime)
@@ -1231,12 +1234,13 @@ final class MailboxViewModel {
     /// the draft's id so the caller can keep updating and later delete it. Returns the
     /// prior id unchanged on failure so a transient error doesn't orphan the draft.
     func saveDraft(to: String, cc: String, subject: String, html: String,
-                   attachments: [URL], draftId: String?) async -> String? {
+                   attachments: [URL], inlineImages: [ComposeInlineImage] = [], draftId: String?) async -> String? {
         guard let provider = currentProvider else { return draftId }
         let scoped = attachments.filter { $0.startAccessingSecurityScopedResource() }
         defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
         let mime = MIMEBuilder.buildHTML(
-            from: accountEmail, to: to, cc: cc, subject: subject, html: html, attachments: attachments
+            from: accountEmail, to: to, cc: cc, subject: subject, html: html,
+            attachments: attachments, inlineImages: inlineImages
         )
         let newId = (try? await provider.saveDraft(id: draftId, rawMIME: mime)) ?? draftId
         // A brand-new draft (no prior id) changes the Drafts folder count; an
@@ -1381,10 +1385,23 @@ final class MailboxViewModel {
     /// Raises a popup card for each fired reminder. Unlike mail popups, reminder
     /// cards have no auto-dismiss timer — they persist until the user acts.
     private func presentReminders(_ reminders: [EventReminder]) {
+        var didAdd = false
         for reminder in reminders where !eventReminders.contains(where: { $0.id == reminder.id }) {
             eventReminders.insert(reminder, at: 0)
+            didAdd = true
         }
         syncNotificationPanel()
+        if didAdd { playReminderSound() }
+    }
+
+    /// Plays a single alert sound when reminder cards appear. Debounced so a batch
+    /// of reminders firing together (or back-to-back ticks) makes one sound, not one
+    /// per card.
+    private func playReminderSound() {
+        let now = Date()
+        if let last = lastReminderSound, now.timeIntervalSince(last) < 2 { return }
+        lastReminderSound = now
+        (NSSound(named: "Glass") ?? NSSound(named: "Ping"))?.play()
     }
 
     func snoozeReminder(_ reminder: EventReminder, preset: CalendarReminderService.SnoozePreset) {

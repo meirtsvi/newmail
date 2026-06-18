@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 /// Controls a rich-text NSTextView: applies formatting from the SwiftUI toolbar
 /// and exports the content as HTML for sending.
@@ -9,6 +10,14 @@ final class RichTextController: ObservableObject {
     /// Invoked when the user presses Shift-Tab in the body, to move focus back to
     /// the preceding compose field.
     var onShiftTab: (() -> Void)?
+
+    /// Images pasted or dropped into the body, in document order. Derived from the
+    /// text storage so it stays in sync when an image is deleted in the editor.
+    @Published private(set) var inlineImages: [ComposeInlineImage] = []
+
+    /// Prefix marking an attachment as one of our tracked inline images; the full
+    /// `preferredFilename` doubles as the image's token, Content-ID, and HTML src.
+    private static let inlineTokenPrefix = "nm-inline-"
 
     func setInitial(_ attributed: NSAttributedString) {
         textView?.textStorage?.setAttributedString(attributed)
@@ -123,6 +132,166 @@ final class RichTextController: ObservableObject {
         }
         return ts.string
     }
+
+    // MARK: Inline images
+
+    /// Inserts a pasted/dropped image (PNG data) at the caret as an inline
+    /// attachment the user can see, tracked for `cid:` embedding at send time.
+    func insertImage(_ data: Data, mime: String) {
+        guard let tv = textView, let ts = tv.textStorage else { return }
+        let token = "\(Self.inlineTokenPrefix)\(UUID().uuidString.lowercased()).png"
+        let wrapper = FileWrapper(regularFileWithContents: data)
+        wrapper.preferredFilename = token
+        let attachment = NSTextAttachment(fileWrapper: wrapper)
+        if let image = NSImage(data: data) {
+            attachment.image = image
+            // Constrain very large images to a sensible on-screen width so a big
+            // screenshot doesn't blow out the editor.
+            let maxWidth: CGFloat = 360
+            let size = image.size
+            if size.width > maxWidth, size.width > 0 {
+                let scale = maxWidth / size.width
+                attachment.bounds = CGRect(x: 0, y: 0, width: maxWidth, height: (size.height * scale).rounded())
+            }
+        }
+        let attrString = NSAttributedString(attachment: attachment)
+        let range = tv.selectedRange()
+        guard tv.shouldChangeText(in: range, replacementString: nil) else { return }
+        ts.replaceCharacters(in: range, with: attrString)
+        // Carry the body font so text typed after the image keeps the default look.
+        tv.typingAttributes[.font] = Self.defaultFont
+        tv.didChangeText()
+        tv.setSelectedRange(NSRange(location: range.location + 1, length: 0))
+        refreshInlineImages()
+    }
+
+    /// Removes a tracked inline image from the body by its token.
+    func removeInlineImage(_ token: String) {
+        guard let tv = textView, let ts = tv.textStorage else { return }
+        var target: NSRange?
+        ts.enumerateAttribute(.attachment, in: NSRange(location: 0, length: ts.length)) { value, range, stop in
+            if let att = value as? NSTextAttachment, att.fileWrapper?.preferredFilename == token {
+                target = range
+                stop.pointee = true
+            }
+        }
+        guard let range = target, tv.shouldChangeText(in: range, replacementString: "") else { return }
+        ts.replaceCharacters(in: range, with: "")
+        tv.didChangeText()
+        refreshInlineImages()
+    }
+
+    /// Rebuilds `inlineImages` from the text storage's image attachments, in
+    /// document order. The text storage is the single source of truth, so deleting
+    /// an image in the editor drops it here too.
+    func refreshInlineImages() {
+        guard let ts = textView?.textStorage else { return }
+        var found: [ComposeInlineImage] = []
+        ts.enumerateAttribute(.attachment, in: NSRange(location: 0, length: ts.length)) { value, _, _ in
+            guard let att = value as? NSTextAttachment,
+                  let token = att.fileWrapper?.preferredFilename,
+                  token.hasPrefix(Self.inlineTokenPrefix),
+                  let data = att.fileWrapper?.regularFileContents,
+                  !found.contains(where: { $0.id == token }) else { return }
+            found.append(ComposeInlineImage(id: token, mime: "image/png", data: data))
+        }
+        if found.map(\.id) != inlineImages.map(\.id) { inlineImages = found }
+    }
+
+    /// The body HTML with each inline image's `<img>` src rewritten to `cid:…`,
+    /// plus the images (in document order) to send as related parts.
+    func exportBody() -> (html: String, images: [ComposeInlineImage]) {
+        refreshInlineImages()
+        let html = exportHTML()
+        guard !inlineImages.isEmpty else { return (html, []) }
+        let rewritten = Self.rewriteImageSources(in: html, to: inlineImages.map(\.cid))
+        return (rewritten, inlineImages)
+    }
+
+    /// Rewrites the src of each `<img>` tag (in order) to `cid:<cid>`. The HTML
+    /// export emits one `<img>` per image attachment in document order, so a
+    /// positional mapping is robust regardless of how the exporter named the src.
+    private static func rewriteImageSources(in html: String, to cids: [String]) -> String {
+        guard let regex = try? NSRegularExpression(pattern: "<img\\b[^>]*>", options: [.caseInsensitive]) else { return html }
+        let ns = html as NSString
+        let matches = regex.matches(in: html, range: NSRange(location: 0, length: ns.length))
+        guard !matches.isEmpty else { return html }
+        var result = ""
+        var lastEnd = 0
+        for (index, match) in matches.enumerated() {
+            let r = match.range
+            result += ns.substring(with: NSRange(location: lastEnd, length: r.location - lastEnd))
+            let tag = ns.substring(with: r)
+            result += index < cids.count ? setSrc(of: tag, to: "cid:\(cids[index])") : tag
+            lastEnd = r.location + r.length
+        }
+        result += ns.substring(with: NSRange(location: lastEnd, length: ns.length - lastEnd))
+        return result
+    }
+
+    /// Replaces an `<img>` tag's existing src (double- or single-quoted) with a new
+    /// value, injecting one if the tag has none.
+    private static func setSrc(of imgTag: String, to newSrc: String) -> String {
+        for pattern in ["src\\s*=\\s*\"[^\"]*\"", "src\\s*=\\s*'[^']*'"] {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
+                let ns = imgTag as NSString
+                if let m = regex.firstMatch(in: imgTag, range: NSRange(location: 0, length: ns.length)) {
+                    return ns.replacingCharacters(in: m.range, with: "src=\"\(newSrc)\"")
+                }
+            }
+        }
+        if let range = imgTag.range(of: "<img", options: .caseInsensitive) {
+            return imgTag.replacingCharacters(in: range, with: "<img src=\"\(newSrc)\"")
+        }
+        return imgTag
+    }
+}
+
+/// An NSTextView that turns pasted or dropped images into inline attachments,
+/// reporting the PNG data so the controller can track it for `cid:` embedding.
+final class ComposeTextView: NSTextView {
+    var onImage: ((Data) -> Void)?
+
+    override func paste(_ sender: Any?) {
+        if let data = Self.pngImageData(from: NSPasteboard.general) {
+            onImage?(data)
+            return
+        }
+        super.paste(sender)
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        if let data = Self.pngImageData(from: sender.draggingPasteboard) {
+            onImage?(data)
+            return true
+        }
+        return super.performDragOperation(sender)
+    }
+
+    /// The first image on a pasteboard as PNG — whether it arrived as raw image
+    /// data (screenshot / copied image) or an image file (Finder drag). Returns nil
+    /// for text or non-image content so normal paste/drop falls through to NSTextView.
+    static func pngImageData(from pb: NSPasteboard) -> Data? {
+        if let png = pb.data(forType: .png) { return png }
+        if let tiff = pb.data(forType: .tiff) { return pngData(fromTIFF: tiff) }
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingContentsConformToTypes: [UTType.image.identifier]
+        ]
+        if let urls = pb.readObjects(forClasses: [NSURL.self], options: options) as? [URL],
+           let url = urls.first, let data = try? Data(contentsOf: url) {
+            return url.pathExtension.lowercased() == "png" ? data : NSImage(data: data).flatMap(png(from:))
+        }
+        return nil
+    }
+
+    private static func pngData(fromTIFF tiff: Data) -> Data? {
+        NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
+    }
+
+    private static func png(from image: NSImage) -> Data? {
+        guard let tiff = image.tiffRepresentation else { return nil }
+        return pngData(fromTIFF: tiff)
+    }
 }
 
 struct RichTextEditor: NSViewRepresentable {
@@ -131,9 +300,29 @@ struct RichTextEditor: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(controller: controller) }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSTextView.scrollableTextView()
-        guard let textView = scrollView.documentView as? NSTextView else { return scrollView }
+        let scrollView = NSScrollView()
+        scrollView.borderType = .noBorder
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+
+        let contentSize = scrollView.contentSize
+        let textStorage = NSTextStorage()
+        let layoutManager = NSLayoutManager()
+        textStorage.addLayoutManager(layoutManager)
+        let textContainer = NSTextContainer(containerSize: NSSize(width: contentSize.width, height: CGFloat.greatestFiniteMagnitude))
+        textContainer.widthTracksTextView = true
+        layoutManager.addTextContainer(textContainer)
+
+        let textView = ComposeTextView(frame: NSRect(origin: .zero, size: contentSize), textContainer: textContainer)
+        textView.autoresizingMask = [.width]
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+
         textView.isRichText = true
+        textView.importsGraphics = true   // register image drag types so drops are offered
         textView.allowsUndo = true
         textView.font = RichTextController.defaultFont
         textView.typingAttributes[.font] = RichTextController.defaultFont
@@ -141,6 +330,12 @@ struct RichTextEditor: NSViewRepresentable {
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.delegate = context.coordinator
+        textView.onImage = { [weak controller] data in
+            // paste/drag are delivered on the main thread.
+            MainActor.assumeIsolated { controller?.insertImage(data, mime: "image/png") }
+        }
+
+        scrollView.documentView = textView
         controller.textView = textView
         return scrollView
     }
@@ -148,7 +343,8 @@ struct RichTextEditor: NSViewRepresentable {
     func updateNSView(_ nsView: NSScrollView, context: Context) {}
 
     /// Routes Shift-Tab in the editor to the controller so compose can move focus
-    /// back to the Subject field instead of inserting a back-tab.
+    /// back to the Subject field instead of inserting a back-tab, and keeps the
+    /// inline-image list in sync as the body is edited.
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         let controller: RichTextController
@@ -160,6 +356,10 @@ struct RichTextEditor: NSViewRepresentable {
                 return true
             }
             return false
+        }
+
+        func textDidChange(_ notification: Notification) {
+            controller.refreshInlineImages()
         }
     }
 }

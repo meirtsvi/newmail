@@ -17,20 +17,29 @@ struct NotificationStackView: View {
     }
 }
 
-/// A single calendar-event reminder card: the event title and time, with Snooze
-/// (5 min / 10 min / 1 hour / tomorrow), Dismiss, and Dismiss All.
+/// A single calendar-event reminder card: the event title, time, and location,
+/// with a Snooze menu, Dismiss, and Dismiss All.
 private struct EventReminderCard: View {
     @Environment(MailboxViewModel.self) private var vm
     let reminder: EventReminder
     let showDismissAll: Bool
 
-    /// "Thu 3:00 PM · in 14 minutes". The relative part is recomputed against
-    /// `now` so a per-minute timeline can tick it down as the event approaches.
+    /// "Thu 3:00 PM · in 14 minutes", or "Thu 9:30 AM · overdue" once the event has
+    /// already started. Recomputed against `now` so a per-minute timeline ticks the
+    /// countdown down as the event approaches (and flips to "overdue" when it starts).
     private func whenText(now: Date) -> String {
         let time = reminder.start.formatted(.dateTime.weekday(.abbreviated).hour().minute())
+        if reminder.start <= now { return "\(time) · overdue" }
         let relative = reminder.start.formatted(.relative(presentation: .named))
-        _ = now // `.relative` is anchored to the current date; `now` just retriggers the render.
         return "\(time) · \(relative)"
+    }
+
+    /// The event location to show, unless it's empty or a bare URL (online-meeting
+    /// links are surfaced by the Connect button instead).
+    private var locationText: String? {
+        guard let raw = reminder.location?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty, !raw.lowercased().hasPrefix("http") else { return nil }
+        return raw
     }
 
     var body: some View {
@@ -50,6 +59,12 @@ private struct EventReminderCard: View {
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
+                    }
+                    if let locationText {
+                        Label(locationText, systemImage: "mappin.and.ellipse")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
                     }
                 }
                 Spacer(minLength: 0)

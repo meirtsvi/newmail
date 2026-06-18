@@ -12,10 +12,22 @@ final class CalendarReminderService {
     enum SnoozePreset: String, CaseIterable, Identifiable {
         case atEventTime = "At the time of event"
         case beforeStart = "5 minutes before start"
-        case fiveMin  = "5 minutes"
-        case tenMin   = "10 minutes"
-        case oneHour  = "1 hour"
-        case tomorrow = "Tomorrow"
+        case fiveMin    = "5 minutes"
+        case tenMin     = "10 minutes"
+        case fifteenMin = "15 minutes"
+        case thirtyMin  = "30 minutes"
+        case oneHour    = "1 hour"
+        case twoHours   = "2 hours"
+        case fourHours  = "4 hours"
+        case endOfToday = "End of today"
+        case tomorrow   = "Tomorrow morning"
+        case oneDay     = "1 day"
+        case twoDays    = "2 days"
+        case fourDays   = "4 days"
+        case endOfWeek  = "End of week"
+        case nextWeek   = "Next week"
+        case oneWeek    = "1 week"
+        case twoWeeks   = "2 weeks"
         var id: String { rawValue }
     }
 
@@ -151,12 +163,49 @@ final class CalendarReminderService {
         // Event-relative; handled in `snooze`. Falls back to "now" if ever routed here.
         case .atEventTime: return now
         case .beforeStart: return now
-        case .fiveMin:  return now.addingTimeInterval(5 * 60)
-        case .tenMin:   return now.addingTimeInterval(10 * 60)
-        case .oneHour:  return now.addingTimeInterval(3600)
+        case .fiveMin:    return now.addingTimeInterval(5 * 60)
+        case .tenMin:     return now.addingTimeInterval(10 * 60)
+        case .fifteenMin: return now.addingTimeInterval(15 * 60)
+        case .thirtyMin:  return now.addingTimeInterval(30 * 60)
+        case .oneHour:    return now.addingTimeInterval(3600)
+        case .twoHours:   return now.addingTimeInterval(2 * 3600)
+        case .fourHours:  return now.addingTimeInterval(4 * 3600)
+        case .endOfToday:
+            // 18:00 today, or 18:00 tomorrow if that's already past, so snoozing in
+            // the evening never lands in the past (which would fire immediately).
+            if let todayAt18 = calendar.date(bySettingHour: 18, minute: 0, second: 0, of: now), todayAt18 > now {
+                return todayAt18
+            }
+            let tomorrow = calendar.date(byAdding: .day, value: 1, to: now) ?? now
+            return calendar.date(bySettingHour: 18, minute: 0, second: 0, of: tomorrow)
+                ?? now.addingTimeInterval(3600)
         case .tomorrow:
             let tomorrow = calendar.date(byAdding: .day, value: 1, to: now) ?? now
             return calendar.date(bySettingHour: 8, minute: 0, second: 0, of: tomorrow) ?? tomorrow
+        case .oneDay:
+            return calendar.date(byAdding: .day, value: 1, to: now) ?? now.addingTimeInterval(24 * 3600)
+        case .twoDays:
+            return calendar.date(byAdding: .day, value: 2, to: now) ?? now.addingTimeInterval(48 * 3600)
+        case .fourDays:
+            return calendar.date(byAdding: .day, value: 4, to: now) ?? now.addingTimeInterval(96 * 3600)
+        case .endOfWeek:
+            // Next Friday at 18:00.
+            var comps = DateComponents()
+            comps.weekday = 6 // Friday
+            comps.hour = 18
+            return calendar.nextDate(after: now, matching: comps, matchingPolicy: .nextTime)
+                ?? now.addingTimeInterval(24 * 3600)
+        case .nextWeek:
+            // Next Monday at 08:00.
+            var comps = DateComponents()
+            comps.weekday = 2 // Monday
+            comps.hour = 8
+            return calendar.nextDate(after: now, matching: comps, matchingPolicy: .nextTime)
+                ?? now.addingTimeInterval(7 * 24 * 3600)
+        case .oneWeek:
+            return calendar.date(byAdding: .day, value: 7, to: now) ?? now.addingTimeInterval(7 * 24 * 3600)
+        case .twoWeeks:
+            return calendar.date(byAdding: .day, value: 14, to: now) ?? now.addingTimeInterval(14 * 24 * 3600)
         }
     }
 }
