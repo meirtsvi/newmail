@@ -191,21 +191,24 @@ final class MailStore {
         let descriptor = FetchDescriptor<CachedBody>(predicate: #Predicate { $0.id == id })
         guard let row = try? context.fetch(descriptor).first else { return nil }
         let attachments = (try? JSONDecoder().decode([MailAttachment].self, from: Data(row.attachmentsJSON.utf8))) ?? []
-        return MessageBody(headerId: row.id, html: row.html, plainText: row.plainText, attachments: attachments)
+        return MessageBody(headerId: row.id, html: row.html, plainText: row.plainText,
+                           attachments: attachments, cc: Self.decodeAddresses(row.ccRaw))
     }
 
     func saveBody(_ body: MessageBody) {
         let attachmentsJSON = (try? JSONEncoder().encode(body.attachments)).map { String(decoding: $0, as: UTF8.self) } ?? "[]"
+        let ccRaw = Self.encodeAddresses(body.cc)
         let id = body.headerId
         let isCalendar = body.calendar != nil
         if let row = try? context.fetch(FetchDescriptor<CachedBody>(predicate: #Predicate { $0.id == id })).first {
             row.html = body.html
             row.plainText = body.plainText
             row.attachmentsJSON = attachmentsJSON
+            row.ccRaw = ccRaw
             row.isCalendar = isCalendar
         } else {
             context.insert(CachedBody(id: id, html: body.html, plainText: body.plainText,
-                                      attachmentsJSON: attachmentsJSON, isCalendar: isCalendar))
+                                      attachmentsJSON: attachmentsJSON, ccRaw: ccRaw, isCalendar: isCalendar))
         }
         try? context.save()
     }
@@ -220,6 +223,20 @@ final class MailStore {
     }
 
     // MARK: Mapping
+
+    /// Encodes addresses as "Name|email" entries joined by "‖" (the format used
+    /// for a header's cached To list).
+    private static func encodeAddresses(_ addresses: [MailAddress]) -> String {
+        addresses.map { "\($0.name)|\($0.email)" }.joined(separator: "‖")
+    }
+
+    /// Inverse of `encodeAddresses`.
+    private static func decodeAddresses(_ raw: String) -> [MailAddress] {
+        raw.isEmpty ? [] : raw.split(separator: "‖").map {
+            let parts = $0.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+            return MailAddress(name: String(parts.first ?? ""), email: parts.count > 1 ? String(parts[1]) : "")
+        }
+    }
 
     private static func header(from row: CachedMessage) -> MessageHeader {
         let to: [MailAddress] = row.toRaw.isEmpty ? [] : row.toRaw.split(separator: "‖").map {

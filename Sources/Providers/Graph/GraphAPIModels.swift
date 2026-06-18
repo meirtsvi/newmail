@@ -57,6 +57,7 @@ enum GraphAPI {
         var from: Recipient?
         var sender: Recipient?
         var toRecipients: [Recipient]?
+        var ccRecipients: [Recipient]?
         var flag: FollowupFlag?
         var parentFolderId: String?
         var body: ItemBody?

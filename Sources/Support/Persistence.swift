@@ -147,16 +147,21 @@ final class CachedBody {
     var html: String
     var plainText: String
     var attachmentsJSON: String
+    /// Cc recipients as "Name|email" entries joined by "‖" (same encoding as a
+    /// header's To). Defaulted so the additive schema change migrates in place
+    /// without discarding the cache.
+    var ccRaw: String = ""
     /// Whether this message carries a calendar invitation (drives the list's
     /// calendar-event column). Defaulted so the additive schema change migrates
     /// in place without discarding the cache.
     var isCalendar: Bool = false
 
-    init(id: String, html: String, plainText: String, attachmentsJSON: String, isCalendar: Bool = false) {
+    init(id: String, html: String, plainText: String, attachmentsJSON: String, ccRaw: String = "", isCalendar: Bool = false) {
         self.id = id
         self.html = html
         self.plainText = plainText
         self.attachmentsJSON = attachmentsJSON
+        self.ccRaw = ccRaw
         self.isCalendar = isCalendar
     }
 }

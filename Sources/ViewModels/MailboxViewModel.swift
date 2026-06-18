@@ -1124,6 +1124,12 @@ final class MailboxViewModel {
         composeWindows.open(ComposeRequest(kind: .new), vm: self)
     }
 
+    /// Opens a fresh compose window addressed to a single recipient (used by the
+    /// reading pane's recipient chips).
+    func startNewMail(to address: String) {
+        composeWindows.open(ComposeRequest(kind: .new, to: address), vm: self)
+    }
+
     func startReply(all: Bool) {
         guard let header = selectedHeaders.first else { return }
         Task {

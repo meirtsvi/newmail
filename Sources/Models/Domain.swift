@@ -29,6 +29,13 @@ struct MailAddress: Hashable, Identifiable {
     var id: String { email.isEmpty ? name : email }
     var display: String { name.isEmpty ? email : name }
 
+    /// "Name <email>" when both are present; falls back to whichever exists.
+    var nameAndEmail: String {
+        if name.isEmpty { return email }
+        if email.isEmpty { return name }
+        return "\(name) <\(email)>"
+    }
+
     var initials: String {
         let base = name.isEmpty ? email : name
         let parts = base.split(whereSeparator: { $0 == " " || $0 == "." || $0 == "@" })
@@ -152,6 +159,9 @@ struct MessageBody {
     var html: String
     var plainText: String
     var attachments: [MailAttachment]
+    /// Cc recipients, parsed from the message headers at body-fetch time (the
+    /// To list lives on `MessageHeader`; Cc isn't carried in the list metadata).
+    var cc: [MailAddress] = []
     /// A calendar invitation parsed from a `text/calendar` part, if present.
     var calendar: CalendarInvite? = nil
 }

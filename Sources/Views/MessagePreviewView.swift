@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Right pane: header block (avatar, from/to/date) plus the rendered HTML body,
 /// with inline reply/forward controls.
@@ -55,21 +56,35 @@ struct MessagePreviewView: View {
             }
             HStack(spacing: 10) {
                 Avatar(address: header.from)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(header.from.display).font(.body.weight(.semibold))
-                    if !header.to.isEmpty {
-                        Text("To: \(header.to.map(\.display).joined(separator: ", "))")
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                }
+                Text(header.from.display).font(.body.weight(.semibold))
                 Spacer()
                 replyControls
             }
+            recipientsBlock(header)
             if let body = vm.currentBody, !body.attachments.isEmpty {
                 AttachmentList(attachments: body.attachments)
             }
         }
         .padding(16)
+    }
+
+    /// To/Cc recipient chips. The To list lives on the header (always present);
+    /// Cc is read from the loaded body for this message.
+    @ViewBuilder
+    private func recipientsBlock(_ header: MessageHeader) -> some View {
+        if !header.to.isEmpty {
+            RecipientRow(label: "To", addresses: header.to)
+        }
+        let cc = ccFor(header)
+        if !cc.isEmpty {
+            RecipientRow(label: "Cc", addresses: cc)
+        }
+    }
+
+    /// Cc recipients for this message, available once its body has loaded.
+    private func ccFor(_ header: MessageHeader) -> [MailAddress] {
+        guard let body = vm.currentBody, body.headerId == header.id else { return [] }
+        return body.cc
     }
 
     private var replyControls: some View {
@@ -115,5 +130,97 @@ struct MessagePreviewView: View {
         .opacity(0)
         .frame(width: 0, height: 0)
         .accessibilityHidden(true)
+    }
+}
+
+/// A "To"/"Cc" label followed by a wrapping run of recipient chips.
+private struct RecipientRow: View {
+    let label: String
+    let addresses: [MailAddress]
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(label)
+                .font(.caption).foregroundStyle(.secondary)
+                .frame(width: 24, alignment: .trailing)
+                .padding(.top, 3)
+            FlowLayout(spacing: 6, lineSpacing: 6) {
+                // Keyed by position, not by address: a recipient list can repeat
+                // the same address (Reply-All / list expansion), and duplicate
+                // ids would make SwiftUI drop the repeated chip.
+                ForEach(Array(addresses.enumerated()), id: \.offset) { _, address in
+                    RecipientChip(address: address)
+                }
+            }
+        }
+    }
+}
+
+/// A single recipient as a capsule chip; clicking opens a menu to copy the
+/// address or start a new message to it.
+private struct RecipientChip: View {
+    @Environment(MailboxViewModel.self) private var vm
+    let address: MailAddress
+
+    var body: some View {
+        Menu {
+            Text(address.nameAndEmail)
+            Button("Copy Address") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(address.email, forType: .string)
+            }
+            Button("New Message") { vm.startNewMail(to: address.email) }
+        } label: {
+            Text(address.display)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                // Cap the width so a very long single name ellipsizes instead of
+                // overflowing the chip (`.fixedSize` below otherwise ignores the
+                // line limit and lets it run off the pane edge).
+                .frame(maxWidth: 260, alignment: .leading)
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(.quaternary, in: Capsule())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(address.nameAndEmail)
+    }
+}
+
+/// Minimal wrapping layout: places children left-to-right, wrapping to a new
+/// line when the next child would overflow the proposed width.
+private struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+    var lineSpacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, lineHeight: CGFloat = 0, widest: CGFloat = 0
+        for sub in subviews {
+            let size = sub.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > maxWidth {
+                x = 0; y += lineHeight + lineSpacing; lineHeight = 0
+            }
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+            widest = max(widest, x - spacing)
+        }
+        return CGSize(width: min(widest, maxWidth), height: y + lineHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x: CGFloat = 0, y: CGFloat = 0, lineHeight: CGFloat = 0
+        for sub in subviews {
+            let size = sub.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > bounds.width {
+                x = 0; y += lineHeight + lineSpacing; lineHeight = 0
+            }
+            sub.place(at: CGPoint(x: bounds.minX + x, y: bounds.minY + y),
+                      anchor: .topLeading, proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+        }
     }
 }

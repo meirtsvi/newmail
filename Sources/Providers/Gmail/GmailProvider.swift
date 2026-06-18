@@ -313,8 +313,11 @@ final class GmailProvider: MailProvider {
 
         let assembled = BodyHTML.assemble(rawHTML: html, plainText: text, images: images, messageId: id)
         let invite = ics.isEmpty ? nil : ICSParser.parse(ics)
+        let ccRaw = msg.payload?.headers?
+            .first { $0.name.caseInsensitiveCompare("cc") == .orderedSame }?.value ?? ""
         return MessageBody(headerId: id, html: assembled.html, plainText: text,
-                           attachments: attachments + assembled.imageAttachments, calendar: invite)
+                           attachments: attachments + assembled.imageAttachments,
+                           cc: MailAddress.parseList(ccRaw), calendar: invite)
     }
 
     /// Downloads and decodes a single attachment's bytes (used to read an

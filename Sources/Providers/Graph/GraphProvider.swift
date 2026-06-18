@@ -253,7 +253,7 @@ final class GraphProvider: MailProvider {
 
     func fetchBody(id: String) async throws -> MessageBody {
         let data = try await request("messages/\(id)", query: [
-            URLQueryItem(name: "$select", value: "id,body,bodyPreview,hasAttachments")
+            URLQueryItem(name: "$select", value: "id,body,bodyPreview,hasAttachments,ccRecipients")
         ])
         let msg = try JSONDecoder().decode(GraphAPI.Message.self, from: data)
         let contentType = (msg.body?.contentType ?? "").lowercased()
@@ -295,8 +295,9 @@ final class GraphProvider: MailProvider {
             }
         }
         let assembled = BodyHTML.assemble(rawHTML: rawHTML, plainText: plain, images: images, messageId: id)
+        let cc = (msg.ccRecipients ?? []).map { Self.address($0.emailAddress) }
         return MessageBody(headerId: id, html: assembled.html, plainText: plain,
-                           attachments: attachments + assembled.imageAttachments)
+                           attachments: attachments + assembled.imageAttachments, cc: cc)
     }
 
     func fetchAttachment(messageId: String, attachmentId: String) async throws -> Data {
