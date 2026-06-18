@@ -15,8 +15,8 @@ final class RichTextController: ObservableObject {
     /// text storage so it stays in sync when an image is deleted in the editor.
     @Published private(set) var inlineImages: [ComposeInlineImage] = []
 
-    /// Prefix marking an attachment as one of our tracked inline images; the full
-    /// `preferredFilename` doubles as the image's token, Content-ID, and HTML src.
+    /// Prefix for a pasted image's token; the full token doubles as its Content-ID
+    /// and MIME filename.
     private static let inlineTokenPrefix = "nm-inline-"
 
     func setInitial(_ attributed: NSAttributedString) {
@@ -140,13 +140,10 @@ final class RichTextController: ObservableObject {
     func insertImage(_ data: Data, mime: String) {
         guard let tv = textView, let ts = tv.textStorage else { return }
         let token = "\(Self.inlineTokenPrefix)\(UUID().uuidString.lowercased()).png"
-        let wrapper = FileWrapper(regularFileWithContents: data)
-        wrapper.preferredFilename = token
-        let attachment = NSTextAttachment(fileWrapper: wrapper)
-        if let image = NSImage(data: data) {
-            attachment.image = image
-            // Constrain very large images to a sensible on-screen width so a big
-            // screenshot doesn't blow out the editor.
+        let attachment = InlineImageAttachment(token: token, pngData: data)
+        // Constrain very large images to a sensible on-screen width so a big
+        // screenshot doesn't blow out the editor.
+        if let image = attachment.image {
             let maxWidth: CGFloat = 360
             let size = image.size
             if size.width > maxWidth, size.width > 0 {
@@ -170,7 +167,7 @@ final class RichTextController: ObservableObject {
         guard let tv = textView, let ts = tv.textStorage else { return }
         var target: NSRange?
         ts.enumerateAttribute(.attachment, in: NSRange(location: 0, length: ts.length)) { value, range, stop in
-            if let att = value as? NSTextAttachment, att.fileWrapper?.preferredFilename == token {
+            if let att = value as? InlineImageAttachment, att.token == token {
                 target = range
                 stop.pointee = true
             }
@@ -188,12 +185,9 @@ final class RichTextController: ObservableObject {
         guard let ts = textView?.textStorage else { return }
         var found: [ComposeInlineImage] = []
         ts.enumerateAttribute(.attachment, in: NSRange(location: 0, length: ts.length)) { value, _, _ in
-            guard let att = value as? NSTextAttachment,
-                  let token = att.fileWrapper?.preferredFilename,
-                  token.hasPrefix(Self.inlineTokenPrefix),
-                  let data = att.fileWrapper?.regularFileContents,
-                  !found.contains(where: { $0.id == token }) else { return }
-            found.append(ComposeInlineImage(id: token, mime: "image/png", data: data))
+            guard let att = value as? InlineImageAttachment,
+                  !found.contains(where: { $0.id == att.token }) else { return }
+            found.append(ComposeInlineImage(id: att.token, mime: "image/png", data: att.pngData))
         }
         if found.map(\.id) != inlineImages.map(\.id) { inlineImages = found }
     }
@@ -245,6 +239,21 @@ final class RichTextController: ObservableObject {
         }
         return imgTag
     }
+}
+
+/// A pasted/dropped image attachment that carries its `cid:` token and PNG bytes
+/// as real properties — so they survive in the text storage (unlike a fileWrapper's
+/// `preferredFilename`, which AppKit overwrites when `image` is set).
+final class InlineImageAttachment: NSTextAttachment {
+    let token: String
+    let pngData: Data
+    init(token: String, pngData: Data) {
+        self.token = token
+        self.pngData = pngData
+        super.init(data: nil, ofType: nil)
+        self.image = NSImage(data: pngData)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
 /// An NSTextView that turns pasted or dropped images into inline attachments,
