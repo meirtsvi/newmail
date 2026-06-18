@@ -24,7 +24,9 @@ final class RichTextController: ObservableObject {
     }
 
     /// Loads existing HTML (e.g. a saved draft) into the editor as editable rich
-    /// text. Leaves the editor empty if the HTML can't be parsed.
+    /// text. Inline images (which arrive as `data:` URLs) are re-adopted as tracked
+    /// `InlineImageAttachment`s so they re-export as `cid:` related parts on send.
+    /// Leaves the editor empty if the HTML can't be parsed.
     func setInitialHTML(_ html: String) {
         guard let data = html.data(using: .utf8),
               let attributed = try? NSAttributedString(
@@ -33,7 +35,11 @@ final class RichTextController: ObservableObject {
                           .characterEncoding: String.Encoding.utf8.rawValue],
                 documentAttributes: nil)
         else { return }
-        textView?.textStorage?.setAttributedString(attributed)
+        let mutable = NSMutableAttributedString(attributedString: attributed)
+        Self.adoptInlineImages(in: mutable)
+        textView?.textStorage?.setAttributedString(mutable)
+        // Carry the body font so text typed after a loaded draft keeps the default look.
+        textView?.typingAttributes[.font] = Self.defaultFont
         refreshInlineImages()
     }
 
@@ -211,6 +217,43 @@ final class RichTextController: ObservableObject {
             found.append(ComposeInlineImage(id: att.token, mime: "image/png", data: att.pngData))
         }
         if found.map(\.id) != inlineImages.map(\.id) { inlineImages = found }
+    }
+
+    /// Replaces the plain image attachments the HTML importer creates (one per
+    /// `data:` `<img>`) with tracked `InlineImageAttachment`s carrying the PNG bytes,
+    /// so `exportBody` re-emits them as `cid:` related parts instead of dropping them
+    /// or inlining raw data. Same-length attribute swap, so ranges stay valid.
+    private static func adoptInlineImages(in text: NSMutableAttributedString) {
+        var replacements: [(range: NSRange, attachment: InlineImageAttachment)] = []
+        text.enumerateAttribute(.attachment, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+            guard let att = value as? NSTextAttachment, !(att is InlineImageAttachment),
+                  let png = pngBytes(from: att) else { return }
+            let token = "\(inlineTokenPrefix)\(UUID().uuidString.lowercased()).png"
+            let inline = InlineImageAttachment(token: token, pngData: png)
+            if att.bounds.width > 0, att.bounds.height > 0 { inline.bounds = att.bounds }
+            replacements.append((range, inline))
+        }
+        for r in replacements {
+            text.addAttribute(.attachment, value: r.attachment, range: r.range)
+        }
+    }
+
+    /// Best-effort PNG bytes for an HTML-imported image attachment, trying its file
+    /// wrapper, its image, then its cell image.
+    private static func pngBytes(from att: NSTextAttachment) -> Data? {
+        if let data = att.fileWrapper?.regularFileContents, let png = pngBytes(fromImageData: data) { return png }
+        if let image = att.image, let png = pngBytes(from: image) { return png }
+        if let cellImage = (att.attachmentCell as? NSTextAttachmentCell)?.image, let png = pngBytes(from: cellImage) { return png }
+        return nil
+    }
+
+    private static func pngBytes(fromImageData data: Data) -> Data? {
+        NSBitmapImageRep(data: data)?.representation(using: .png, properties: [:])
+    }
+
+    private static func pngBytes(from image: NSImage) -> Data? {
+        guard let tiff = image.tiffRepresentation else { return nil }
+        return pngBytes(fromImageData: tiff)
     }
 
     /// The body HTML with each inline image's `<img>` src rewritten to `cid:…`,

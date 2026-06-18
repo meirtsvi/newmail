@@ -850,6 +850,10 @@ final class MailboxViewModel {
         Task {
             let body = await ensureBody(for: header)
             let draftId = try? await provider.draftId(forMessageId: header.id)
+            // Images embedded in the body are re-adopted inline by the editor, so
+            // drop image-typed attachments here to avoid sending them twice; non-image
+            // files (PDFs, etc.) are still carried as attachments.
+            let files = (body?.attachments ?? []).filter { !$0.mimeType.lowercased().hasPrefix("image/") }
             // Seed recipients as bare addresses (like reply does): MIMEBuilder writes
             // the To/Cc headers verbatim, so an unquoted display name with a comma
             // would be misread as extra recipients.
@@ -857,7 +861,7 @@ final class MailboxViewModel {
                 kind: .draft,
                 to: header.to.map(\.email).filter { !$0.isEmpty }.joined(separator: ", "),
                 subject: header.subject,
-                attachments: body?.attachments ?? []
+                attachments: files
             )
             request.cc = (body?.cc ?? []).map(\.email).filter { !$0.isEmpty }.joined(separator: ", ")
             request.bodyHTML = body?.html ?? ""
