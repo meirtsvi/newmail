@@ -874,6 +874,16 @@ final class MailboxViewModel {
         activeSheet = .customSnooze(ids)
     }
 
+    /// Reloads the Drafts list after a compose window closes so its rows stay current.
+    /// A draft save changes the underlying message (Gmail re-versions it on update,
+    /// Graph deletes and recreates it), and the in-place merge can't drop the now-dead
+    /// row — leaving a stale/duplicate entry that reopens to a deleted message. A full
+    /// reload reconciles the list to the drafts that actually exist.
+    func reloadDraftsAfterCompose() async {
+        guard currentFolder?.kind == .drafts else { return }
+        await loadMessages()
+    }
+
     /// Gmail-only: re-authorize the current Google account for write access.
     func signInForWriteAccess() async {
         guard !isSigningIn else { return }

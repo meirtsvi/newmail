@@ -62,15 +62,25 @@ struct ComposeView: View {
                     attributes: [.font: RichTextController.defaultFont]
                 ))
             }
-            // Carry the original message's attachments when forwarding.
+            // Carry the original message's attachments when forwarding or continuing
+            // a draft; seed the draft autosave baseline once they're in place.
             if !request.attachments.isEmpty {
                 loadingAttachments = true
                 Task {
                     let urls = await vm.materializeAttachments(request.attachments)
                     attachments.append(contentsOf: urls)
                     loadingAttachments = false
+                    seedDraftBaseline()
                 }
+            } else {
+                seedDraftBaseline()
             }
+        }
+        // A draft save changes the underlying message (Gmail re-versions it, Graph
+        // recreates it), which the in-place list merge can't reconcile. Reload the
+        // Drafts list when this window closes so its rows reopen to the live message.
+        .onDisappear {
+            Task { await vm.reloadDraftsAfterCompose() }
         }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             if case .success(let urls) = result { attachments.append(contentsOf: urls) }
@@ -100,8 +110,24 @@ struct ComposeView: View {
 
     /// True once there's anything worth keeping (recipients, subject, or body).
     private var hasDraftContent: Bool {
-        !request.to.isEmpty || !request.cc.isEmpty
-            || !request.subject.isEmpty || !rich.exportHTML().isEmpty
+        !request.to.isEmpty || !request.cc.isEmpty || !request.subject.isEmpty
+            || !attachments.isEmpty || !rich.exportHTML().isEmpty
+    }
+
+    /// Change-detection key for autosave. Includes the attachment list so adding or
+    /// removing a file — which doesn't alter the body HTML — still triggers a save.
+    private func draftSnapshot(html: String) -> String {
+        [request.to, request.cc, request.subject, html,
+         attachments.map(\.path).joined(separator: ",")].joined(separator: "\u{1}")
+    }
+
+    /// For a reopened draft, records the loaded state as the autosave baseline so the
+    /// first autosave fires only once the user actually changes something (otherwise
+    /// merely opening a draft would re-save it — needless churn, and on Graph it
+    /// recreates the message with a new id).
+    private func seedDraftBaseline() {
+        guard request.kind == .draft else { return }
+        lastSavedSnapshot = draftSnapshot(html: composedBody().html)
     }
 
     /// Saves the in-progress message as a server draft if it has content and has
@@ -110,7 +136,7 @@ struct ComposeView: View {
     private func autosaveDraft() async {
         guard !sending, hasDraftContent else { return }
         let (html, inlineImages) = composedBody()
-        let snapshot = [request.to, request.cc, request.subject, html].joined(separator: "\u{1}")
+        let snapshot = draftSnapshot(html: html)
         guard snapshot != lastSavedSnapshot else { return }
         let id = await vm.saveDraft(
             to: request.to, cc: request.cc, subject: request.subject,
