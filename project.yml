@@ -60,3 +60,13 @@ targets:
         SWIFT_EMIT_LOC_STRINGS: YES
         COMBINE_HIDPI_IMAGES: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      configs:
+        # Debug-only: build the app bundle directly into /Applications so the copy
+        # you run from Xcode (⌘R) is the single registered default mail (mailto:)
+        # handler — no separate install step. TARGET_BUILD_DIR places the .app there
+        # and is what Xcode launches; BUILT_PRODUCTS_DIR is pinned back to the normal
+        # DerivedData location so package products (MSAL.framework, .swiftmodule)
+        # build there and get embedded — only the .app lands in /Applications.
+        Debug:
+          TARGET_BUILD_DIR: /Applications
+          BUILT_PRODUCTS_DIR: $(SYMROOT)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)
