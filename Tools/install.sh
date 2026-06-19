@@ -8,8 +8,11 @@
 # This keeps exactly one stable copy in /Applications and points macOS at it.
 #
 # Usage:
-#   Tools/install.sh                 # build, install, register
-#   Tools/install.sh --set-default   # also set newmail as the default mail app
+#   Tools/install.sh               # build, install, register, set as default
+#   Tools/install.sh --no-default  # skip setting newmail as the default mail app
+#
+# Note: resetting the registration can make macOS fall back to another mailto:
+# handler, so the default is re-asserted on every run unless --no-default.
 #
 set -euo pipefail
 
@@ -39,14 +42,21 @@ echo "==> Installing to $APP"
 rm -rf "$APP"
 ditto "$PRODUCT" "$APP"
 
+echo "==> Removing the build product so only /Applications remains on disk"
+# LaunchServices re-discovers any newmail.app it finds on disk during background
+# scans, so a lingering build copy would re-register and compete as the mailto:
+# handler. Delete it; /Applications is the only copy we keep.
+rm -rf "$DERIVED"
+
 echo "==> Resetting LaunchServices registration to the /Applications copy only"
-# Drop any stray DerivedData / build copies so they can't hijack the mailto: handler.
+# Drop any stray DerivedData / build copies still registered (e.g. a previous
+# Xcode run) so they can't hijack the mailto: handler.
 while IFS= read -r path; do
   [ "$path" = "$APP" ] || "$LSREG" -u "$path" 2>/dev/null || true
 done < <("$LSREG" -dump 2>/dev/null | awk '/path:.*newmail\.app/ {print $2}' | sort -u)
 "$LSREG" -f "$APP"
 
-if [ "${1:-}" = "--set-default" ]; then
+if [ "${1:-}" != "--no-default" ]; then
   echo "==> Setting newmail as the default mail client"
   swift - "$BUNDLE_ID" <<'SWIFT'
 import Foundation
