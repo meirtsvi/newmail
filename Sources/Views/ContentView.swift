@@ -45,12 +45,10 @@ struct ContentView: View {
             vm.focusSearchRequested.toggle()
             return .handled
         }
-        // A single sheet driven by an enum — reliably presents compose, the
-        // message window, and the custom-snooze picker.
+        // The custom-snooze picker is the only remaining sheet (the message
+        // detail view now opens in its own resizable window).
         .sheet(item: $vm.activeSheet) { sheet in
             switch sheet {
-            case .message(let header):
-                MessageDetailView(header: header).environment(vm)
             case .customSnooze(let ids):
                 CustomSnoozeSheet(date: $customSnoozeDate) {
                     Task { await vm.snoozeMessages(ids, until: customSnoozeDate) }
@@ -189,7 +187,7 @@ struct StatusBar: View {
                 .help(status)
         } else if vm.isCleaningUp {
             ProgressView().controlSize(.small)
-            Text("Cleaning up conversation…").foregroundStyle(.secondary)
+            Text(vm.cleanupProgress ?? "Cleaning up conversation…").foregroundStyle(.secondary)
         } else if let result = vm.cleanupResult {
             Image(systemName: "checkmark.circle")
                 .foregroundStyle(.secondary)

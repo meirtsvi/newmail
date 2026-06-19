@@ -50,12 +50,17 @@ final class MailboxViewModel {
     /// Email of the currently selected account (used as the compose "from").
     var accountEmail = ""
 
-    // Currently presented modal sheet (message window / custom snooze).
+    // Currently presented modal sheet (custom snooze).
     var activeSheet: ActiveSheet?
+    // The message shown in the read-only detail window, and its loaded body.
+    // The window reads these reactively, so reopening retargets the same window.
+    var modalHeader: MessageHeader?
     var modalBody: MessageBody?
 
     // Compose/reply/forward open in their own non-modal, movable, resizable windows.
     @ObservationIgnored private let composeWindows = ComposeWindowController()
+    // The double-click message view opens in its own resizable window too.
+    @ObservationIgnored private let messageWindows = MessageWindowController()
 
     // New-mail popups shown in a floating panel pinned to the top-right of the screen.
     var notifications: [MailNotification] = []
@@ -135,6 +140,8 @@ final class MailboxViewModel {
     var hasWriteScope = true
     // Conversation-cleanup progress and its transient result line in the status bar.
     var isCleaningUp = false
+    // The live phase message shown while cleanup runs (started → comparing → …).
+    var cleanupProgress: String?
     var cleanupResult: String?
 
     init() {}
@@ -846,8 +853,9 @@ final class MailboxViewModel {
             openDraftForEditing(header, provider: provider)
             return
         }
+        modalHeader = header
         modalBody = store.cachedBody(id: id)
-        activeSheet = .message(header)
+        messageWindows.open(vm: self)
         Task {
             do {
                 let body = try await provider.fetchBody(id: id)
@@ -1078,7 +1086,8 @@ final class MailboxViewModel {
               let selected = messages.first(where: { $0.id == selectedId }) else { return }
         isCleaningUp = true
         cleanupResult = nil
-        defer { isCleaningUp = false }
+        cleanupProgress = "Cleanup started…"
+        defer { isCleaningUp = false; cleanupProgress = nil }
 
         guard let selectedBody = await ensureBody(for: selected) else {
             setCleanupResult("Cleanup: couldn’t load the selected message.")
@@ -1093,7 +1102,8 @@ final class MailboxViewModel {
             $0.id != selectedId && $0.threadId == selected.threadId && $0.date <= selected.date
         }
         var toDelete: [String] = []
-        for cand in candidates {
+        for (index, cand) in candidates.enumerated() {
+            cleanupProgress = "Cleaning up… comparing \(index + 1) of \(candidates.count)"
             guard let body = await ensureBody(for: cand) else { continue }
             let content = canonicalContent(body)
             guard content.count >= 8, content.count <= target.count else { continue }
@@ -1834,12 +1844,10 @@ struct MailNotification: Identifiable, Hashable {
 }
 
 enum ActiveSheet: Identifiable {
-    case message(MessageHeader)
     case customSnooze([String])
 
     var id: String {
         switch self {
-        case .message(let h): return "message-\(h.id)"
         case .customSnooze: return "snooze"
         }
     }
