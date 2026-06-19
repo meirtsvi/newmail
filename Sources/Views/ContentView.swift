@@ -121,7 +121,15 @@ private struct ToolbarSearchField: View {
                 }
                 .pickerStyle(.inline)
             } label: {
-                Image(systemName: "line.3.horizontal.decrease.circle")
+                // Combobox-style label that shows the active scope's text, so the
+                // current search reach is visible without opening the menu.
+                HStack(spacing: 4) {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                    Text(vm.searchScope.rawValue)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .imageScale(.small)
+                        .foregroundStyle(.secondary)
+                }
             }
             .menuStyle(.borderlessButton)
             .fixedSize()

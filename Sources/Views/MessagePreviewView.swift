@@ -56,7 +56,7 @@ struct MessagePreviewView: View {
             }
             HStack(spacing: 10) {
                 Avatar(address: header.from)
-                Text(header.from.display).font(.body.weight(.semibold))
+                FromField(address: header.from)
                 Spacer()
                 replyControls
             }
@@ -153,6 +153,33 @@ private struct RecipientRow: View {
                 }
             }
         }
+    }
+}
+
+/// The sender's name in the header block; clicking opens a menu to copy the
+/// address or start a new message to it, matching the recipient chips.
+private struct FromField: View {
+    @Environment(MailboxViewModel.self) private var vm
+    let address: MailAddress
+
+    var body: some View {
+        Menu {
+            Text(address.nameAndEmail)
+            Button("Copy Address") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(address.email, forType: .string)
+            }
+            Button("New Message") { vm.startNewMail(to: address.email) }
+        } label: {
+            Text(address.display)
+                .font(.body.weight(.semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(address.nameAndEmail)
     }
 }
 
