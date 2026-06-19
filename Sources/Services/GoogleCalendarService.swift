@@ -36,7 +36,7 @@ enum MeetingProvider {
 /// One popup reminder for a calendar event: a title/time plus the moment the
 /// popup should appear (the event's start minus the reminder's lead minutes).
 struct EventReminder: Identifiable, Hashable {
-    var id: String          // "<eventId>#<minutes>" — distinct per override; "#overdue" for in-progress
+    var id: String          // the eventId for an upcoming event; "<eventId>#overdue" for in-progress
     var eventId: String
     var title: String
     var start: Date
@@ -129,18 +129,19 @@ actor GoogleCalendarService {
             let popupReminders = source.filter(isPopup)
 
             if event.start > now {
-                // Upcoming event: one reminder per popup override. Leads whose time has
-                // already passed fire immediately on the next tick.
-                for reminder in popupReminders {
-                    guard let minutes = reminder.minutes else { continue }
-                    let fireDate = event.start.addingTimeInterval(-Double(minutes) * 60)
-                    out.append(EventReminder(
-                        id: "\(event.id)#\(minutes)",
-                        eventId: event.id, title: event.title,
-                        start: event.start, isAllDay: false, fireDate: fireDate,
-                        joinURL: event.joinURL, location: item.location
-                    ))
-                }
+                // Upcoming event: collapse multiple popup overrides into one card. The
+                // card shows only the event (no lead time), so several leads would just
+                // be visually-identical duplicates. Fire at the earliest configured lead
+                // (the largest minutes) so the heads-up appears as early as the user
+                // asked; a lead whose time has already passed fires on the next tick.
+                guard let maxLead = popupReminders.compactMap(\.minutes).max() else { continue }
+                let fireDate = event.start.addingTimeInterval(-Double(maxLead) * 60)
+                out.append(EventReminder(
+                    id: event.id,
+                    eventId: event.id, title: event.title,
+                    start: event.start, isAllDay: false, fireDate: fireDate,
+                    joinURL: event.joinURL, location: item.location
+                ))
             } else if event.end > now {
                 // Event already in progress: surface a single "overdue" reminder that
                 // fires immediately — but only for events that had a popup reminder
