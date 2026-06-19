@@ -91,9 +91,9 @@ final class MailboxViewModel {
     ]
     var nextPageToken: String?
 
-    /// Whether the list can pull an older page on demand. False while searching,
-    /// since `loadMore()` pages the folder listing, not the search results.
-    var canLoadMore: Bool { !isSearching && nextPageToken != nil }
+    /// Whether the list can pull an older page on demand — for both the folder
+    /// listing and search results (`loadMore()` pages whichever is on screen).
+    var canLoadMore: Bool { nextPageToken != nil }
 
     // Preview
     var currentBody: MessageBody?
@@ -109,7 +109,20 @@ final class MailboxViewModel {
     // Search
     var searchText = ""
     var searchScope: SearchScope = .currentFolder
-    private var isSearching = false
+    // Whether the list currently shows search results (not the plain folder listing).
+    var isSearching = false
+    // True only while a search request is in flight — drives the inline search-bar
+    // spinner and the "Searching…" status, distinct from the background-sync `isLoading`.
+    var isSearchInProgress = false
+    // Set when a search completes ("Found 23 results" / "No results"); shown in the
+    // status bar while viewing results. Cleared on clear / folder switch / new search.
+    var searchResultSummary: String?
+    // The query backing the current result set, so `loadMore()` can page it.
+    private var activeSearchQuery: String?
+    // The in-flight search, cancelled when a newer query supersedes it.
+    private var searchTask: Task<Void, Never>?
+    // Toggled by ⌘F to pull keyboard focus into the search field.
+    var focusSearchRequested = false
 
     // Status
     var isLoading = false
@@ -573,8 +586,13 @@ final class MailboxViewModel {
         hasWriteScope = currentAccountCanWrite
         selection = []
         currentBody = nil
+        searchTask?.cancel()
+        searchTask = nil
         searchText = ""
         isSearching = false
+        isSearchInProgress = false
+        activeSearchQuery = nil
+        searchResultSummary = nil
         messages = store.cachedHeaders(folderId: folder.id, accountId: folder.accountId)
         hydrateCalendarIds()
         scanCalendarEvents(for: folder)
@@ -678,7 +696,19 @@ final class MailboxViewModel {
         isLoading = true
         defer { isLoading = false }
         do {
-            let result = try await provider.listMessages(folderId: folder.id, query: nil, pageToken: token)
+            let result: (headers: [MessageHeader], nextPageToken: String?)
+            if isSearching, let query = activeSearchQuery {
+                // Page the search results, not the folder listing — mirror the scope
+                // routing in `performSearch`.
+                switch searchScope {
+                case .currentFolder:
+                    result = try await provider.listMessages(folderId: folder.id, query: query, pageToken: token)
+                case .allFolders:
+                    result = try await provider.search(query: query, pageToken: token)
+                }
+            } else {
+                result = try await provider.listMessages(folderId: folder.id, query: nil, pageToken: token)
+            }
             // Don't append this folder's older page onto a list the user has since
             // switched away from.
             guard currentFolder?.id == folder.id else { return }
@@ -911,37 +941,67 @@ final class MailboxViewModel {
 
     /// Called when the user clears the search field (the X button or Escape):
     /// empties the field, drops search mode, and reloads the folder's full
-    /// message list.
+    /// message list. Restores the cached folder list synchronously so it reappears
+    /// instantly, then refreshes from the server in the background.
     func clearSearch() async {
+        searchTask?.cancel()
+        searchTask = nil
         isSearching = false
+        isSearchInProgress = false
         searchText = ""
+        activeSearchQuery = nil
+        searchResultSummary = nil
+        if let folder = currentFolder {
+            messages = store.cachedHeaders(folderId: folder.id, accountId: folder.accountId)
+        }
         await loadMessages()
     }
 
     func runSearch() async {
-        guard let provider = currentProvider else { return }
         let text = searchText.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty else {
-            isSearching = false
-            await loadMessages()
+            await clearSearch()
             return
         }
+        // A newer query supersedes any search still in flight, so its late response
+        // can't overwrite these results.
+        searchTask?.cancel()
+        let task = Task { await performSearch(text) }
+        searchTask = task
+        await task.value
+    }
+
+    private func performSearch(_ text: String) async {
+        guard let provider = currentProvider else { return }
         isSearching = true
-        isLoading = true
-        defer { isLoading = false }
+        isSearchInProgress = true
+        searchResultSummary = nil
+        let scope = searchScope
+        defer { isSearchInProgress = false }
         do {
             let result: (headers: [MessageHeader], nextPageToken: String?)
-            switch searchScope {
+            switch scope {
             case .currentFolder:
                 let folderId = currentFolder?.id ?? "INBOX"
                 result = try await provider.listMessages(folderId: folderId, query: text, pageToken: nil)
             case .allFolders:
                 result = try await provider.search(query: text, pageToken: nil)
             }
+            // A newer search (or a clear) started while this one was suspended at the
+            // network await — discard this stale response rather than flash it on screen.
+            guard !Task.isCancelled else { return }
             messages = result.headers
             nextPageToken = result.nextPageToken
+            activeSearchQuery = text
             store.saveHeaders(result.headers)
+            if result.headers.isEmpty {
+                searchResultSummary = "No results"
+            } else {
+                let more = result.nextPageToken != nil ? "+" : ""
+                searchResultSummary = "Found \(result.headers.count)\(more) result(s)"
+            }
         } catch {
+            guard !Task.isCancelled else { return }
             errorMessage = error.localizedDescription
         }
     }

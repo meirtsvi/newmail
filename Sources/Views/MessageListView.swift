@@ -23,9 +23,24 @@ struct MessageListView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            table
-            loadOlderFooter
+            if vm.isSearching && vm.displayedMessages.isEmpty && !vm.isSearchInProgress {
+                emptyResults
+            } else {
+                table
+                loadOlderFooter
+            }
         }
+    }
+
+    /// Shown when a completed search returned nothing, so the pane reads as "no
+    /// matches" rather than a blank list that looks stuck.
+    private var emptyResults: some View {
+        ContentUnavailableView {
+            Label("No results", systemImage: "magnifyingglass")
+        } description: {
+            Text("No messages match “\(vm.searchText)”.")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// Footer shown while the current folder has more pages on the server. The

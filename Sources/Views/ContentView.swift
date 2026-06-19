@@ -39,6 +39,12 @@ struct ContentView: View {
             Task { await vm.clearSearch() }
             return .handled
         }
+        // ⌘F focuses the search field (ToolbarSearchField observes this toggle).
+        .onKeyPress(keys: ["f"]) { press in
+            guard press.modifiers.contains(.command) else { return .ignored }
+            vm.focusSearchRequested.toggle()
+            return .handled
+        }
         // A single sheet driven by an enum — reliably presents compose, the
         // message window, and the custom-snooze picker.
         .sheet(item: $vm.activeSheet) { sheet in
@@ -84,8 +90,12 @@ private struct ToolbarSearchField: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
+            if vm.isSearchInProgress {
+                ProgressView().controlSize(.small)
+            } else {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+            }
             TextField("Search mail — try from:, to:, subject:", text: $vm.searchText)
                 .textFieldStyle(.plain)
                 .focused($focused)
@@ -124,6 +134,8 @@ private struct ToolbarSearchField: View {
         .onChange(of: vm.searchScope) { _, _ in
             if !vm.searchText.isEmpty { Task { await vm.runSearch() } }
         }
+        // ⌘F (handled in ContentView) toggles this to pull focus here.
+        .onChange(of: vm.focusSearchRequested) { _, _ in focused = true }
     }
 }
 
@@ -174,6 +186,13 @@ struct StatusBar: View {
             Image(systemName: "checkmark.circle")
                 .foregroundStyle(.secondary)
             Text(result).foregroundStyle(.secondary).lineLimit(1)
+        } else if vm.isSearchInProgress {
+            ProgressView().controlSize(.small)
+            Text("Searching…").foregroundStyle(.secondary)
+        } else if vm.isSearching, let summary = vm.searchResultSummary {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            Text(summary).foregroundStyle(.secondary).lineLimit(1)
         } else if vm.isLoading {
             ProgressView().controlSize(.small)
             Text("Updating…").foregroundStyle(.secondary)
