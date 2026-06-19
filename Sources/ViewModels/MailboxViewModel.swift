@@ -1240,6 +1240,25 @@ final class MailboxViewModel {
         composeWindows.open(ComposeRequest(kind: .new, to: address), vm: self)
     }
 
+    /// Handles a `mailto:` URL (e.g. the app is the default mail client and the
+    /// user clicked a mail link) by opening a compose window pre-filled from the
+    /// URL's recipient and `subject`/`cc`/`body` query parameters.
+    func handleMailto(_ url: URL) {
+        guard url.scheme?.lowercased() == "mailto" else { return }
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        // The recipient list is the URL's opaque body (everything before `?`);
+        // `.path` and query-item values are already percent-decoded.
+        let to = components?.path ?? ""
+        let items = components?.queryItems ?? []
+        func value(_ name: String) -> String {
+            items.first { $0.name.lowercased() == name }?.value ?? ""
+        }
+        let request = ComposeRequest(kind: .new, to: to, subject: value("subject"))
+        request.cc = value("cc")
+        request.body = value("body")
+        composeWindows.open(request, vm: self)
+    }
+
     func startReply(all: Bool) {
         guard let header = selectedHeaders.first else { return }
         Task {

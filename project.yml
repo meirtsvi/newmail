@@ -31,6 +31,9 @@ targets:
       properties:
         CFBundleDisplayName: newmail
         LSApplicationCategoryType: public.app-category.productivity
+        # Single-instance app: when a mailto: link is opened, LaunchServices routes
+        # the URL to the already-running instance instead of launching a second copy.
+        LSMultipleInstancesProhibited: true
         NSHumanReadableCopyright: ""
         # Microsoft (MSAL) sign-in redirect scheme. Must match the redirect URI
         # registered in the Azure app: msauth.com.meirt.newmail://auth
@@ -38,6 +41,13 @@ targets:
           - CFBundleURLName: com.meirt.newmail
             CFBundleURLSchemes:
               - msauth.com.meirt.newmail
+          # Declares the app as a mailto: handler so it shows up in macOS's
+          # default-email-reader chooser. `Owner` claims the scheme as a primary
+          # mail client (the same rank Mail.app and other clients use).
+          - CFBundleURLName: com.meirt.newmail.mailto
+            CFBundleURLSchemes:
+              - mailto
+            LSHandlerRank: Owner
         LSApplicationQueriesSchemes:
           - msauthv2
           - msauthv3
