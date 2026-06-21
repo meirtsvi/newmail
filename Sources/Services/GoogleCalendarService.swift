@@ -36,7 +36,7 @@ enum MeetingProvider {
 /// One popup reminder for a calendar event: a title/time plus the moment the
 /// popup should appear (the event's start minus the reminder's lead minutes).
 struct EventReminder: Identifiable, Hashable {
-    var id: String          // the eventId for an upcoming event; "<eventId>#overdue" for in-progress
+    var id: String          // the eventId — stable across the event's upcoming→in-progress transition
     var eventId: String
     var title: String
     var start: Date
@@ -146,10 +146,12 @@ actor GoogleCalendarService {
                 // Event already in progress: surface a single "overdue" reminder that
                 // fires immediately — but only for events that had a popup reminder
                 // configured, so we don't pop up for every busy block. Any overrides
-                // collapse into one card.
+                // collapse into one card. The id stays `event.id` (no "#overdue"
+                // suffix) so an event the user already saw or snoozed before it started
+                // isn't treated as a brand-new reminder once it's in progress.
                 guard !popupReminders.isEmpty else { continue }
                 out.append(EventReminder(
-                    id: "\(event.id)#overdue",
+                    id: event.id,
                     eventId: event.id, title: event.title,
                     start: event.start, isAllDay: false, fireDate: now,
                     joinURL: event.joinURL, location: item.location
