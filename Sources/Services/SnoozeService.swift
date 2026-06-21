@@ -39,9 +39,9 @@ final class SnoozeService {
             let tomorrow = calendar.date(byAdding: .day, value: 1, to: now) ?? now
             return calendar.date(bySettingHour: 8, minute: 0, second: 0, of: tomorrow) ?? tomorrow
         case .nextWeek:
-            // Next Monday at 08:00.
+            // Next Sunday at 08:00.
             var comps = DateComponents()
-            comps.weekday = 2 // Monday
+            comps.weekday = 1 // Sunday
             comps.hour = 8
             let next = calendar.nextDate(after: now, matching: comps, matchingPolicy: .nextTime) ?? now
             return next

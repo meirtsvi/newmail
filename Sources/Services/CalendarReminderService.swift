@@ -196,9 +196,9 @@ final class CalendarReminderService {
             return calendar.nextDate(after: now, matching: comps, matchingPolicy: .nextTime)
                 ?? now.addingTimeInterval(24 * 3600)
         case .nextWeek:
-            // Next Monday at 08:00.
+            // Next Sunday at 08:00.
             var comps = DateComponents()
-            comps.weekday = 2 // Monday
+            comps.weekday = 1 // Sunday
             comps.hour = 8
             return calendar.nextDate(after: now, matching: comps, matchingPolicy: .nextTime)
                 ?? now.addingTimeInterval(7 * 24 * 3600)
