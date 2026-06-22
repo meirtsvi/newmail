@@ -49,6 +49,7 @@ struct AttachmentList: View {
             Menu {
                 Button("Preview") { Task { await vm.previewAttachments(attachments, start: att) } }
                 Button("Open") { Task { await vm.openAttachment(att) } }
+                Button("Copy") { Task { await vm.copyAttachment(att) } }
                 Button("Download") { Task { await vm.downloadAttachment(att) } }
             } label: {
                 Image(systemName: "chevron.down")

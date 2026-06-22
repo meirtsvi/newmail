@@ -146,8 +146,18 @@ struct MessageContextMenu: View {
                 Button("Mark as Not Spam") { Task { await vm.markNotSpam(ids) } }
                 Divider()
             }
-            Button("Mark Read") { Task { await vm.markRead(ids, read: true) } }
-            Button("Mark Unread") { Task { await vm.markRead(ids, read: false) } }
+            // A single message offers only the toggle opposite its current state;
+            // a multi-selection offers both so a mixed group can be set either way.
+            if ids.count == 1 {
+                if vm.messages.first(where: { $0.id == ids[0] })?.isRead == true {
+                    Button("Mark Unread") { Task { await vm.markRead(ids, read: false) } }
+                } else {
+                    Button("Mark Read") { Task { await vm.markRead(ids, read: true) } }
+                }
+            } else {
+                Button("Mark Read") { Task { await vm.markRead(ids, read: true) } }
+                Button("Mark Unread") { Task { await vm.markRead(ids, read: false) } }
+            }
             Button("Flag") { Task { await vm.toggleFlag(ids) } }
             Menu("Move to") { MoveMenu(vm: vm, ids: ids) }
             Menu("Snooze") { SnoozeMenu(vm: vm, ids: ids) }

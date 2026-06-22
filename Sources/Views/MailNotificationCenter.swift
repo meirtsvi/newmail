@@ -168,6 +168,23 @@ private struct MailNotificationCard: View {
             } else {
                 HStack {
                     Spacer()
+                    let moveFolders = vm.quickMoveForAccount(note.accountId)
+                    if !moveFolders.isEmpty {
+                        Menu {
+                            ForEach(moveFolders, id: \.compositeId) { folder in
+                                Button {
+                                    Task { await vm.moveNotification(note, to: folder) }
+                                } label: {
+                                    Label(folder.name, systemImage: folder.kind.icon)
+                                }
+                            }
+                        } label: {
+                            Label("Move", systemImage: "folder")
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                        .controlSize(.small)
+                    }
                     Button(role: .destructive) {
                         Task { await vm.deleteNotification(note) }
                     } label: {

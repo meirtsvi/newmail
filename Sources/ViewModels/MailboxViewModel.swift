@@ -344,10 +344,76 @@ final class MailboxViewModel {
 
     private func loadFolders(for session: Session) async throws {
         let folders = try await session.provider.listFolders()
+        // Skip the work (and the sidebar re-render) when nothing changed. The
+        // periodic refresh runs this often; rebuilding an identical tree only
+        // churns the List and is the main trigger for a stale selection
+        // highlight lingering on a previously-selected row.
+        guard foldersByAccount[session.account.id] != folders else { return }
         foldersByAccount[session.account.id] = folders
         store.saveFolders(folders, accountId: session.account.id)
         recomputeFavorites()
         updateDockBadge()
+    }
+
+    // MARK: - Folder management
+
+    /// Number of sub-folders nested under `folder` (used to phrase the delete
+    /// confirmation). Derived from the cached folder list by path prefix.
+    func descendantCount(of folder: MailFolder) -> Int {
+        let prefix = folder.path + "/"
+        return (foldersByAccount[folder.accountId] ?? []).filter { $0.path.hasPrefix(prefix) }.count
+    }
+
+    /// Creates a folder named `name` in `accountId`, optionally nested under
+    /// `parent`, then refreshes that account's folder list.
+    func createFolder(named name: String, under parent: MailFolder?, accountId: String) async {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard !trimmed.contains("/") else {
+            errorMessage = "Folder names can't contain a “/”."
+            return
+        }
+        guard let session = sessions.first(where: { $0.account.id == accountId }) else { return }
+        await perform {
+            _ = try await session.provider.createFolder(named: trimmed, parentId: parent?.id)
+            try await self.loadFolders(for: session)
+        }
+    }
+
+    /// Deletes `folder` and all of its sub-folders, then refreshes the folder
+    /// list and clears the folder (and any descendants) from favorites, the
+    /// quick-move bar, and the current selection.
+    func deleteFolder(_ folder: MailFolder) async {
+        guard let session = sessions.first(where: { $0.account.id == folder.accountId }) else { return }
+
+        // Composite ids of the folder plus its descendants, captured before the
+        // reload so favorites/quick-move can be pruned.
+        let prefix = folder.path + "/"
+        let removedIds = Set(([folder] + (foldersByAccount[folder.accountId] ?? [])
+            .filter { $0.path.hasPrefix(prefix) }).map { $0.compositeId })
+
+        errorMessage = nil
+        await perform {
+            try await session.provider.deleteFolder(id: folder.id)
+            try await self.loadFolders(for: session)
+        }
+        guard errorMessage == nil else { return }
+
+        favoriteOrder.removeAll { removedIds.contains($0) }
+        quickMoveOrder.removeAll { removedIds.contains($0) }
+        UserDefaults.standard.set(quickMoveOrder, forKey: "quickMoveFolderIds")
+        persistFavorites()
+        recomputeFavorites()
+
+        if let current = currentFolder, removedIds.contains(current.compositeId) {
+            currentFolder = nil
+            messages = []
+            currentBody = nil
+            if let inbox = foldersByAccount[session.account.id]?.first(where: { $0.kind == .inbox }) {
+                sidebarSelection = "acct:\(inbox.compositeId)"
+                await selectFolder(inbox)
+            }
+        }
     }
 
     private func startSnooze(for session: Session) {
@@ -521,6 +587,12 @@ final class MailboxViewModel {
         quickMoveFolders.filter { $0.accountId == currentAccountId }
     }
 
+    /// Quick-move targets for a specific account — used by a new-mail popup, whose
+    /// message may belong to an account other than the one currently on screen.
+    func quickMoveForAccount(_ accountId: String) -> [MailFolder] {
+        quickMoveFolders.filter { $0.accountId == accountId }
+    }
+
     func isQuickMove(_ folder: MailFolder) -> Bool { quickMoveOrder.contains(folder.compositeId) }
 
     func toggleQuickMove(_ folder: MailFolder) {
@@ -620,7 +692,11 @@ final class MailboxViewModel {
               let count = try? await provider.folderCount(id: folder.id) else { return }
         currentFolder?.unreadCount = count.unread
         currentFolder?.totalCount = count.total
-        if let i = foldersByAccount[folder.accountId]?.firstIndex(where: { $0.id == folder.id }) {
+        if let i = foldersByAccount[folder.accountId]?.firstIndex(where: { $0.id == folder.id }),
+           foldersByAccount[folder.accountId]?[i].unreadCount != count.unread
+            || foldersByAccount[folder.accountId]?[i].totalCount != count.total {
+            // Only write on an actual change: rewriting an identical count would
+            // re-render the sidebar List and can leave a stale selection highlight.
             foldersByAccount[folder.accountId]?[i].unreadCount = count.unread
             foldersByAccount[folder.accountId]?[i].totalCount = count.total
         }
@@ -634,15 +710,19 @@ final class MailboxViewModel {
         guard let accountId = currentAccountId, let provider = currentProvider,
               let draftsId = foldersByAccount[accountId]?.first(where: { $0.kind == .drafts })?.id,
               let count = try? await provider.folderCount(id: draftsId) else { return }
-        if let i = foldersByAccount[accountId]?.firstIndex(where: { $0.id == draftsId }) {
+        var changed = false
+        if let i = foldersByAccount[accountId]?.firstIndex(where: { $0.id == draftsId }),
+           foldersByAccount[accountId]?[i].unreadCount != count.unread
+            || foldersByAccount[accountId]?[i].totalCount != count.total {
             foldersByAccount[accountId]?[i].unreadCount = count.unread
             foldersByAccount[accountId]?[i].totalCount = count.total
+            changed = true
         }
         if currentFolder?.id == draftsId {
             currentFolder?.unreadCount = count.unread
             currentFolder?.totalCount = count.total
         }
-        recomputeFavorites()
+        if changed { recomputeFavorites() }
     }
 
     // MARK: - Message loading
@@ -1165,10 +1245,23 @@ final class MailboxViewModel {
     }
 
     func move(_ ids: [String], to folder: MailFolder) async {
-        await withProvider {
-            try await $0.move(ids: ids, toFolderId: folder.id, fromFolderId: self.currentFolder?.id)
+        guard let provider = currentProvider else {
+            errorMessage = "No account is selected."
+            return
         }
+        // Remove from the list right away so the move feels instant, then move on
+        // the server in the background. `removeLocal` runs synchronously before the
+        // first `await`, so the UI updates immediately; if the move fails we put the
+        // messages back and report the error.
+        let removed = messages.filter { ids.contains($0.id) }
+        let fromFolderId = currentFolder?.id
         removeLocal(ids: ids)
+        do {
+            try await provider.move(ids: ids, toFolderId: folder.id, fromFolderId: fromFolderId)
+        } catch {
+            restoreLocal(removed)
+            errorMessage = "Couldn’t move: \(error.localizedDescription)"
+        }
     }
 
     /// Moves messages from the current (Outlook) account into a folder of another
@@ -1186,15 +1279,21 @@ final class MailboxViewModel {
             guard gmailWriteScope else { return }
         }
         let batch = messages.filter { ids.contains($0.id) }
+        // Remove from the list right away so the move feels instant, then export,
+        // import, and delete each message on the server in the background. The source
+        // copy is only deleted after its import succeeds, so a failure never loses
+        // mail; any message that didn't make it over is put back in the list.
+        removeLocal(ids: batch.map(\.id))
         var moved = 0
-        for header in batch {
+        for (index, header) in batch.enumerated() {
             do {
                 let raw = try await source.provider.exportRawMessage(id: header.id)
                 _ = try await dest.provider.importRawMessage(raw, toFolderId: folder.id, markUnread: !header.isRead)
                 try await source.provider.permanentlyDelete(ids: [header.id])
-                removeLocal(ids: [header.id])
                 moved += 1
             } catch {
+                // Put back this message and any not yet processed, then stop.
+                restoreLocal(Array(batch[index...]))
                 errorMessage = "Couldn’t move “\(header.subject)”: \(error.localizedDescription)"
                 break
             }
@@ -1447,6 +1546,22 @@ final class MailboxViewModel {
         }
     }
 
+    /// Moves a popup's message into a quick-move folder via the account that received
+    /// it (not necessarily the current one), then dismisses the card. The target is
+    /// always within that same account, so no cross-account import is needed.
+    func moveNotification(_ note: MailNotification, to folder: MailFolder) async {
+        guard let session = sessions.first(where: { $0.account.id == note.accountId }) else { return }
+        let inboxId = foldersByAccount[note.accountId]?.first(where: { $0.kind == .inbox })?.id
+        do {
+            try await session.provider.move(ids: [note.id], toFolderId: folder.id, fromFolderId: inboxId)
+            // Reflect the removal in the list if that account's folder is on screen.
+            if currentAccountId == note.accountId { removeLocal(ids: [note.id]) }
+            dismissNotification(note.id)
+        } catch {
+            errorMessage = "Couldn’t move message: \(error.localizedDescription)"
+        }
+    }
+
     func dismissNotification(_ id: String) {
         cancelAutoDismiss(id)
         notifications.removeAll { $0.id == id }
@@ -1670,6 +1785,15 @@ final class MailboxViewModel {
     /// Opens an attachment with the system default app.
     func openAttachment(_ att: MailAttachment) async {
         if let url = await downloadToTemp(att) { NSWorkspace.shared.open(url) }
+    }
+
+    /// Copies the attachment to the clipboard as a file (like Finder's Copy), so
+    /// it can be pasted into Finder, a chat, a new mail, etc.
+    func copyAttachment(_ att: MailAttachment) async {
+        guard let url = await downloadToTemp(att) else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.writeObjects([url as NSURL])
     }
 
     /// Saves a single attachment to ~/Downloads and reveals it in Finder.

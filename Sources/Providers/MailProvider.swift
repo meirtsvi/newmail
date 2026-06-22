@@ -35,6 +35,14 @@ protocol MailProvider: AnyObject {
     /// Ensures a folder/label with the given name exists and returns its id.
     func ensureFolder(named: String) async throws -> String
 
+    /// Creates a folder/label named `name` and returns its id. If `parentId` is
+    /// non-nil the new folder is nested under that folder.
+    func createFolder(named name: String, parentId: String?) async throws -> String
+
+    /// Deletes the folder/label with the given id, along with all of its
+    /// descendants (sub-folders).
+    func deleteFolder(id: String) async throws
+
     func send(rawMIME: Data) async throws
 
     /// Saves a draft from the message MIME, returning the draft's id. Pass `id: nil`

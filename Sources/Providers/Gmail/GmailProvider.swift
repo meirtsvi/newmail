@@ -138,6 +138,40 @@ final class GmailProvider: MailProvider {
         if let existing = list.labels.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
             return existing.id
         }
+        return try await createLabel(named: name)
+    }
+
+    func createFolder(named name: String, parentId: String?) async throws -> String {
+        // Gmail labels encode hierarchy in the name ("Parent/Child"), so a
+        // sub-folder is created by prefixing the parent label's full name.
+        var fullName = name
+        if let parentId {
+            let data = try await request("labels")
+            let list = try JSONDecoder().decode(GmailAPI.LabelsList.self, from: data)
+            guard let parent = list.labels.first(where: { $0.id == parentId }) else {
+                throw MailError.other("The parent folder no longer exists.")
+            }
+            fullName = parent.name + "/" + name
+        }
+        return try await createLabel(named: fullName)
+    }
+
+    func deleteFolder(id: String) async throws {
+        let data = try await request("labels")
+        let list = try JSONDecoder().decode(GmailAPI.LabelsList.self, from: data)
+        guard let target = list.labels.first(where: { $0.id == id }) else { return }
+
+        // Deleting a label doesn't remove its sub-labels, so collect the whole
+        // subtree: the label itself plus every label nested beneath it.
+        let prefix = target.name + "/"
+        let toDelete = list.labels.filter { $0.id == id || $0.name.hasPrefix(prefix) }
+        for label in toDelete {
+            _ = try await request("labels/\(label.id)", method: "DELETE")
+        }
+    }
+
+    /// POSTs a new visible label with the given (possibly nested) name.
+    private func createLabel(named name: String) async throws -> String {
         struct NewLabel: Codable {
             var name: String
             var labelListVisibility = "labelShow"

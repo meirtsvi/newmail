@@ -197,6 +197,18 @@ final class GraphProvider: MailProvider {
         return try JSONDecoder().decode(GraphAPI.MailFolder.self, from: created).id
     }
 
+    func createFolder(named name: String, parentId: String?) async throws -> String {
+        let endpoint = parentId.map { "mailFolders/\($0)/childFolders" } ?? "mailFolders"
+        let body = try JSONSerialization.data(withJSONObject: ["displayName": name])
+        let created = try await request(endpoint, method: "POST", jsonBody: body)
+        return try JSONDecoder().decode(GraphAPI.MailFolder.self, from: created).id
+    }
+
+    func deleteFolder(id: String) async throws {
+        // Graph deletes sub-folders and their messages along with the folder.
+        _ = try await request("mailFolders/\(id)", method: "DELETE")
+    }
+
     // MARK: - Listing & search
 
     private static let messageSelect =

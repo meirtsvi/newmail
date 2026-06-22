@@ -14,6 +14,18 @@ struct FolderNode: Identifiable, Hashable {
 struct SidebarView: View {
     @Environment(MailboxViewModel.self) private var vm
 
+    /// Pending "New Folder" / "New Sub-folder" target: the account to create in
+    /// and the parent folder (nil for a top-level folder).
+    private struct CreateTarget: Identifiable {
+        let accountId: String
+        let parent: MailFolder?
+        var id: String { (parent?.compositeId ?? "") + "\u{1}" + accountId }
+    }
+
+    @State private var createTarget: CreateTarget?
+    @State private var newFolderName = ""
+    @State private var deleteTarget: MailFolder?
+
     var body: some View {
         @Bindable var vm = vm
         List(selection: $vm.sidebarSelection) {
@@ -34,6 +46,11 @@ struct SidebarView: View {
                 } header: {
                     Text(session.account.displayName.isEmpty ? session.account.email : session.account.displayName)
                         .contextMenu {
+                            Button("New Folder…") {
+                                newFolderName = ""
+                                createTarget = CreateTarget(accountId: session.account.id, parent: nil)
+                            }
+                            Divider()
                             Button("Remove Account", role: .destructive) {
                                 vm.removeAccount(session.account.id)
                             }
@@ -55,6 +72,40 @@ struct SidebarView: View {
         .onChange(of: vm.sidebarSelection) { _, newValue in
             guard let newValue, newValue.hasPrefix("fav:") || newValue.hasPrefix("acct:") else { return }
             Task { await vm.selectRow(newValue) }
+        }
+        .alert(createTarget?.parent == nil ? "New Folder" : "New Sub-folder",
+               isPresented: Binding(get: { createTarget != nil },
+                                    set: { if !$0 { createTarget = nil } })) {
+            TextField("Folder name", text: $newFolderName)
+            Button("Cancel", role: .cancel) { createTarget = nil }
+            Button("Create") {
+                if let target = createTarget {
+                    let name = newFolderName
+                    Task { await vm.createFolder(named: name, under: target.parent, accountId: target.accountId) }
+                }
+                createTarget = nil
+            }
+        } message: {
+            if let parent = createTarget?.parent {
+                Text("Inside “\(parent.name)”.")
+            }
+        }
+        .alert("Delete “\(deleteTarget?.name ?? "")”?",
+               isPresented: Binding(get: { deleteTarget != nil },
+                                    set: { if !$0 { deleteTarget = nil } }),
+               presenting: deleteTarget) { folder in
+            Button("Cancel", role: .cancel) { deleteTarget = nil }
+            Button("Delete", role: .destructive) {
+                Task { await vm.deleteFolder(folder) }
+                deleteTarget = nil
+            }
+        } message: { folder in
+            let subCount = vm.descendantCount(of: folder)
+            if subCount > 0 {
+                Text("This also deletes its \(subCount) sub-folder\(subCount == 1 ? "" : "s") and the messages they contain (on Outlook).")
+            } else {
+                Text("This deletes the messages it contains (on Outlook).")
+            }
         }
     }
 
@@ -111,6 +162,14 @@ struct SidebarView: View {
                 Button("Remove from Favorites") { vm.toggleFavorite(folder) }
             } else {
                 Button("Add to Favorites") { vm.toggleFavorite(folder) }
+            }
+            if folder.kind == .custom {
+                Divider()
+                Button("New Sub-folder…") {
+                    newFolderName = ""
+                    createTarget = CreateTarget(accountId: folder.accountId, parent: folder)
+                }
+                Button("Delete Folder…", role: .destructive) { deleteTarget = folder }
             }
         }
     }
