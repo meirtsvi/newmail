@@ -988,6 +988,73 @@ final class MailboxViewModel {
         }
     }
 
+    /// Opens a message for editing. Drafts get the true draft editor; any other
+    /// message opens in an "Edit" compose window whose Save replaces it with an
+    /// edited copy (see `saveEditedMessage`).
+    func editMessage(_ id: String) {
+        guard let header = messages.first(where: { $0.id == id }), let provider = currentProvider else { return }
+        if isDraft(header) {
+            openDraftForEditing(header, provider: provider)
+            return
+        }
+        // Replacing a message requires inserting a raw copy into its folder, which
+        // only Gmail supports (Graph's MIME POST can only create drafts). Block edit
+        // on Outlook up front so the user doesn't lose their changes on a doomed save.
+        if sessions.first(where: { $0.account.id == header.accountId })?.account.providerKind == .graph {
+            statusMessage = "Editing messages isn’t supported for Outlook accounts."
+            return
+        }
+        Task {
+            let body = await ensureBody(for: header)
+            let files = (body?.attachments ?? []).filter { !$0.mimeType.lowercased().hasPrefix("image/") }
+            let request = ComposeRequest(
+                kind: .edit,
+                to: header.to.map(\.email).filter { !$0.isEmpty }.joined(separator: ", "),
+                subject: header.subject,
+                attachments: files
+            )
+            request.cc = (body?.cc ?? []).map(\.email).filter { !$0.isEmpty }.joined(separator: ", ")
+            request.bodyHTML = body?.html ?? ""
+            request.originalMessageId = header.id
+            request.originalFrom = header.from.nameAndEmail
+            request.originalDate = header.date
+            request.originalFolderId = currentFolder?.id
+            request.originalIsRead = header.isRead
+            request.originalIsFlagged = header.isFlagged
+            composeWindows.open(request, vm: self)
+        }
+    }
+
+    /// Saves an edit by inserting a new copy of the message with the user's changes
+    /// (preserving the original sender and date) into its folder, then deleting the
+    /// original. Messages are immutable on the server, so this replace is the only
+    /// way to "edit"; the original is removed only after the insert succeeds.
+    func saveEditedMessage(_ request: ComposeRequest, html: String, attachments: [URL],
+                           inlineImages: [ComposeInlineImage]) async {
+        guard let provider = currentProvider, let originalId = request.originalMessageId else { return }
+        let scoped = attachments.filter { $0.startAccessingSecurityScopedResource() }
+        defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
+        let mime = MIMEBuilder.buildHTML(
+            from: request.originalFrom, to: request.to, cc: request.cc, subject: request.subject,
+            html: html, attachments: attachments, inlineImages: inlineImages, date: request.originalDate
+        )
+        let folderId = request.originalFolderId ?? currentFolder?.id ?? "INBOX"
+        do {
+            let newId = try await provider.importRawMessage(mime, toFolderId: folderId, markUnread: !request.originalIsRead)
+            // Re-apply the flag (insert only carries the folder + unread labels).
+            if request.originalIsFlagged {
+                try? await provider.setFlagged(ids: [newId], flagged: true)
+            }
+            // Trash (not permanent delete) so it works with Gmail's modify scope and
+            // the pre-edit original stays recoverable in Trash.
+            try await provider.trash(ids: [originalId])
+            removeLocal(ids: [originalId])
+            await reloadCurrentFolder()
+        } catch {
+            errorMessage = "Couldn’t save edits: \(error.localizedDescription)"
+        }
+    }
+
     func requestCustomSnooze(_ ids: [String]) {
         activeSheet = .customSnooze(ids)
     }
@@ -1978,7 +2045,7 @@ enum ActiveSheet: Identifiable {
 }
 
 enum ComposeKind {
-    case new, reply, replyAll, forward, draft
+    case new, reply, replyAll, forward, draft, edit
     var title: String {
         switch self {
         case .new: return "New Message"
@@ -1986,6 +2053,7 @@ enum ComposeKind {
         case .replyAll: return "Reply All"
         case .forward: return "Forward"
         case .draft: return "Draft"
+        case .edit: return "Edit Message"
         }
     }
 }
@@ -2006,6 +2074,20 @@ final class ComposeRequest: Identifiable {
     var attachments: [MailAttachment]
     /// Server-side id of the autosaved draft for this compose, once one exists.
     var draftId: String?
+
+    // MARK: - Edit (kind == .edit): the original message being replaced on Save.
+    /// The message this edit replaces; Save inserts an edited copy and deletes it.
+    var originalMessageId: String?
+    /// The original sender ("Name <email>"), preserved so the edited copy looks the same.
+    var originalFrom: String = ""
+    /// The original date, preserved on the edited copy.
+    var originalDate: Date?
+    /// The folder the original lives in; the edited copy is inserted there.
+    var originalFolderId: String?
+    /// The original read state, so the edited copy keeps it.
+    var originalIsRead: Bool = true
+    /// The original flagged state, re-applied to the edited copy.
+    var originalIsFlagged: Bool = false
 
     init(kind: ComposeKind, to: String = "", subject: String = "", quoted: String = "",
          quotedHTML: String = "", attachments: [MailAttachment] = []) {

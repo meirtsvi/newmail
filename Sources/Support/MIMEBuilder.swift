@@ -24,13 +24,17 @@ enum MIMEBuilder {
         subject: String,
         html: String,
         attachments: [URL],
-        inlineImages: [ComposeInlineImage] = []
+        inlineImages: [ComposeInlineImage] = [],
+        date: Date? = nil
     ) -> Data {
         var header: [String] = []
         if !from.isEmpty { header.append("From: \(from)") }
         header.append("To: \(to)")
         if !cc.isEmpty { header.append("Cc: \(cc)") }
         header.append("Subject: \(encodeHeader(subject))")
+        // Preserve the original message's date when editing in place so the copy
+        // sorts and displays identically (Gmail honors this via internalDateSource).
+        if let date { header.append("Date: \(rfc5322Date(date))") }
         header.append("MIME-Version: 1.0")
 
         let body = html.isEmpty ? "<html><body></body></html>" : html
@@ -139,6 +143,14 @@ enum MIMEBuilder {
             lines.append("--\(boundary)--")
         }
         return lines.joined(separator: "\r\n").data(using: .utf8) ?? Data()
+    }
+
+    /// RFC 5322 date header, e.g. "Mon, 22 Jun 2026 14:05:09 +0000".
+    private static func rfc5322Date(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
+        return f.string(from: date)
     }
 
     /// RFC 2047 encoded-word for non-ASCII subjects.

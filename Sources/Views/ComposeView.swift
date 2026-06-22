@@ -134,6 +134,8 @@ struct ComposeView: View {
     /// changed since the last save. Records the returned draft id on the request so
     /// later saves replace it and it can be deleted on send.
     private func autosaveDraft() async {
+        // Editing replaces a message on Save; it must never spawn drafts.
+        guard request.kind != .edit else { return }
         guard !sending, hasDraftContent else { return }
         let (html, inlineImages) = composedBody()
         let snapshot = draftSnapshot(html: html)
@@ -160,35 +162,62 @@ struct ComposeView: View {
             Text(request.kind.title).font(.headline)
             Spacer()
             Button("Cancel") { onClose() }
-            Button {
-                sending = true
-                let (html, inlineImages) = composedBody()
-                Task {
-                    await vm.sendComposed(
-                        to: request.to, cc: request.cc, subject: request.subject,
-                        html: html, attachments: attachments, inlineImages: inlineImages, draftId: request.draftId
-                    )
-                    sending = false
-                    onClose()
-                }
-            } label: {
-                if sending { ProgressView().controlSize(.small) }
-                else { Label("Send", systemImage: "paperplane.fill") }
-            }
-            .keyboardShortcut(.return, modifiers: .command)
-            .disabled(request.to.isEmpty || sending || loadingAttachments)
+            if request.kind == .edit { saveButton } else { sendButton }
         }
         .padding()
     }
 
+    private var sendButton: some View {
+        Button {
+            sending = true
+            let (html, inlineImages) = composedBody()
+            Task {
+                await vm.sendComposed(
+                    to: request.to, cc: request.cc, subject: request.subject,
+                    html: html, attachments: attachments, inlineImages: inlineImages, draftId: request.draftId
+                )
+                sending = false
+                onClose()
+            }
+        } label: {
+            if sending { ProgressView().controlSize(.small) }
+            else { Label("Send", systemImage: "paperplane.fill") }
+        }
+        .keyboardShortcut(.return, modifiers: .command)
+        .disabled(request.to.isEmpty || sending || loadingAttachments)
+    }
+
+    /// Editing replaces the original message with an edited copy (messages are
+    /// immutable on the server), so the primary action is Save, not Send.
+    private var saveButton: some View {
+        Button {
+            sending = true
+            let (html, inlineImages) = composedBody()
+            Task {
+                await vm.saveEditedMessage(request, html: html, attachments: attachments, inlineImages: inlineImages)
+                sending = false
+                onClose()
+            }
+        } label: {
+            if sending { ProgressView().controlSize(.small) }
+            else { Label("Save", systemImage: "checkmark") }
+        }
+        .keyboardShortcut(.return, modifiers: .command)
+        .disabled(sending || loadingAttachments)
+    }
+
     private var fields: some View {
         VStack(spacing: 8) {
+            // When editing a message only Subject + body change; recipients are
+            // shown for context but kept as-is.
             RecipientField(title: "To", text: $request.to,
                            suggest: vm.contactSuggestions, focus: $focus,
                            field: .to, next: .cc, focusOnAppear: true)
+                .disabled(request.kind == .edit)
             RecipientField(title: "Cc", text: $request.cc,
                            suggest: vm.contactSuggestions, focus: $focus,
                            field: .cc, next: .subject, previous: .to)
+                .disabled(request.kind == .edit)
             HStack(spacing: 8) {
                 Text("Subject")
                     .foregroundStyle(.secondary)

@@ -46,6 +46,12 @@ struct MailToolbar: ToolbarContent {
             .disabled(!hasSelection)
             .help("Forward (⇧⌘F)")
 
+            Button { if let id = ids.first { vm.editMessage(id) } } label: {
+                Label("Edit", systemImage: "pencil")
+            }
+            .disabled(vm.selection.count != 1)
+            .help("Edit message")
+
             Button { Task { await vm.deleteMessages(ids) } } label: {
                 Label("Delete", systemImage: "trash")
             }

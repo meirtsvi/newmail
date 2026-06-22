@@ -141,6 +141,9 @@ struct MessageContextMenu: View {
             Button("Reply") { vm.selection = Set(ids); vm.startReply(all: false) }
             Button("Reply All") { vm.selection = Set(ids); vm.startReply(all: true) }
             Button("Forward") { vm.selection = Set(ids); vm.startForward() }
+            if ids.count == 1 {
+                Button("Edit") { vm.editMessage(ids[0]) }
+            }
             Divider()
             if vm.currentFolder?.kind == .junk {
                 Button("Mark as Not Spam") { Task { await vm.markNotSpam(ids) } }
