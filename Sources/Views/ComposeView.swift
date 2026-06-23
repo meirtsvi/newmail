@@ -50,6 +50,9 @@ struct ComposeView: View {
         .onAppear {
             // Shift-Tab out of the body editor returns to the Subject field.
             rich.onShiftTab = { focus = .subject }
+            // A non-image file pasted or dropped into the body (e.g. a PDF) is
+            // added as a real attachment rather than inlined as a picture.
+            rich.onAttachFiles = { urls in attachments.append(contentsOf: urls) }
             // The quoted original is no longer dropped into the editor (the HTML
             // round-trip degraded its formatting). It's shown read-only below and
             // appended verbatim at send time; the editor holds only the new reply.

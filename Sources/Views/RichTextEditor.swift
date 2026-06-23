@@ -11,6 +11,11 @@ final class RichTextController: ObservableObject {
     /// the preceding compose field.
     var onShiftTab: (() -> Void)?
 
+    /// Invoked when non-image files (e.g. a pasted or dropped PDF) land in the
+    /// body, so compose can add them to its attachment list instead of inlining
+    /// them as pictures.
+    var onAttachFiles: (([URL]) -> Void)?
+
     /// Images pasted or dropped into the body, in document order. Derived from the
     /// text storage so it stays in sync when an image is deleted in the editor.
     @Published private(set) var inlineImages: [ComposeInlineImage] = []
@@ -324,9 +329,19 @@ final class InlineImageAttachment: NSTextAttachment {
 /// reporting the PNG data so the controller can track it for `cid:` embedding.
 final class ComposeTextView: NSTextView {
     var onImage: ((Data) -> Void)?
+    var onFiles: (([URL]) -> Void)?
 
     override func paste(_ sender: Any?) {
-        if let data = Self.pngImageData(from: NSPasteboard.general) {
+        let pb = NSPasteboard.general
+        // A copied file that isn't an image (e.g. a PDF) becomes an attachment,
+        // not an inline picture — even when the pasteboard also carries an image
+        // preview of it, which would otherwise be inlined by pngImageData below.
+        let files = Self.nonImageFileURLs(from: pb)
+        if !files.isEmpty {
+            onFiles?(files)
+            return
+        }
+        if let data = Self.pngImageData(from: pb) {
             onImage?(data)
             return
         }
@@ -334,11 +349,30 @@ final class ComposeTextView: NSTextView {
     }
 
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-        if let data = Self.pngImageData(from: sender.draggingPasteboard) {
+        let pb = sender.draggingPasteboard
+        let files = Self.nonImageFileURLs(from: pb)
+        if !files.isEmpty {
+            onFiles?(files)
+            return true
+        }
+        if let data = Self.pngImageData(from: pb) {
             onImage?(data)
             return true
         }
         return super.performDragOperation(sender)
+    }
+
+    /// File URLs on the pasteboard that are not images — e.g. a copied or dragged
+    /// PDF or document. These are surfaced as real attachments; image files fall
+    /// through so they keep their inline-picture behavior.
+    static func nonImageFileURLs(from pb: NSPasteboard) -> [URL] {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        guard let urls = pb.readObjects(forClasses: [NSURL.self], options: options) as? [URL] else { return [] }
+        return urls.filter { url in
+            let type = (try? url.resourceValues(forKeys: [.contentTypeKey]))?.contentType
+                ?? UTType(filenameExtension: url.pathExtension)
+            return !(type?.conforms(to: .image) ?? false)
+        }
     }
 
     /// The first image on a pasteboard as PNG — whether it arrived as raw image
@@ -406,6 +440,9 @@ struct RichTextEditor: NSViewRepresentable {
         textView.onImage = { [weak controller] data in
             // paste/drag are delivered on the main thread.
             MainActor.assumeIsolated { controller?.insertImage(data, mime: "image/png") }
+        }
+        textView.onFiles = { [weak controller] urls in
+            MainActor.assumeIsolated { controller?.onAttachFiles?(urls) }
         }
 
         scrollView.documentView = textView
