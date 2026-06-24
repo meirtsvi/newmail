@@ -179,16 +179,19 @@ struct MessageListView: View {
     private var columns: some TableColumnContent<MessageHeader, KeyPathComparator<MessageHeader>> {
         TableColumn(Text("\(Image(systemName: "circle.fill"))").font(.caption2),
                     value: \MessageHeader.readSort) { msg in unreadCell(msg) }
-            .width(18)
-        TableColumn(Text("\(Image(systemName: "flag.fill"))").font(.body),
+            .width(12)
+            .customizationID("unread")
+        TableColumn(Text("\(Image(systemName: "flag.fill"))").font(.caption),
                     value: \MessageHeader.flagSort) { msg in flagCell(msg) }
-            .width(24)
-        TableColumn(Text("\(Image(systemName: "paperclip"))").font(.body),
+            .width(16)
+            .customizationID("flag")
+        TableColumn(Text("\(Image(systemName: "paperclip"))").font(.caption),
                     value: \MessageHeader.attachmentSort) { msg in attachmentCell(msg) }
-            .width(24)
-        TableColumn(Text("\(Image(systemName: "calendar"))").font(.body),
+            .width(16)
+            .customizationID("attachment")
+        TableColumn(Text("\(Image(systemName: "calendar"))").font(.caption),
                     value: \MessageHeader.calendarSort) { msg in calendarCell(msg) }
-            .width(24)
+            .width(16)
             .customizationID("calendar")
         TableColumn("From", value: \MessageHeader.from.display) { msg in fromCell(msg) }
             .width(min: 120, ideal: 240)
@@ -276,7 +279,7 @@ struct MessageListView: View {
     private func flagCell(_ msg: MessageHeader) -> some View {
         Group {
             if msg.isFlagged {
-                Image(systemName: "flag.fill").foregroundStyle(.red).help("Flagged")
+                Image(systemName: "flag.fill").font(.caption).foregroundStyle(.red).help("Flagged")
             }
         }
         .modifier(rowInteraction(msg))
@@ -285,7 +288,7 @@ struct MessageListView: View {
     private func attachmentCell(_ msg: MessageHeader) -> some View {
         Group {
             if msg.hasAttachments {
-                Image(systemName: "paperclip").foregroundStyle(.secondary).help("Has attachment")
+                Image(systemName: "paperclip").font(.caption).foregroundStyle(.secondary).help("Has attachment")
             }
         }
         .modifier(rowInteraction(msg))
@@ -294,7 +297,7 @@ struct MessageListView: View {
     private func calendarCell(_ msg: MessageHeader) -> some View {
         Group {
             if vm.isCalendarEvent(msg.id) {
-                Image(systemName: "calendar").foregroundStyle(.secondary).help("Calendar event")
+                Image(systemName: "calendar").font(.caption).foregroundStyle(.secondary).help("Calendar event")
             }
         }
         .modifier(rowInteraction(msg))
