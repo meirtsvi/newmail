@@ -861,8 +861,29 @@ final class MailboxViewModel {
         if !additions.isEmpty { messages.insert(contentsOf: additions, at: 0) }
     }
 
+    /// Mark-as-read is deferred: standing on a message only marks it read once
+    /// the user has stayed on it for 3 seconds (cancelled if they move away).
+    private var markReadTask: Task<Void, Never>?
+
+    /// Schedule the selected message to be marked read after a 3-second dwell.
+    /// Replaces any previously scheduled mark-read so quickly skimming messages
+    /// doesn't mark them all read.
+    func scheduleMarkRead(_ id: String) {
+        markReadTask?.cancel()
+        guard let header = messages.first(where: { $0.id == id }), !header.isRead else { return }
+        markReadTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled, let self else { return }
+            // Only mark read if this is still the sole selected message.
+            guard self.selection.count == 1, self.selection.first == id else { return }
+            guard let header = self.messages.first(where: { $0.id == id }), !header.isRead else { return }
+            await self.markRead([id], read: true)
+        }
+    }
+
     func openMessage(_ id: String) async {
         guard let provider = currentProvider else { return }
+        scheduleMarkRead(id)
         // Paint the cached body instantly so the preview is immediate; only show the
         // loading spinner when there's nothing cached to display yet.
         if let cached = store.cachedBody(id: id) {
@@ -880,11 +901,6 @@ final class MailboxViewModel {
             if selection.count == 1, selection.first == id {
                 currentBody = body
                 await loadInviteContextIfNeeded(headerId: id, body: body)
-            }
-            if let header = messages.first(where: { $0.id == id }), !header.isRead {
-                try? await provider.setRead(ids: [id], read: true)
-                mutateLocal(ids: [id]) { $0.isRead = true }
-                store.updateRead(ids: [id], read: true)
             }
         } catch {
             if currentBody == nil { errorMessage = error.localizedDescription }
@@ -946,10 +962,14 @@ final class MailboxViewModel {
             } catch {
                 if modalBody == nil { errorMessage = error.localizedDescription }
             }
+            // Mark read only after the message has been open for 3 seconds.
             if !header.isRead {
-                try? await provider.setRead(ids: [id], read: true)
-                mutateLocal(ids: [id]) { $0.isRead = true }
-                store.updateRead(ids: [id], read: true)
+                try? await Task.sleep(for: .seconds(3))
+                if let header = messages.first(where: { $0.id == id }), !header.isRead {
+                    try? await provider.setRead(ids: [id], read: true)
+                    mutateLocal(ids: [id]) { $0.isRead = true }
+                    store.updateRead(ids: [id], read: true)
+                }
             }
         }
     }
