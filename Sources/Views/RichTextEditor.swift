@@ -78,6 +78,12 @@ final class RichTextController: ObservableObject {
     /// Right-aligns the selected paragraphs (or the paragraph being typed).
     func alignRight() { textView?.alignRight(nil) }
 
+    /// Sets the base writing direction of the selected paragraphs to left-to-right.
+    func makeLeftToRight() { textView?.makeBaseWritingDirectionLeftToRight(nil) }
+
+    /// Sets the base writing direction of the selected paragraphs to right-to-left.
+    func makeRightToLeft() { textView?.makeBaseWritingDirectionRightToLeft(nil) }
+
     /// The label used for the default UI/system font in the family picker; it has no
     /// real family name, so it's special-cased when applied.
     static let systemFamily = "System"
@@ -112,6 +118,18 @@ final class RichTextController: ObservableObject {
         applyFont { NSFontManager.shared.convert($0, toSize: size) }
     }
 
+    /// Changes the color of the selected text, or — when nothing is selected — of the
+    /// typing attributes so the next characters typed pick it up.
+    func setFontColor(_ color: NSColor) {
+        guard let tv = textView else { return }
+        let range = tv.selectedRange()
+        if range.length == 0 {
+            tv.typingAttributes[.foregroundColor] = color
+            return
+        }
+        tv.textStorage?.addAttribute(.foregroundColor, value: color, range: range)
+    }
+
     /// Applies a font transform to the selection, or — when the selection is empty —
     /// to the typing attributes so the next characters typed pick it up.
     private func applyFont(_ transform: (NSFont) -> NSFont) {
@@ -142,10 +160,18 @@ final class RichTextController: ObservableObject {
         let range = tv.selectedRange()
         let manager = NSFontManager.shared
         guard range.length > 0 else { return }
+        // First decide a single direction for the whole selection: only if every run
+        // already has the trait do we remove it; otherwise we add it everywhere. This
+        // makes the button a uniform on/off toggle instead of flipping each run
+        // independently (which left mixed selections half-on, half-off).
+        var allHaveTrait = true
+        ts.enumerateAttribute(.font, in: range) { value, _, _ in
+            let font = (value as? NSFont) ?? .systemFont(ofSize: NSFont.systemFontSize)
+            if !manager.traits(of: font).contains(trait) { allHaveTrait = false }
+        }
         ts.enumerateAttribute(.font, in: range) { value, subRange, _ in
             let font = (value as? NSFont) ?? .systemFont(ofSize: NSFont.systemFontSize)
-            let hasTrait = manager.traits(of: font).contains(trait)
-            let newFont = hasTrait
+            let newFont = allHaveTrait
                 ? manager.convert(font, toNotHaveTrait: trait)
                 : manager.convert(font, toHaveTrait: trait)
             ts.addAttribute(.font, value: newFont, range: subRange)

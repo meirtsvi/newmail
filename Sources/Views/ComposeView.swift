@@ -280,10 +280,13 @@ struct ComposeView: View {
             Button { rich.toggleBold() } label: { Image(systemName: "bold") }.help("Bold")
             Button { rich.toggleItalic() } label: { Image(systemName: "italic") }.help("Italic")
             Button { rich.toggleUnderline() } label: { Image(systemName: "underline") }.help("Underline")
+            colorMenu
             Button { showLinkPrompt = true } label: { Image(systemName: "link") }.help("Insert link")
             Divider().frame(height: 16)
             Button { rich.alignLeft() } label: { Image(systemName: "text.alignleft") }.help("Align left")
             Button { rich.alignRight() } label: { Image(systemName: "text.alignright") }.help("Align right")
+            Button { rich.makeLeftToRight() } label: { Image(systemName: "arrow.right") }.help("Left-to-right")
+            Button { rich.makeRightToLeft() } label: { Image(systemName: "arrow.left") }.help("Right-to-left")
             Divider().frame(height: 16)
             fontPickers
             Divider().frame(height: 16)
@@ -293,6 +296,33 @@ struct ComposeView: View {
         .buttonStyle(.borderless)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
+    }
+
+    /// A short palette of text colors offered in the compose toolbar.
+    private static let textColors: [(name: String, color: NSColor)] = [
+        ("Automatic", .textColor), ("Gray", .systemGray), ("Red", .systemRed),
+        ("Orange", .systemOrange), ("Green", .systemGreen),
+        ("Blue", .systemBlue), ("Purple", .systemPurple),
+    ]
+
+    /// A simple menu of preset text colors; picking one applies it to the selected
+    /// text (or to subsequent typing when nothing is selected).
+    private var colorMenu: some View {
+        Menu {
+            ForEach(Self.textColors, id: \.name) { item in
+                Button {
+                    rich.setFontColor(item.color)
+                } label: {
+                    Label(item.name, systemImage: "circle.fill")
+                        .foregroundStyle(Color(nsColor: item.color))
+                }
+            }
+        } label: {
+            Image(systemName: "textformat")
+        }
+        .menuIndicator(.hidden)
+        .frame(width: 28)
+        .help("Text color")
     }
 
     /// Font-family and size pickers; selecting one applies it to the selected text
