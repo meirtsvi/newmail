@@ -145,6 +145,42 @@ enum MIMEBuilder {
         return lines.joined(separator: "\r\n").data(using: .utf8) ?? Data()
     }
 
+    /// Pulls `data:` URI images out of an HTML body, returning the body with each
+    /// such `<img>` src rewritten to a `cid:` reference plus the decoded images to
+    /// send as multipart/related parts. Used when saving an edited message: the
+    /// editor renders inline images as `data:` URIs, but re-embedding them as proper
+    /// related parts keeps the stored message a normal, broadly-renderable email.
+    /// Non-data sources (e.g. remote `https:` images) are left untouched.
+    static func extractDataURIImages(from html: String) -> (html: String, images: [ComposeInlineImage]) {
+        let pattern = "src\\s*=\\s*([\"'])data:(image/[^;,\"']+);base64,([^\"']*)\\1"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return (html, [])
+        }
+        let ns = html as NSString
+        let matches = regex.matches(in: html, range: NSRange(location: 0, length: ns.length))
+        guard !matches.isEmpty else { return (html, []) }
+
+        var images: [ComposeInlineImage] = []
+        var result = ""
+        var lastEnd = 0
+        for (index, match) in matches.enumerated() {
+            result += ns.substring(with: NSRange(location: lastEnd, length: match.range.location - lastEnd))
+            let mime = ns.substring(with: match.range(at: 2))
+            let base64 = ns.substring(with: match.range(at: 3))
+            if let data = Data(base64Encoded: base64, options: [.ignoreUnknownCharacters]) {
+                let cid = "nm-edit-\(index)-\(UUID().uuidString)"
+                images.append(ComposeInlineImage(id: cid, mime: mime, data: data))
+                result += "src=\"cid:\(cid)\""
+            } else {
+                // Couldn't decode — leave the original src so nothing breaks.
+                result += ns.substring(with: match.range)
+            }
+            lastEnd = match.range.location + match.range.length
+        }
+        result += ns.substring(with: NSRange(location: lastEnd, length: ns.length - lastEnd))
+        return (result, images)
+    }
+
     /// RFC 5322 date header, e.g. "Mon, 22 Jun 2026 14:05:09 +0000".
     private static func rfc5322Date(_ date: Date) -> String {
         let f = DateFormatter()

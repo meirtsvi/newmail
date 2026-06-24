@@ -12,6 +12,10 @@ struct ComposeView: View {
     let onClose: () -> Void
 
     @StateObject private var rich = RichTextController()
+    /// WebView-based editor used only for "Edit message", where the original HTML's
+    /// formatting (fonts, sizes, bold, spacing, inline images) must survive intact —
+    /// the NSAttributedString round-trip behind `rich` would degrade it.
+    @StateObject private var htmlEditor = HTMLEditorController()
     @State private var attachments: [URL] = []
     @State private var loadingAttachments = false
     @State private var sending = false
@@ -33,9 +37,15 @@ struct ComposeView: View {
             Divider()
             fields
             Divider()
-            formattingBar
-            RichTextEditor(controller: rich)
-                .frame(minHeight: 160)
+            if request.kind == .edit {
+                // Edit in place on the real HTML so the message keeps its formatting.
+                HTMLEditorView(html: request.bodyHTML, controller: htmlEditor)
+                    .frame(minHeight: 240)
+            } else {
+                formattingBar
+                RichTextEditor(controller: rich)
+                    .frame(minHeight: 160)
+            }
             if !attachments.isEmpty || !rich.inlineImages.isEmpty || loadingAttachments {
                 Divider()
                 attachmentBar
@@ -56,7 +66,9 @@ struct ComposeView: View {
             // The quoted original is no longer dropped into the editor (the HTML
             // round-trip degraded its formatting). It's shown read-only below and
             // appended verbatim at send time; the editor holds only the new reply.
-            if !request.bodyHTML.isEmpty {
+            if request.kind == .edit {
+                // The WebView editor loads the original HTML itself; `rich` is unused.
+            } else if !request.bodyHTML.isEmpty {
                 // Continuing a saved draft: load its HTML as editable rich text.
                 rich.setInitialHTML(request.bodyHTML)
             } else if !request.body.isEmpty {
@@ -195,8 +207,12 @@ struct ComposeView: View {
     private var saveButton: some View {
         Button {
             sending = true
-            let (html, inlineImages) = composedBody()
             Task {
+                // Pull the edited document straight from the WebView, then re-embed
+                // its inline images as related parts so the stored copy is a normal
+                // email rather than one carrying giant data: URIs.
+                let rawHTML = await htmlEditor.exportHTML()
+                let (html, inlineImages) = MIMEBuilder.extractDataURIImages(from: rawHTML)
                 await vm.saveEditedMessage(request, html: html, attachments: attachments, inlineImages: inlineImages)
                 sending = false
                 onClose()
