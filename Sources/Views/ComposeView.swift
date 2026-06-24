@@ -313,8 +313,13 @@ struct ComposeView: View {
                 Button {
                     rich.setFontColor(item.color)
                 } label: {
-                    Label(item.name, systemImage: "circle.fill")
-                        .foregroundStyle(Color(nsColor: item.color))
+                    // SwiftUI menus strip tint off symbol images, so feed a
+                    // pre-colored swatch image instead of a tinted SF Symbol.
+                    Label {
+                        Text(item.name)
+                    } icon: {
+                        Image(nsImage: Self.colorSwatch(item.color))
+                    }
                 }
             }
         } label: {
@@ -323,6 +328,18 @@ struct ComposeView: View {
         .menuIndicator(.hidden)
         .frame(width: 28)
         .help("Text color")
+    }
+
+    /// Draws a small filled circle in `color` for use as a menu item icon.
+    private static func colorSwatch(_ color: NSColor) -> NSImage {
+        let size = NSSize(width: 12, height: 12)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        color.setFill()
+        NSBezierPath(ovalIn: NSRect(origin: .zero, size: size)).fill()
+        image.unlockFocus()
+        image.isTemplate = false
+        return image
     }
 
     /// Font-family and size pickers; selecting one applies it to the selected text
