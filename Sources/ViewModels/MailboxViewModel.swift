@@ -903,9 +903,18 @@ final class MailboxViewModel {
                 await loadInviteContextIfNeeded(headerId: id, body: body)
             }
         } catch {
-            if currentBody == nil { errorMessage = error.localizedDescription }
+            if currentBody == nil, !Self.isCancellation(error) { errorMessage = error.localizedDescription }
         }
         prefetchAdjacentBodies(around: id)
+    }
+
+    /// Network/task cancellations are benign — a superseded body fetch (e.g. the
+    /// selection jumped to the next message right after a delete) or a torn-down
+    /// view — so they must never surface as a "Something went wrong" alert.
+    static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let ns = error as NSError
+        return ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled
     }
 
     /// Bodies for which a background prefetch is already in flight (avoids
@@ -960,7 +969,7 @@ final class MailboxViewModel {
                 noteCalendar(body)
                 await loadInviteContextIfNeeded(headerId: id, body: body)
             } catch {
-                if modalBody == nil { errorMessage = error.localizedDescription }
+                if modalBody == nil, !Self.isCancellation(error) { errorMessage = error.localizedDescription }
             }
             // Mark read only after the message has been open for 3 seconds.
             if !header.isRead {
