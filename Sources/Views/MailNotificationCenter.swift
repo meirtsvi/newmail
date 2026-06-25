@@ -42,6 +42,35 @@ private struct EventReminderCard: View {
         return raw
     }
 
+    /// Opens `url` in the user's installed "Google Calendar" Chrome app so the
+    /// event surfaces in that pinned window; falls back to the default browser when
+    /// the app isn't installed.
+    private static func openInCalendar(_ url: URL) {
+        guard let app = googleCalendarApp else {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        NSWorkspace.shared.open([url], withApplicationAt: app, configuration: config)
+    }
+
+    /// Location of the "Google Calendar" app installed by Chrome as a standalone
+    /// app, if present. Chrome keeps these under ~/Applications/Chrome Apps[.localized].
+    private static let googleCalendarApp: URL? = {
+        let fm = FileManager.default
+        let roots = [fm.homeDirectoryForCurrentUser.appendingPathComponent("Applications"),
+                     URL(fileURLWithPath: "/Applications")]
+        for root in roots {
+            for sub in ["Chrome Apps.localized", "Chrome Apps"] {
+                let candidate = root.appendingPathComponent(sub)
+                    .appendingPathComponent("Google Calendar.app")
+                if fm.fileExists(atPath: candidate.path) { return candidate }
+            }
+        }
+        return nil
+    }()
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 12) {
@@ -56,7 +85,7 @@ private struct EventReminderCard: View {
                         .lineLimit(2)
                         .help(reminder.htmlLink == nil ? "" : "Double-click to open in Google Calendar")
                         .onTapGesture(count: 2) {
-                            if let link = reminder.htmlLink { NSWorkspace.shared.open(link) }
+                            if let link = reminder.htmlLink { Self.openInCalendar(link) }
                         }
                     TimelineView(.periodic(from: reminder.start, by: 60)) { context in
                         Text(whenText(now: context.date))
