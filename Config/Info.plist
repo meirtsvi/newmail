@@ -50,6 +50,8 @@
 	</array>
 	<key>LSMultipleInstancesProhibited</key>
 	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>newmail opens calendar reminders in your existing Google Calendar window.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string></string>
 </dict>

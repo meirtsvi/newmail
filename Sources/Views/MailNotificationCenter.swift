@@ -42,17 +42,56 @@ private struct EventReminderCard: View {
         return raw
     }
 
-    /// Opens `url` in the user's installed "Google Calendar" Chrome app so the
-    /// event surfaces in that pinned window; falls back to the default browser when
-    /// the app isn't installed.
+    /// Opens `url` so the event surfaces in the user's pinned Google Calendar
+    /// window: first by navigating an already-open Calendar tab in Chrome, then by
+    /// launching the installed Calendar Chrome app, then the default browser.
     private static func openInCalendar(_ url: URL) {
-        guard let app = googleCalendarApp else {
+        if navigateExistingCalendarWindow(to: url) { return }
+        if let app = googleCalendarApp {
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+            NSWorkspace.shared.open([url], withApplicationAt: app, configuration: config)
+        } else {
             NSWorkspace.shared.open(url)
-            return
         }
-        let config = NSWorkspace.OpenConfiguration()
-        config.activates = true
-        NSWorkspace.shared.open([url], withApplicationAt: app, configuration: config)
+    }
+
+    /// Asks Chrome to point an already-open Google Calendar tab at `url` and bring
+    /// its window forward, so the event reuses the user's pinned Calendar window.
+    /// Returns false (so the caller falls back to launching the app) when Chrome
+    /// isn't running, no Calendar window is open, or scripting is denied.
+    private static func navigateExistingCalendarWindow(to url: URL) -> Bool {
+        // Only script Chrome if it's already running, so we never launch a blank
+        // browser just to look for a Calendar window.
+        let chromeRunning = NSWorkspace.shared.runningApplications.contains {
+            ($0.bundleIdentifier ?? "").hasPrefix("com.google.Chrome")
+        }
+        guard chromeRunning else { return false }
+
+        let target = url.absoluteString
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let source = """
+        tell application "Google Chrome"
+            repeat with w in windows
+                repeat with t in tabs of w
+                    if (URL of t) contains "calendar.google.com" then
+                        set URL of t to "\(target)"
+                        set active tab index of w to (index of t)
+                        set index of w to 1
+                        activate
+                        return "ok"
+                    end if
+                end repeat
+            end repeat
+            return "none"
+        end tell
+        """
+        guard let script = NSAppleScript(source: source) else { return false }
+        var error: NSDictionary?
+        let result = script.executeAndReturnError(&error)
+        guard error == nil else { return false }
+        return result.stringValue == "ok"
     }
 
     /// Location of the "Google Calendar" app installed by Chrome as a standalone
