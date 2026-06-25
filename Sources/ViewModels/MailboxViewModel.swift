@@ -1185,7 +1185,10 @@ final class MailboxViewModel {
                 searchResultSummary = "Found \(result.headers.count)\(more) result(s)"
             }
         } catch {
-            guard !Task.isCancelled else { return }
+            // A superseded search cancels the in-flight request, which surfaces as
+            // either Task cancellation or a URLError(.cancelled); neither is a real
+            // failure, so don't flash a "Something went wrong" alert.
+            guard !Task.isCancelled, !Self.isCancellation(error) else { return }
             errorMessage = error.localizedDescription
         }
     }
