@@ -13,12 +13,6 @@
 	<!-- Save downloaded attachments to ~/Downloads. -->
 	<key>com.apple.security.files.downloads.read-write</key>
 	<true/>
-	<!-- Lets a calendar reminder navigate the user's existing Google Calendar
-	     window by scripting Chrome (one-time Automation prompt on first use). -->
-	<key>com.apple.security.temporary.exception.apple-events</key>
-	<array>
-		<string>com.google.Chrome</string>
-	</array>
 	<!-- Required by MSAL on macOS to store the Microsoft token cache in the keychain.
 	     `com.microsoft.identity.universalstorage` is MSAL's default macOS keychain
 	     group and MUST be declared here, or the signed-in account can't be read back. -->

@@ -46,13 +46,21 @@ private struct EventReminderCard: View {
     /// window: first by navigating an already-open Calendar tab in Chrome, then by
     /// launching the installed Calendar Chrome app, then the default browser.
     private static func openInCalendar(_ url: URL) {
-        if navigateExistingCalendarWindow(to: url) { return }
-        if let app = googleCalendarApp {
-            let config = NSWorkspace.OpenConfiguration()
-            config.activates = true
-            NSWorkspace.shared.open([url], withApplicationAt: app, configuration: config)
-        } else {
-            NSWorkspace.shared.open(url)
+        // Force the app frontmost so the one-time "control Google Chrome" Automation
+        // prompt can appear — the nonactivating reminder panel can't show it, and
+        // TCC silently denies (-1743) when the requesting app isn't active. Defer the
+        // (blocking) Apple event to a later runloop turn so activation takes effect
+        // before TCC evaluates the request.
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if navigateExistingCalendarWindow(to: url) { return }
+            if let app = googleCalendarApp {
+                let config = NSWorkspace.OpenConfiguration()
+                config.activates = true
+                NSWorkspace.shared.open([url], withApplicationAt: app, configuration: config)
+            } else {
+                NSWorkspace.shared.open(url)
+            }
         }
     }
 
@@ -71,10 +79,11 @@ private struct EventReminderCard: View {
         let target = url.absoluteString
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
-        // Address tabs by integer index: `index of t` from a `repeat with t in
-        // tabs` loop resolves to a plural reference and throws, so step explicitly.
+        // Address Chrome by bundle id (resolving it by name fails under sandbox),
+        // and step tabs by integer index: `index of t` from a `repeat with t in
+        // tabs` loop resolves to a plural reference and throws.
         let source = """
-        tell application "Google Chrome"
+        tell application id "com.google.Chrome"
             repeat with w in windows
                 set n to count of tabs of w
                 repeat with i from 1 to n
@@ -92,18 +101,7 @@ private struct EventReminderCard: View {
         """
         guard let script = NSAppleScript(source: source) else { return false }
         var error: NSDictionary?
-        var result = script.executeAndReturnError(&error)
-
-        // The reminder lives in a nonactivating panel, so newmail isn't frontmost
-        // and the Automation consent prompt can't display the first time. If the
-        // event needs consent or was denied, bring the app forward and retry so the
-        // prompt can show (and be remembered for next time).
-        if let code = error?[NSAppleScript.errorNumber] as? Int,
-           code == -1743 || code == -1744 {
-            NSApplication.shared.activate(ignoringOtherApps: true)
-            error = nil
-            result = script.executeAndReturnError(&error)
-        }
+        let result = script.executeAndReturnError(&error)
         guard error == nil else { return false }
         return result.stringValue == "ok"
     }

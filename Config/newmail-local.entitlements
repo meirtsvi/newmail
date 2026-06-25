@@ -2,19 +2,22 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>com.apple.security.app-sandbox</key>
+	<!-- Local/Debug builds run UNSANDBOXED so the app can script Chrome (Apple
+	     Events) to open calendar reminders in the existing Google Calendar window.
+	     macOS blocks Apple Events to other apps under the sandbox even with a
+	     temporary exception, so the sandbox is dropped here. Release stays
+	     sandboxed via Config/newmail.entitlements. -->
+	<!-- Hardened Runtime is on, so sending Apple events (to script Chrome and open
+	     a calendar reminder in the existing window) requires this entitlement;
+	     without it the runtime blocks the event before TCC can even prompt. -->
+	<key>com.apple.security.automation.apple-events</key>
 	<true/>
-	<key>com.apple.security.network.client</key>
-	<true/>
-	<key>com.apple.security.network.server</key>
-	<true/>
-	<key>com.apple.security.files.user-selected.read-write</key>
-	<true/>
-	<key>com.apple.security.files.downloads.read-write</key>
-	<true/>
-	<key>com.apple.security.temporary.exception.apple-events</key>
+	<!-- Still required so MSAL can read back the Microsoft token cache from its
+	     default macOS keychain group. -->
+	<key>keychain-access-groups</key>
 	<array>
-		<string>com.google.Chrome</string>
+		<string>$(AppIdentifierPrefix)com.microsoft.identity.universalstorage</string>
+		<string>$(AppIdentifierPrefix)com.meirt.newmail</string>
 	</array>
 </dict>
 </plist>
