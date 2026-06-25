@@ -4,9 +4,15 @@ import AppKit
 /// Middle pane: a sortable, multi-select Table of message headers with a
 /// folder-title header bar. Sorting is driven by the column headers; hovering a
 /// row reveals quick actions; right-click opens the shared context menu.
+/// Holds the currently-hovered row id. It must be `@Observable` (not a plain `@State`
+/// scalar) so the `Table` re-renders the affected cells: `Table` only re-runs its cell
+/// builders for data/selection it tracks via Observation, so a plain `@State` change is
+/// ignored by the rows — exactly how `vm.selection` reaches the cells.
+@Observable final class RowHoverModel { var id: String? }
+
 struct MessageListView: View {
     @Environment(MailboxViewModel.self) private var vm
-    @State private var hoveredId: String?
+    @State private var hover = RowHoverModel()
     /// Anchor row for ⇧-click range selection (the last plainly/⌘-clicked row).
     @State private var selectionAnchor: String?
     /// Drives keyboard focus onto the table. Because selection is set manually (the
@@ -123,6 +129,18 @@ struct MessageListView: View {
             columns
         }
         .focused($tableFocused)
+        // Reliable row hover: one tracker over the whole table (not per cell), so it
+        // survives the cell re-renders that revealing the quick actions triggers.
+        .background(
+            TableHoverTracker(
+                idForRow: { row in
+                    let msgs = vm.displayedMessages
+                    return row >= 0 && row < msgs.count ? msgs[row].id : nil
+                },
+                setHovered: { setHovered($0) }
+            )
+            .allowsHitTesting(false)
+        )
         .onAppear(perform: loadColumns)
         .onChange(of: columnCustomization) { _, value in saveColumns(value) }
         // Re-sorting via a column header replaces the sort order with just that
@@ -238,8 +256,7 @@ struct MessageListView: View {
         RowInteraction(
             onDrag: { rowDrag(msg) },
             onClick: { handleClick(msg) },
-            onOpen: { vm.openInWindow(msg.id) },
-            onHover: { setHover($0, id: msg.id) }
+            onOpen: { vm.openInWindow(msg.id) }
         )
     }
 
@@ -310,9 +327,10 @@ struct MessageListView: View {
             .modifier(rowInteraction(msg))
     }
 
-    private func setHover(_ inside: Bool, id: String) {
-        if inside { hoveredId = id }
-        else if hoveredId == id { hoveredId = nil }
+    /// Set by `TableHoverTracker` to the row currently under the cursor (nil when off
+    /// any row). Guarded so redundant moves within a row don't churn @State.
+    private func setHovered(_ id: String?) {
+        if hover.id != id { hover.id = id }
     }
 
     private func snoozedUntilCell(_ msg: MessageHeader) -> some View {
@@ -327,16 +345,16 @@ struct MessageListView: View {
     }
 
     private func fromCell(_ msg: MessageHeader) -> some View {
-        HStack(spacing: 8) {
+        let show = hover.id == msg.id || vm.selection.contains(msg.id)
+        return HStack(spacing: 8) {
             Avatar(address: msg.from)
             Text(msg.from.display)
                 .font(msg.isRead ? .body : .body.weight(.bold))
                 .lineLimit(1)
             Spacer(minLength: 4)
             // Quick actions appear to the right of the From column when the row is
-            // hovered or selected. (SwiftUI's Table doesn't reliably deliver hover
-            // to cells, so the selected row is the dependable way to reach them.)
-            if hoveredId == msg.id || vm.selection.contains(msg.id) {
+            // hovered (via TableHoverTracker) or selected.
+            if show {
                 HoverActions(vm: vm, id: msg.id, isFlagged: msg.isFlagged)
                     .transition(.opacity)
             }
@@ -357,20 +375,92 @@ struct MessageListView: View {
 /// manual selection. A cell-wide `.onDrag` eats the click the Table would use for
 /// native selection, so `onClick` re-implements it. `simultaneousGesture` lets the
 /// tap and the drag coexist — a stationary click selects, a press-drag drags.
+/// Hover is NOT handled here — see `TableHoverTracker` on the Table itself, because
+/// SwiftUI's `.onHover` (and any per-cell tracking) fights `Table`'s cell recycling.
 private struct RowInteraction: ViewModifier {
     let onDrag: () -> NSItemProvider
     let onClick: () -> Void
     let onOpen: () -> Void
-    let onHover: (Bool) -> Void
 
     func body(content: Content) -> some View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .onHover(perform: onHover)
             .onDrag(onDrag)
             .simultaneousGesture(TapGesture(count: 2).onEnded(onOpen))
             .simultaneousGesture(TapGesture(count: 1).onEnded(onClick))
+    }
+}
+
+/// Reliable row hover for the message `Table`. A single tracking view sits on the
+/// whole table (via `.background`), so — unlike a per-cell tracker — it is never torn
+/// down when revealing the icons re-renders a cell. On mouse move it asks the
+/// underlying `NSTableView` which row is under the cursor and reports that row's id.
+/// Click-through (`hitTest` → nil) so it never intercepts the row's drag or taps.
+struct TableHoverTracker: NSViewRepresentable {
+    /// Maps a table row index to the message id at that row (reads displayedMessages).
+    let idForRow: (Int) -> String?
+    /// Reports the hovered row id (nil when the cursor is off any row).
+    let setHovered: (String?) -> Void
+
+    func makeNSView(context: Context) -> TableHoverNSView {
+        let v = TableHoverNSView()
+        v.idForRow = idForRow
+        v.setHovered = setHovered
+        return v
+    }
+
+    func updateNSView(_ v: TableHoverNSView, context: Context) {
+        v.idForRow = idForRow
+        v.setHovered = setHovered
+    }
+}
+
+final class TableHoverNSView: NSView {
+    var idForRow: ((Int) -> String?)?
+    var setHovered: ((String?) -> Void)?
+    private var area: NSTrackingArea?
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }   // click-through
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let area { removeTrackingArea(area) }
+        let a = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(a)
+        area = a
+    }
+
+    override func mouseMoved(with event: NSEvent) { update(event) }
+    override func mouseEntered(with event: NSEvent) { update(event) }
+    override func mouseExited(with event: NSEvent) { setHovered?(nil) }
+
+    /// The NSTableView under the given window point. The sidebar is also an
+    /// NSTableView, so we pick the one whose frame actually contains the cursor —
+    /// that's always the message list when hovering messages.
+    private func tableView(at windowPoint: NSPoint) -> NSTableView? {
+        guard let content = window?.contentView else { return nil }
+        var match: NSTableView?
+        func walk(_ v: NSView) {
+            if let t = v as? NSTableView, t.convert(t.bounds, to: nil).contains(windowPoint) {
+                match = t
+            }
+            for sub in v.subviews { walk(sub) }
+        }
+        walk(content)
+        return match
+    }
+
+    private func update(_ event: NSEvent) {
+        let wp = event.locationInWindow
+        guard let table = tableView(at: wp) else { setHovered?(nil); return }
+        let row = table.row(at: table.convert(wp, from: nil))
+        setHovered?(row >= 0 ? idForRow?(row) : nil)
     }
 }
 
