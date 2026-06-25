@@ -92,7 +92,18 @@ private struct EventReminderCard: View {
         """
         guard let script = NSAppleScript(source: source) else { return false }
         var error: NSDictionary?
-        let result = script.executeAndReturnError(&error)
+        var result = script.executeAndReturnError(&error)
+
+        // The reminder lives in a nonactivating panel, so newmail isn't frontmost
+        // and the Automation consent prompt can't display the first time. If the
+        // event needs consent or was denied, bring the app forward and retry so the
+        // prompt can show (and be remembered for next time).
+        if let code = error?[NSAppleScript.errorNumber] as? Int,
+           code == -1743 || code == -1744 {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            error = nil
+            result = script.executeAndReturnError(&error)
+        }
         guard error == nil else { return false }
         return result.stringValue == "ok"
     }
