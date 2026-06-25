@@ -44,6 +44,7 @@ struct EventReminder: Identifiable, Hashable {
     var fireDate: Date      // mutable: snooze reschedules it
     var joinURL: URL?       // video-meeting link (Zoom/Meet/Teams), if any
     var location: String?   // event location text, if any
+    var htmlLink: URL?      // link to open the event in Google Calendar's web UI
 }
 
 /// Reads the user's primary Google Calendar (read-only) to show their schedule
@@ -118,6 +119,7 @@ actor GoogleCalendarService {
         var out: [EventReminder] = []
         for item in list.items {
             guard let event = Self.event(from: item), !event.isAllDay else { continue }
+            let htmlLink = item.htmlLink.flatMap { URL(string: $0) }
             // A nil method means popup (Google omits it for default reminders).
             let isPopup: (Reminder) -> Bool = { ($0.method ?? "popup") == "popup" }
             let source: [Reminder]
@@ -140,7 +142,7 @@ actor GoogleCalendarService {
                     id: event.id,
                     eventId: event.id, title: event.title,
                     start: event.start, isAllDay: false, fireDate: fireDate,
-                    joinURL: event.joinURL, location: item.location
+                    joinURL: event.joinURL, location: item.location, htmlLink: htmlLink
                 ))
             } else if event.end > now {
                 // Event already in progress: surface a single "overdue" reminder that
@@ -154,7 +156,7 @@ actor GoogleCalendarService {
                     id: event.id,
                     eventId: event.id, title: event.title,
                     start: event.start, isAllDay: false, fireDate: now,
-                    joinURL: event.joinURL, location: item.location
+                    joinURL: event.joinURL, location: item.location, htmlLink: htmlLink
                 ))
             }
             // Events already ended (event.end <= now) are skipped entirely.
@@ -200,6 +202,7 @@ actor GoogleCalendarService {
         var description: String?
         var hangoutLink: String?
         var conferenceData: ConferenceData?
+        var htmlLink: String?
     }
     private struct ConferenceData: Codable {
         var entryPoints: [EntryPoint]?

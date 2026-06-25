@@ -54,6 +54,10 @@ private struct EventReminderCard: View {
                     Text(reminder.title.isEmpty ? "(no title)" : reminder.title)
                         .font(.headline)
                         .lineLimit(2)
+                        .help(reminder.htmlLink == nil ? "" : "Double-click to open in Google Calendar")
+                        .onTapGesture(count: 2) {
+                            if let link = reminder.htmlLink { NSWorkspace.shared.open(link) }
+                        }
                     TimelineView(.periodic(from: reminder.start, by: 60)) { context in
                         Text(whenText(now: context.date))
                             .font(.subheadline)
