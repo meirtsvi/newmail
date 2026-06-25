@@ -71,13 +71,16 @@ private struct EventReminderCard: View {
         let target = url.absoluteString
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
+        // Address tabs by integer index: `index of t` from a `repeat with t in
+        // tabs` loop resolves to a plural reference and throws, so step explicitly.
         let source = """
         tell application "Google Chrome"
             repeat with w in windows
-                repeat with t in tabs of w
-                    if (URL of t) contains "calendar.google.com" then
-                        set URL of t to "\(target)"
-                        set active tab index of w to (index of t)
+                set n to count of tabs of w
+                repeat with i from 1 to n
+                    if (URL of (tab i of w)) contains "calendar.google.com" then
+                        set URL of (tab i of w) to "\(target)"
+                        set active tab index of w to i
                         set index of w to 1
                         activate
                         return "ok"
