@@ -2014,6 +2014,10 @@ final class MailboxViewModel {
         do {
             try await work()
         } catch {
+            // A superseded operation (e.g. the auto mark-as-read cancelled when a
+            // delete moves the selection) surfaces as a cancellation, which is
+            // benign — don't flash a "Something went wrong" alert for it.
+            guard !Self.isCancellation(error) else { return }
             errorMessage = error.localizedDescription
         }
     }
