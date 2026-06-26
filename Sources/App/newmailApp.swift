@@ -49,7 +49,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pending = []
         // AppKit delegate callbacks run on the main thread.
         MainActor.assumeIsolated {
-            for url in urls { vm.handleMailto(url) }
+            for url in urls {
+                // The Share extension wakes the app with newmail://share to have it
+                // collect the files it staged; everything else is a mailto: compose.
+                if url.scheme?.lowercased() == "newmail" { vm.openSharedAttachments() }
+                else { vm.handleMailto(url) }
+            }
         }
+    }
+
+    /// Catch files the Share extension staged even if its wake-up URL didn't reach us
+    /// (e.g. the app was already frontmost, or the extension couldn't open the URL).
+    func applicationDidBecomeActive(_ notification: Notification) {
+        MainActor.assumeIsolated { vm?.openSharedAttachments() }
     }
 }

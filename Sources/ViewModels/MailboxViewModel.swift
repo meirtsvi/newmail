@@ -76,6 +76,8 @@ final class MailboxViewModel {
     @ObservationIgnored private var dismissTasks: [String: Task<Void, Never>] = [:]
     private static let maxNotifications = 5
     private static let autoDismissSeconds = 10
+    /// App Group shared with the Share extension; must match both targets' entitlements.
+    static let appGroupID = "group.com.meirt.newmail"
 
     // Sidebar selection (tag like "acct:<accountId>\u{1}<folderId>").
     var sidebarSelection: String?
@@ -1468,6 +1470,48 @@ final class MailboxViewModel {
         composeWindows.open(request, vm: self)
     }
 
+    /// Picks up image/PDF files the Share extension staged in the shared App Group
+    /// container and opens a new compose with them attached. Each staged batch becomes
+    /// one compose. Safe to call repeatedly (processed batches are removed), so it runs
+    /// both on the `newmail://share` wake-up and whenever the app becomes active.
+    func openSharedAttachments() {
+        let fm = FileManager.default
+        guard let inbox = fm.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupID)?
+            .appendingPathComponent("SharedInbox", isDirectory: true),
+              let batches = try? fm.contentsOfDirectory(at: inbox, includingPropertiesForKeys: [.isDirectoryKey]) else {
+            return
+        }
+        var openedAny = false
+        for batch in batches {
+            guard (try? batch.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true,
+                  let files = try? fm.contentsOfDirectory(at: batch, includingPropertiesForKeys: nil),
+                  !files.isEmpty else {
+                try? fm.removeItem(at: batch)
+                continue
+            }
+            // Copy out of the shared container into our temp dir so the compose's URLs
+            // survive once we delete the staged batch.
+            let dest = fm.temporaryDirectory.appendingPathComponent("shared-\(UUID().uuidString)", isDirectory: true)
+            try? fm.createDirectory(at: dest, withIntermediateDirectories: true)
+            var local: [URL] = []
+            for file in files {
+                let dst = dest.appendingPathComponent(file.lastPathComponent)
+                if (try? fm.copyItem(at: file, to: dst)) != nil { local.append(dst) }
+            }
+            try? fm.removeItem(at: batch)
+            if !local.isEmpty {
+                composeWindows.open(ComposeRequest(kind: .new, localAttachments: local), vm: self)
+                openedAny = true
+            }
+        }
+        guard openedAny else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        for window in NSApp.windows where !(window is FloatingPanel) && window.canBecomeMain {
+            window.makeKeyAndOrderFront(nil)
+            break
+        }
+    }
+
     func startReply(all: Bool) {
         guard let header = selectedHeaders.first else { return }
         Task {
@@ -2119,6 +2163,8 @@ final class ComposeRequest: Identifiable {
     /// Remote attachments to carry over (used when forwarding); fetched and
     /// attached by the compose view on appear.
     var attachments: [MailAttachment]
+    /// Local files to attach on appear (e.g. shared in via the Share extension).
+    var localAttachments: [URL]
     /// Server-side id of the autosaved draft for this compose, once one exists.
     var draftId: String?
 
@@ -2137,7 +2183,7 @@ final class ComposeRequest: Identifiable {
     var originalIsFlagged: Bool = false
 
     init(kind: ComposeKind, to: String = "", subject: String = "", quoted: String = "",
-         quotedHTML: String = "", attachments: [MailAttachment] = []) {
+         quotedHTML: String = "", attachments: [MailAttachment] = [], localAttachments: [URL] = []) {
         self.kind = kind
         self.to = to
         self.cc = ""
@@ -2145,5 +2191,6 @@ final class ComposeRequest: Identifiable {
         self.body = quoted
         self.quotedHTML = quotedHTML
         self.attachments = attachments
+        self.localAttachments = localAttachments
     }
 }

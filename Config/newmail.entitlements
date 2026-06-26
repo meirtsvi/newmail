@@ -4,6 +4,11 @@
 <dict>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
+	<!-- Shared with the Share extension so it can hand picture/PDF files to the app. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.meirt.newmail</string>
+	</array>
 	<key>com.apple.security.network.client</key>
 	<true/>
 	<key>com.apple.security.network.server</key>

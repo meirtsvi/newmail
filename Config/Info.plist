@@ -38,6 +38,14 @@
 			<key>LSHandlerRank</key>
 			<string>Owner</string>
 		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.meirt.newmail.share</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>newmail</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleVersion</key>
 	<string>1</string>
@@ -50,8 +58,6 @@
 	</array>
 	<key>LSMultipleInstancesProhibited</key>
 	<true/>
-	<key>NSAppleEventsUsageDescription</key>
-	<string>newmail opens calendar reminders in your existing Google Calendar window.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string></string>
 </dict>

@@ -77,6 +77,10 @@ struct ComposeView: View {
                     attributes: [.font: RichTextController.defaultFont]
                 ))
             }
+            // Files shared in (e.g. from the macOS Share menu) are already local.
+            if !request.localAttachments.isEmpty {
+                attachments.append(contentsOf: request.localAttachments)
+            }
             // Carry the original message's attachments when forwarding or continuing
             // a draft; seed the draft autosave baseline once they're in place.
             if !request.attachments.isEmpty {

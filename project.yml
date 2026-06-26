@@ -26,6 +26,7 @@ targets:
         buildPhase: resources
     dependencies:
       - package: MSAL
+      - target: ShareExtension
     info:
       path: Config/Info.plist
       properties:
@@ -48,6 +49,11 @@ targets:
             CFBundleURLSchemes:
               - mailto
             LSHandlerRank: Owner
+          # Used by the Share extension to wake the app and have it pick up the
+          # files it staged in the shared App Group container (newmail://share).
+          - CFBundleURLName: com.meirt.newmail.share
+            CFBundleURLSchemes:
+              - newmail
         LSApplicationQueriesSchemes:
           - msauthv2
           - msauthv3
@@ -70,3 +76,31 @@ targets:
         Debug:
           TARGET_BUILD_DIR: /Applications
           BUILT_PRODUCTS_DIR: $(SYMROOT)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)
+          # Debug runs UNSANDBOXED so the app can script Chrome (Apple events) to open
+          # calendar reminders. Release stays sandboxed via newmail.entitlements. (Was a
+          # manual pbxproj edit; folded in here so regenerating the project preserves it.)
+          CODE_SIGN_ENTITLEMENTS: Config/newmail-local.entitlements
+
+  ShareExtension:
+    type: app-extension
+    platform: macOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: ShareExtension
+    info:
+      path: ShareExtension/Info.plist
+      properties:
+        CFBundleDisplayName: newmail
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            # Offer newmail in the Share menu only for images and PDFs.
+            NSExtensionActivationRule: 'SUBQUERY(extensionItems, $item, SUBQUERY($item.attachments, $att, ANY $att.registeredTypeIdentifiers UTI-CONFORMS-TO "public.image" || ANY $att.registeredTypeIdentifiers UTI-CONFORMS-TO "com.adobe.pdf").@count > 0).@count > 0'
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.meirt.newmail.ShareExtension
+        PRODUCT_NAME: ShareExtension
+        CODE_SIGN_ENTITLEMENTS: Config/ShareExtension.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+        SKIP_INSTALL: YES

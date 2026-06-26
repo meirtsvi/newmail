@@ -12,6 +12,11 @@
 	     without it the runtime blocks the event before TCC can even prompt. -->
 	<key>com.apple.security.automation.apple-events</key>
 	<true/>
+	<!-- Shared with the Share extension so it can hand picture/PDF files to the app. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.meirt.newmail</string>
+	</array>
 	<!-- Still required so MSAL can read back the Microsoft token cache from its
 	     default macOS keychain group. -->
 	<key>keychain-access-groups</key>
