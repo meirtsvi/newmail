@@ -1,10 +1,11 @@
 import AppKit
 import SwiftUI
 
-/// A borderless, always-on-top panel pinned to the top-right corner of the
-/// screen that hosts the new-mail notification stack. It's a *nonactivating*
-/// panel, so it stays visible — and its inline reply field stays editable —
-/// even when newmail isn't the active app.
+/// A borderless, always-on-top panel pinned to the bottom-right corner of the
+/// screen that hosts the new-mail notification stack. Bottom-right keeps it clear
+/// of macOS's own notifications (top-right). It's a *nonactivating* panel, so it
+/// stays visible — and its inline reply field stays editable — even when newmail
+/// isn't the active app.
 @MainActor
 final class NotificationPanelController: NSObject, NSWindowDelegate {
     private let panel: FloatingPanel
@@ -61,7 +62,7 @@ final class NotificationPanelController: NSObject, NSWindowDelegate {
         panel.orderOut(nil)
     }
 
-    /// Keep the panel glued to the top-right corner as its height changes (the
+    /// Keep the panel glued to the bottom-right corner as its height changes (the
     /// stack grows/shrinks, or the inline reply expands).
     func windowDidResize(_ notification: Notification) {
         scheduleReposition()
@@ -101,9 +102,11 @@ final class NotificationPanelController: NSObject, NSWindowDelegate {
         let visible = screen.visibleFrame
         let margin: CGFloat = 14
         let size = panel.frame.size
+        // Bottom-right: anchor the bottom edge (visibleFrame excludes the Dock), so the
+        // stack grows upward as cards are added or the inline reply expands.
         let origin = NSPoint(
             x: (visible.maxX - size.width - margin).rounded(),
-            y: (visible.maxY - size.height - margin).rounded()
+            y: (visible.minY + margin).rounded()
         )
         // Skip redundant frame sets — moving to the same spot would needlessly
         // re-fire the resize notification.
