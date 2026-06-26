@@ -67,7 +67,7 @@ final class MailStore {
 
     // MARK: Headers
 
-    func cachedHeaders(folderId: String, accountId: String, limit: Int = 200) -> [MessageHeader] {
+    func cachedHeaders(folderId: String, accountId: String, limit: Int = 300) -> [MessageHeader] {
         let needle = ",\(folderId),"
         // Gmail's message list excludes trashed/spam mail by default, so a draft that
         // was trashed (it keeps its DRAFT label but gains TRASH, and gets cached when

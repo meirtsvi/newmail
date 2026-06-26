@@ -747,22 +747,37 @@ final class MailboxViewModel {
             // before touching the shared `messages`/`nextPageToken` so this folder's
             // results never overwrite the one now on screen.
             guard currentFolder?.id == folder.id else { return }
-            messages = result.headers
+            // Merge the first page into the cached list already on screen rather than
+            // replacing it. A hard `messages = result.headers` shrinks the list down to
+            // the first page (Gmail 100 / Graph 50) before paging back up to the target,
+            // which flickers and snaps the table to the top. `mergeFresh` updates rows
+            // in place and prepends genuinely new mail — and on a cold (empty) cache it
+            // simply becomes the first page, so there's no regression there.
+            var serverHeaders = result.headers
+            mergeFresh(result.headers)
             nextPageToken = result.nextPageToken
             store.saveHeaders(result.headers)
             hydrateCalendarIds()
             recordContacts(from: result.headers, folder: folder)
 
             // Keep paging until we hit the target or run out of mail, re-checking the
-            // folder after each fetch for the same reason as above.
+            // folder after each fetch for the same reason as above. Append only ids not
+            // already shown (the cached tail may overlap these older pages).
             while messages.count < Self.initialLoadTarget, let token = result.nextPageToken {
                 result = try await provider.listMessages(folderId: folder.id, query: nil, pageToken: token)
                 guard currentFolder?.id == folder.id else { return }
-                messages.append(contentsOf: result.headers)
+                serverHeaders.append(contentsOf: result.headers)
+                let known = Set(messages.map(\.id))
+                messages.append(contentsOf: result.headers.filter { !known.contains($0.id) })
                 nextPageToken = result.nextPageToken
                 store.saveHeaders(result.headers)
                 recordContacts(from: result.headers, folder: folder)
             }
+            // Merging never removes, so drop any cached rows that fall within the
+            // freshly-fetched (newest-first) window but the server no longer lists —
+            // mail that left the folder since it was last cached. Rows older than the
+            // window stay; they're the not-yet-refreshed tail reachable via `loadMore`.
+            pruneStale(within: serverHeaders)
             statusMessage = nil
             // Paged to the end without navigating away: `messages` is now the complete
             // server-side contents of this folder, so reconcile the cache to evict rows
@@ -862,6 +877,19 @@ final class MailboxViewModel {
         let existingIds = Set(messages.map(\.id))
         let additions = fresh.filter { !existingIds.contains($0.id) }
         if !additions.isEmpty { messages.insert(contentsOf: additions, at: 0) }
+    }
+
+    /// Removes on-screen rows that sit within the date range just fetched from the
+    /// server but aren't in the server's authoritative list — mail that left the
+    /// folder since it was cached. Because the provider lists newest-first and we
+    /// fetch contiguous pages from the top, anything dated at or after the oldest
+    /// fetched header should be present in `server` if it's still in the folder;
+    /// rows older than that window are the not-yet-refreshed tail and are kept.
+    /// An empty `server` means the folder is empty, so the list is cleared.
+    private func pruneStale(within server: [MessageHeader]) {
+        guard let oldest = server.map(\.date).min() else { messages.removeAll(); return }
+        let serverIds = Set(server.map(\.id))
+        messages.removeAll { !serverIds.contains($0.id) && $0.date >= oldest }
     }
 
     /// Mark-as-read is deferred: standing on a message only marks it read once
@@ -1668,6 +1696,11 @@ final class MailboxViewModel {
             guard let inbox = foldersByAccount[session.account.id]?.first(where: { $0.kind == .inbox }) else { continue }
             guard let result = try? await session.provider.listMessages(folderId: inbox.id, query: nil, pageToken: nil) else { continue }
             let headers = result.headers
+            // This poll already fetches every account's inbox; persist it so each
+            // account's cached inbox stays fresh (every 30s) even while off screen.
+            // Then switching to that account paints a near-current list instead of a
+            // stale one, so there's little to reconcile against the server.
+            store.saveHeaders(headers)
             let currentIds = Set(headers.map(\.id))
             guard let seen = seenInboxIds[session.account.id] else {
                 seenInboxIds[session.account.id] = currentIds
