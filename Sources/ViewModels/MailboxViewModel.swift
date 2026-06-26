@@ -1512,6 +1512,27 @@ final class MailboxViewModel {
         }
     }
 
+    /// Opens a new compose with the given files attached — used by Finder's "Open With"
+    /// (the app is registered as a handler for images and PDFs). Files are copied into a
+    /// temp dir (under security-scoped access) so the compose's URLs stay valid.
+    func openCompose(withFiles urls: [URL]) {
+        let fm = FileManager.default
+        let dest = fm.temporaryDirectory.appendingPathComponent("opened-\(UUID().uuidString)", isDirectory: true)
+        try? fm.createDirectory(at: dest, withIntermediateDirectories: true)
+        var local: [URL] = []
+        for url in urls {
+            let scoped = url.startAccessingSecurityScopedResource()
+            let dst = dest.appendingPathComponent(url.lastPathComponent)
+            if (try? fm.copyItem(at: url, to: dst)) != nil { local.append(dst) }
+            if scoped { url.stopAccessingSecurityScopedResource() }
+        }
+        guard !local.isEmpty else { return }
+        // `composeWindows.open` already brings the new compose to the front and
+        // activates the app — don't raise the main window afterwards or it would
+        // cover the compose.
+        composeWindows.open(ComposeRequest(kind: .new, localAttachments: local), vm: self)
+    }
+
     func startReply(all: Bool) {
         guard let header = selectedHeaders.first else { return }
         Task {

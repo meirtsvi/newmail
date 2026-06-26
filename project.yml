@@ -57,6 +57,20 @@ targets:
         LSApplicationQueriesSchemes:
           - msauthv2
           - msauthv3
+        # Appear in Finder's "Open With" for images and PDFs; opening one starts a new
+        # compose with the file attached. Alternate rank so newmail never becomes the
+        # default handler for these types.
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Image
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - public.image
+          - CFBundleTypeName: PDF
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - com.adobe.pdf
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.meirt.newmail

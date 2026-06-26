@@ -49,12 +49,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pending = []
         // AppKit delegate callbacks run on the main thread.
         MainActor.assumeIsolated {
+            // Files opened via Finder's "Open With" arrive as file URLs — collect them
+            // into a single new compose with the files attached.
+            var files: [URL] = []
             for url in urls {
+                if url.isFileURL { files.append(url) }
                 // The Share extension wakes the app with newmail://share to have it
-                // collect the files it staged; everything else is a mailto: compose.
-                if url.scheme?.lowercased() == "newmail" { vm.openSharedAttachments() }
+                // collect the files it staged.
+                else if url.scheme?.lowercased() == "newmail" { vm.openSharedAttachments() }
+                // Everything else is a mailto: compose.
                 else { vm.handleMailto(url) }
             }
+            if !files.isEmpty { vm.openCompose(withFiles: files) }
         }
     }
 
