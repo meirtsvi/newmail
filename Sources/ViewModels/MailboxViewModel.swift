@@ -298,6 +298,7 @@ final class MailboxViewModel {
         let service = CalendarReminderService()
         service.onFire = { [weak self] reminders in self?.presentReminders(reminders) }
         service.onCancelled = { [weak self] ids in self?.cancelReminders(ids) }
+        service.onUpdate = { [weak self] reminders in self?.updateReminders(reminders) }
         service.start()
         reminderService = service
     }
@@ -1789,13 +1790,23 @@ final class MailboxViewModel {
         syncNotificationPanel()
     }
 
-    /// Pulls cards for reminders the service found are backed by a now-deleted
-    /// calendar event (verified once a minute while a popup is showing).
+    /// Pulls cards for reminders the service found are gone or moved out of range
+    /// (reconciled once a minute while a popup is showing).
     private func cancelReminders(_ ids: [String]) {
         guard !ids.isEmpty else { return }
         let gone = Set(ids)
         eventReminders.removeAll { gone.contains($0.id) }
         syncNotificationPanel()
+    }
+
+    /// Refreshes visible reminder cards in place when their event changed (new time,
+    /// title, location, or meeting link), so the card shows the current details.
+    private func updateReminders(_ updated: [EventReminder]) {
+        for reminder in updated {
+            if let i = eventReminders.firstIndex(where: { $0.id == reminder.id }) {
+                eventReminders[i] = reminder
+            }
+        }
     }
 
     // MARK: - Calendar invites

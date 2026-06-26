@@ -164,27 +164,6 @@ actor GoogleCalendarService {
         return out
     }
 
-    /// Whether the event still exists on the calendar. Returns `false` only when the
-    /// server confirms it's gone (404) or cancelled; any transient/network error
-    /// returns `true` so a hiccup never wrongly dismisses a live reminder.
-    func eventExists(id: String) async -> Bool {
-        var comps = URLComponents(string: "https://www.googleapis.com/calendar/v3/calendars/primary/events")!
-        comps.path += "/" + id
-        guard let url = comps.url else { return true }
-        var req = URLRequest(url: url)
-        guard let token = try? await auth.accessToken() else { return true }
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-
-        guard let (data, resp) = try? await URLSession.shared.data(for: req),
-              let http = resp as? HTTPURLResponse else { return true }
-        if http.statusCode == 404 || http.statusCode == 410 { return false }
-        guard (200..<300).contains(http.statusCode) else { return true }
-        if let item = try? JSONDecoder().decode(Item.self, from: data), item.status == "cancelled" {
-            return false
-        }
-        return true
-    }
-
     // MARK: - JSON
 
     private struct EventsList: Codable {

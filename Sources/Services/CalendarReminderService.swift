@@ -46,9 +46,13 @@ final class CalendarReminderService {
 
     /// Called on the main actor with reminders whose `fireDate` just passed.
     var onFire: (([EventReminder]) -> Void)?
-    /// Called on the main actor with ids of presented reminders whose calendar event
-    /// has since been deleted, so the UI can pull their cards.
+    /// Called on the main actor with ids of presented reminders that should close —
+    /// their event was deleted, ended, turned all-day, or moved out of its reminder
+    /// window (in which case it's also rescheduled to re-fire at the new lead time).
     var onCancelled: (([String]) -> Void)?
+    /// Called on the main actor with presented reminders whose event details changed
+    /// (time, title, location, or meeting link) so the visible card can refresh.
+    var onUpdate: (([EventReminder]) -> Void)?
 
     init(calendar: GoogleCalendarService = .shared) {
         self.calendar = calendar
@@ -65,7 +69,7 @@ final class CalendarReminderService {
             Task { @MainActor in self?.tick() }
         }
         let verify = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            Task { await self?.verifyPresented() }
+            Task { await self?.reconcilePresented() }
         }
         pollTimer = poll
         tickTimer = tick
@@ -109,28 +113,50 @@ final class CalendarReminderService {
         onFire?(due.sorted { $0.start < $1.start })
     }
 
-    /// Checks every still-presented reminder's calendar event; any whose event has
-    /// been deleted are dropped and reported so the UI can hide their cards.
-    private func verifyPresented() async {
+    /// Re-checks every still-presented reminder against a fresh fetch and keeps the
+    /// visible cards in sync with the calendar:
+    ///  - Event gone (deleted/cancelled), ended, or turned all-day → close the card.
+    ///  - Event moved so its reminder window hasn't started yet (`fireDate` now in the
+    ///    future) → close the card now and reschedule so it re-fires at the new time.
+    ///  - Event details changed (start/title/location/meeting link) → refresh the card.
+    /// A failed fetch is a no-op, so a network hiccup never wrongly closes a live card.
+    private func reconcilePresented() async {
         guard !verifying, !presented.isEmpty else { return }
         verifying = true
         defer { verifying = false }
 
-        // One existence check per distinct event, shared across its reminders.
-        let eventIds = Set(presented.values.map(\.eventId))
-        var deletedEvents: Set<String> = []
-        for eventId in eventIds where await !calendar.eventExists(id: eventId) {
-            deletedEvents.insert(eventId)
-        }
-        guard !deletedEvents.isEmpty else { return }
+        guard let fresh = try? await calendar.upcomingReminders() else { return }
+        let freshById = Dictionary(fresh.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let now = Date()
+        var closed: [String] = []
+        var updated: [EventReminder] = []
 
-        let goneIds = presented.values.filter { deletedEvents.contains($0.eventId) }.map(\.id)
-        for id in goneIds {
-            presented[id] = nil
-            scheduled[id] = nil
-            handled.insert(id)
+        for reminder in Array(presented.values) {   // snapshot: the loop mutates `presented`
+            guard let current = freshById[reminder.id] else {
+                // No longer an upcoming/in-progress popup reminder: deleted, cancelled,
+                // ended, or now all-day. Close for good.
+                presented[reminder.id] = nil
+                scheduled[reminder.id] = nil
+                handled.insert(reminder.id)
+                closed.append(reminder.id)
+                continue
+            }
+            if current.fireDate > now {
+                // Moved beyond its reminder window — close now, and put it back on the
+                // schedule (no longer "handled") so it re-fires at the new lead time.
+                presented[reminder.id] = nil
+                handled.remove(reminder.id)
+                scheduled[reminder.id] = current
+                closed.append(reminder.id)
+            } else if current.title != reminder.title || current.start != reminder.start
+                        || current.location != reminder.location || current.joinURL != reminder.joinURL {
+                presented[reminder.id] = current
+                updated.append(current)
+            }
         }
-        onCancelled?(goneIds)
+
+        if !closed.isEmpty { onCancelled?(closed) }
+        if !updated.isEmpty { onUpdate?(updated) }
     }
 
     // MARK: User actions
