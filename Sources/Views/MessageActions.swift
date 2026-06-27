@@ -143,6 +143,7 @@ struct MessageContextMenu: View {
             Button("Forward") { vm.selection = Set(ids); vm.startForward() }
             if ids.count == 1 {
                 Button("Edit") { vm.editMessage(ids[0]) }
+                Button("Open All Links") { vm.openAllLinks(in: ids[0]) }
             }
             Divider()
             if vm.currentFolder?.kind == .junk {

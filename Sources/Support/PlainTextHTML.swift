@@ -126,6 +126,63 @@ enum PlainTextHTML {
         return (out, used)
     }
 
+    /// Footer-link markers matched case-insensitively against both the URL and the
+    /// visible link text, so "Open All Links" doesn't fire off unsubscribe requests
+    /// or open boilerplate (privacy policy, terms, "our values", manage preferences…).
+    private static let skipMarkers = [
+        "unsubscribe", "unsub", "optout", "opt-out", "opt_out", "remove",
+        "privacy", "terms", "values", "ethics", "preference", "cookie", "view in browser", "view online"
+    ]
+
+    /// Collects every http(s) link in a message body for "Open All Links": pulls
+    /// the `href` targets out of the HTML anchors (the visible text often differs
+    /// from the destination, so the href is what matters) and falls back to
+    /// detecting bare URLs in the plain-text part when there's no HTML. Results are
+    /// http/https only (so `mailto:`/`tel:`/`cid:` are skipped), skip opt-out and
+    /// boilerplate links (matched on URL *and* link text), and de-duplicated in order.
+    static func extractLinks(html: String, plainText: String) -> [URL] {
+        var seen = Set<String>()
+        var urls: [URL] = []
+        func add(_ string: String, text: String = "") {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let url = URL(string: trimmed),
+                  let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https" else { return }
+            let haystack = (url.absoluteString + " " + text).lowercased()
+            if skipMarkers.contains(where: haystack.contains) { return }
+            if seen.insert(url.absoluteString).inserted { urls.append(url) }
+        }
+        if !html.isEmpty,
+           let re = try? NSRegularExpression(
+               pattern: "<a\\b[^>]*\\bhref\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')[^>]*>(.*?)</a>",
+               options: [.caseInsensitive, .dotMatchesLineSeparators]) {
+            let ns = html as NSString
+            re.enumerateMatches(in: html, range: NSRange(location: 0, length: ns.length)) { match, _, _ in
+                guard let match else { return }
+                let hrefRange = match.range(at: 1).location != NSNotFound ? match.range(at: 1) : match.range(at: 2)
+                guard hrefRange.location != NSNotFound else { return }
+                let href = ns.substring(with: hrefRange).replacingOccurrences(of: "&amp;", with: "&")
+                let text = match.range(at: 3).location != NSNotFound
+                    ? stripTags(ns.substring(with: match.range(at: 3))) : ""
+                add(href, text: text)
+            }
+        } else if let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) {
+            let ns = plainText as NSString
+            detector.enumerateMatches(in: plainText, range: NSRange(location: 0, length: ns.length)) { match, _, _ in
+                if let url = match?.url { add(url.absoluteString) }
+            }
+        }
+        return urls
+    }
+
+    /// Reduces an anchor's inner HTML to plain text for marker matching: drops any
+    /// nested tags (e.g. `<span>`, `<img>`) and collapses common whitespace entities.
+    private static func stripTags(_ html: String) -> String {
+        let noTags = html.replacingOccurrences(
+            of: "<[^>]+>", with: " ", options: .regularExpression)
+        return noTags.replacingOccurrences(of: "&nbsp;", with: " ")
+    }
+
     /// Extracts the inner content of an HTML document's `<body>` (NSAttributedString's
     /// HTML export wraps everything in a full document; we splice the fragment into
     /// a composed message). Returns the input unchanged when there's no `<body>`.

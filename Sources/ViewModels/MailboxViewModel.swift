@@ -1636,6 +1636,19 @@ final class MailboxViewModel {
          .replacingOccurrences(of: ">", with: "&gt;")
     }
 
+    /// Opens every http(s) link in the message body in the default browser.
+    /// Backs the "Open All Links" context-menu action; fetches the body if it
+    /// isn't already loaded.
+    func openAllLinks(in id: String) {
+        guard let header = messages.first(where: { $0.id == id }) else { return }
+        Task {
+            guard let body = await ensureBody(for: header) else { return }
+            for url in PlainTextHTML.extractLinks(html: body.html, plainText: body.plainText) {
+                NSWorkspace.shared.open(url)
+            }
+        }
+    }
+
     private func bodyFor(_ header: MessageHeader) -> MessageBody? {
         if currentBody?.headerId == header.id { return currentBody }
         if modalBody?.headerId == header.id { return modalBody }
