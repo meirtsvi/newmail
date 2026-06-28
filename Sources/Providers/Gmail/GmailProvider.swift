@@ -76,7 +76,7 @@ final class GmailProvider: MailProvider {
                 unreadCount: 0,
                 totalCount: 0,
                 // User labels carry their full nested name (e.g. "Work/Receipts").
-                path: label.type == "user" ? label.name : Self.displayName(label),
+                path: label.type == "user" ? Self.normalizedPath(label.name) : Self.displayName(label),
                 accountId: accountId
             )
         }
@@ -346,7 +346,13 @@ final class GmailProvider: MailProvider {
         }
 
         let assembled = BodyHTML.assemble(rawHTML: html, plainText: text, images: images, messageId: id)
-        let invite = ics.isEmpty ? nil : ICSParser.parse(ics)
+        var invite = ics.isEmpty ? nil : ICSParser.parse(ics)
+        // A COUNTER ("Proposed new time") carries no event link in its iCalendar
+        // part, so lift the Google Calendar VIEW URL out of the mail body to power
+        // the card's "Open in Google Calendar" button.
+        if invite?.method == .counter {
+            invite?.eventURL = Self.googleEventURL(inHTML: html)
+        }
         let ccRaw = msg.payload?.headers?
             .first { $0.name.caseInsensitiveCompare("cc") == .orderedSame }?.value ?? ""
         return MessageBody(headerId: id, html: assembled.html, plainText: text,
@@ -595,6 +601,21 @@ final class GmailProvider: MailProvider {
         }
     }
 
+    /// Canonicalizes a user label's leading path component when it is the
+    /// special inbox. Gmail's system inbox displays as "Inbox", and most nested
+    /// labels are named "Inbox/...", but some come back as all-caps "INBOX/..."
+    /// (the IMAP special name). Rewriting that first component to "Inbox" lets
+    /// them nest under the real Inbox instead of a stray "INBOX" sibling.
+    private static func normalizedPath(_ name: String) -> String {
+        var components = name.split(separator: "/", omittingEmptySubsequences: false)
+        guard let first = components.first,
+              first.caseInsensitiveCompare("INBOX") == .orderedSame,
+              first != "Inbox"
+        else { return name }
+        components[0] = "Inbox"
+        return components.joined(separator: "/")
+    }
+
     private static func displayName(_ label: GmailAPI.Label) -> String {
         switch label.id {
         case "INBOX": return "Inbox"
@@ -638,5 +659,18 @@ final class GmailProvider: MailProvider {
                    .replacingOccurrences(of: "_", with: "/")
         while str.count % 4 != 0 { str.append("=") }
         return Data(base64Encoded: str)
+    }
+
+    /// Finds the Google Calendar event VIEW link in an HTML body (Google embeds it
+    /// both as an `<a href>` and a schema.org `<meta>`). HTML is preferred over the
+    /// plain-text part because `format=flowed` can soft-wrap the long URL.
+    private static func googleEventURL(inHTML html: String) -> URL? {
+        let marker = "https://calendar.google.com/calendar/event?action=VIEW"
+        guard let range = html.range(of: marker) else { return nil }
+        let tail = html[range.lowerBound...]
+        // The URL ends at the first attribute quote, tag, or whitespace.
+        let end = tail.firstIndex { "\"'<> \n\r\t".contains($0) } ?? tail.endIndex
+        let raw = String(tail[..<end]).replacingOccurrences(of: "&amp;", with: "&")
+        return URL(string: raw)
     }
 }

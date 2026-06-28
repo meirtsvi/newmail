@@ -16,10 +16,10 @@ struct CalendarInviteView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             details
-            if invite.method == .cancel {
-                canceledControls
-            } else {
-                rsvpSection
+            switch invite.method {
+            case .cancel:  canceledControls
+            case .counter: counterControls
+            default:       rsvpSection
             }
             if invite.start != nil {
                 timelineSection
@@ -37,13 +37,15 @@ struct CalendarInviteView: View {
     private var details: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Image(systemName: invite.method == .cancel ? "calendar.badge.minus" : "calendar")
+                Image(systemName: titleSymbol)
                     .foregroundStyle(invite.method == .cancel ? .red : .accentColor)
                 Text(invite.summary).font(.headline).lineLimit(2)
             }
             detail("clock", invite.whenText)
             if !invite.location.isEmpty { detail("mappin.and.ellipse", invite.location) }
-            if let organizer = invite.organizer {
+            // A counter's organizer is the recipient themselves, so "Organized by
+            // (you)" is just noise — the proposer is named in the controls instead.
+            if invite.method != .counter, let organizer = invite.organizer {
                 detail("person.crop.circle", "Organized by \(organizer.display)")
             }
             if invite.attendees.count > 1 {
@@ -56,6 +58,41 @@ struct CalendarInviteView: View {
         Label(text, systemImage: symbol)
             .font(.subheadline)
             .foregroundStyle(.secondary)
+    }
+
+    private var titleSymbol: String {
+        switch invite.method {
+        case .cancel:  return "calendar.badge.minus"
+        case .counter: return "calendar.badge.clock"
+        default:       return "calendar"
+        }
+    }
+
+    // MARK: Counter (proposed new time)
+
+    /// A guest proposed a different time. We can't accept it over email (the user
+    /// is the organizer, and only their calendar can move the event), so the card
+    /// shows the proposed slot and hands off to Google Calendar to accept or pick
+    /// another time. See the design note in the model's `Method.counter`.
+    private var counterControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let proposer = invite.attendees.first {
+                Text("\(proposer.display) proposed a new time.")
+                    .font(.subheadline)
+            } else {
+                Text("A guest proposed a new time.").font(.subheadline)
+            }
+            Button {
+                CalendarLauncher.open(invite.eventURL
+                    ?? URL(string: "https://calendar.google.com/calendar/r")!)
+            } label: {
+                Label("Open in Google Calendar", systemImage: "calendar")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            Text("Accept the proposed time or choose another in Google Calendar.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
     }
 
     // MARK: RSVP

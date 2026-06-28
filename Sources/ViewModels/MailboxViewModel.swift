@@ -973,7 +973,8 @@ final class MailboxViewModel {
 
     /// Loads calendar context for an invitation body, or clears it otherwise.
     private func loadInviteContextIfNeeded(headerId: String, body: MessageBody) async {
-        if let invite = body.calendar, invite.method == .request || invite.method == .cancel {
+        if let invite = body.calendar,
+           invite.method == .request || invite.method == .cancel || invite.method == .counter {
             await loadInviteContext(headerId: headerId, invite: invite)
         } else if inviteContextHeaderId == headerId {
             inviteContextHeaderId = nil

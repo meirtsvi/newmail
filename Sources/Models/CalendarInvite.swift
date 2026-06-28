@@ -8,6 +8,7 @@ struct CalendarInvite: Hashable {
         case request = "REQUEST"   // an invitation asking for a response
         case cancel  = "CANCEL"    // the organizer canceled the event
         case reply   = "REPLY"
+        case counter = "COUNTER"   // an attendee proposed a new time
         case publish = "PUBLISH"
         case other   = "OTHER"
     }
@@ -28,6 +29,11 @@ struct CalendarInvite: Hashable {
     var organizerLine: String?
     var dtStartLine: String?
     var dtEndLine: String?
+
+    /// Link to view/edit the event in Google Calendar's web UI, pulled from the
+    /// message body (Google's COUNTER mails carry it but the iCalendar part does
+    /// not). Lets the "Open in Google Calendar" button jump straight to the event.
+    var eventURL: URL? = nil
 
     /// A friendly date/time range for the preview card.
     var whenText: String {

@@ -15,11 +15,13 @@ struct MessagePreviewView: View {
         return vm.messages.first { $0.id == id }
     }
 
-    /// The invite to show for this message (only requests and cancellations).
+    /// The invite to show for this message (requests, cancellations, and
+    /// proposed-new-time counters).
     private func inviteFor(_ header: MessageHeader) -> CalendarInvite? {
         guard let body = vm.currentBody, body.headerId == header.id,
               let invite = body.calendar,
-              invite.method == .request || invite.method == .cancel else { return nil }
+              invite.method == .request || invite.method == .cancel
+                || invite.method == .counter else { return nil }
         return invite
     }
 

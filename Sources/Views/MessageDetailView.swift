@@ -109,11 +109,13 @@ struct MessageDetailView: View {
         .padding(16)
     }
 
-    /// The invite to show for the opened message (only requests and cancellations).
+    /// The invite to show for the opened message (requests, cancellations, and
+    /// proposed-new-time counters).
     private func inviteForModal(_ header: MessageHeader) -> CalendarInvite? {
         guard let body = vm.modalBody, body.headerId == header.id,
               let invite = body.calendar,
-              invite.method == .request || invite.method == .cancel else { return nil }
+              invite.method == .request || invite.method == .cancel
+                || invite.method == .counter else { return nil }
         return invite
     }
 
