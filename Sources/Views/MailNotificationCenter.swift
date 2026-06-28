@@ -291,6 +291,14 @@ private struct MailNotificationCard: View {
         .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.black.opacity(0.08)))
         .shadow(color: .black.opacity(0.20), radius: 12, y: 5)
+        // Keep the card up while the mouse is over it; restart its countdown on exit.
+        .onHover { hovering in
+            if hovering {
+                vm.cancelAutoDismiss(note.id)
+            } else if !replying {
+                vm.scheduleAutoDismiss(note.id)
+            }
+        }
     }
 
     private var replyEditor: some View {

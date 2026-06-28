@@ -1736,22 +1736,30 @@ final class MailboxViewModel {
         }
         syncNotificationPanel()
         // Auto-dismiss the card after a few seconds (unless the user starts a reply).
-        dismissTasks[header.id] = Task { [weak self] in
+        scheduleAutoDismiss(header.id)
+    }
+
+    /// (Re)starts a card's auto-dismiss timer. Called when a card first appears and
+    /// again when the mouse leaves it, so hovering keeps the popup on screen.
+    func scheduleAutoDismiss(_ id: String) {
+        dismissTasks[id]?.cancel()
+        dismissTasks[id] = Task { [weak self] in
             try? await Task.sleep(for: .seconds(Self.autoDismissSeconds))
             guard !Task.isCancelled else { return }
-            self?.dismissNotification(header.id)
+            self?.dismissNotification(id)
         }
     }
 
     /// Trashes a popup's message via the account that received it (not necessarily
     /// the currently-selected one) and closes the card.
     func deleteNotification(_ note: MailNotification) async {
+        // Close the popup right away; perform the delete in the background.
+        dismissNotification(note.id)
         guard let session = sessions.first(where: { $0.account.id == note.accountId }) else { return }
         do {
             try await session.provider.trash(ids: [note.id])
             // Reflect the removal in the list if that account's folder is on screen.
             if currentAccountId == note.accountId { removeLocal(ids: [note.id]) }
-            dismissNotification(note.id)
         } catch {
             errorMessage = "Couldn’t delete message: \(error.localizedDescription)"
         }
@@ -1761,13 +1769,14 @@ final class MailboxViewModel {
     /// it (not necessarily the current one), then dismisses the card. The target is
     /// always within that same account, so no cross-account import is needed.
     func moveNotification(_ note: MailNotification, to folder: MailFolder) async {
+        // Close the popup right away; perform the move in the background.
+        dismissNotification(note.id)
         guard let session = sessions.first(where: { $0.account.id == note.accountId }) else { return }
         let inboxId = foldersByAccount[note.accountId]?.first(where: { $0.kind == .inbox })?.id
         do {
             try await session.provider.move(ids: [note.id], toFolderId: folder.id, fromFolderId: inboxId)
             // Reflect the removal in the list if that account's folder is on screen.
             if currentAccountId == note.accountId { removeLocal(ids: [note.id]) }
-            dismissNotification(note.id)
         } catch {
             errorMessage = "Couldn’t move message: \(error.localizedDescription)"
         }
