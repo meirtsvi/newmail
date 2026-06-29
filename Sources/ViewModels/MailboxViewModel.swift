@@ -1822,6 +1822,18 @@ final class MailboxViewModel {
         dismissNotification(note.id)
     }
 
+    /// The fully rendered HTML body of a popup's message (with inline images already
+    /// embedded), fetched via the account that received it (not necessarily the
+    /// selected one), for the expanded hover preview. Returns nil if the body can't be
+    /// fetched. The fetched body is cached by the store so opening it later is instant.
+    func notificationBodyHTML(_ note: MailNotification) async -> String? {
+        if let cached = store.cachedBody(id: note.id) { return cached.html }
+        guard let provider = sessions.first(where: { $0.account.id == note.accountId })?.provider,
+              let fetched = try? await provider.fetchBody(id: note.id) else { return nil }
+        store.saveBody(fetched)
+        return fetched.html
+    }
+
     /// Sends a quick plain-text reply to a popup's message via the account that
     /// received it (not necessarily the currently-selected one).
     func sendQuickReply(_ note: MailNotification, text: String) async {

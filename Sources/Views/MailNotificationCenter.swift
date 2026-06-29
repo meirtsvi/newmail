@@ -130,6 +130,12 @@ private struct MailNotificationCard: View {
     @State private var replying = false
     @State private var replyText = ""
     @State private var sending = false
+    /// Set while the pointer is over the message area (title or body); grows the card
+    /// into a full, scrollable body preview. Stays true until the pointer leaves the
+    /// whole card (see card onHover).
+    @State private var expanded = false
+    /// The fetched full-message HTML body shown when expanded; nil until first loaded.
+    @State private var bodyHTML: String?
     @FocusState private var replyFocused: Bool
 
     private var header: MessageHeader { note.header }
@@ -146,18 +152,25 @@ private struct MailNotificationCard: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(header.subject.isEmpty ? "(no subject)" : header.subject)
                             .font(.headline)
-                            .lineLimit(1)
+                            .lineLimit(expanded ? 3 : 1)
                         Text(header.from.display)
                             .font(.subheadline.weight(.semibold))
                             .lineLimit(1)
-                        Text(header.snippet)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(3)
+                        // Collapsed: the short list snippet. When expanded, the full
+                        // body is shown full-width below instead (see bodyPreview).
+                        if !expanded {
+                            Text(header.snippet)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(3)
+                        }
                     }
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
+                // Hovering the message area (title or body) expands the card; it
+                // collapses again only once the pointer leaves the whole card.
+                .onHover { if $0 { expanded = true } }
                 .onTapGesture { Task { await vm.focusMessage(note) } }
 
                 Button { vm.dismissNotification(note.id) } label: {
@@ -165,6 +178,10 @@ private struct MailNotificationCard: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
+            }
+
+            if expanded {
+                bodyPreview
             }
 
             if replying {
@@ -207,18 +224,49 @@ private struct MailNotificationCard: View {
             }
         }
         .padding(14)
-        .frame(width: 340, alignment: .leading)
+        .frame(width: expanded ? 460 : 340, alignment: .leading)
         .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.black.opacity(0.08)))
         .shadow(color: .black.opacity(0.20), radius: 12, y: 5)
+        .animation(.easeInOut(duration: 0.15), value: expanded)
+        // Fetch the full body the first time the card expands; reused on later hovers.
+        .task(id: expanded) {
+            if expanded, bodyHTML == nil {
+                bodyHTML = await vm.notificationBodyHTML(note)
+            }
+        }
         // Keep the card up while the mouse is over it; restart its countdown on exit.
         .onHover { hovering in
             if hovering {
                 vm.cancelAutoDismiss(note.id)
-            } else if !replying {
-                vm.scheduleAutoDismiss(note.id)
+            } else {
+                // Leaving the card collapses the expanded preview and resumes the
+                // auto-dismiss countdown (unless an inline reply is in progress).
+                expanded = false
+                if !replying { vm.scheduleAutoDismiss(note.id) }
             }
         }
+    }
+
+    /// The full message rendered in a fixed-height, natively-scrollable web view
+    /// (inline images and formatting intact). Shows a brief loading state until the
+    /// body has been fetched.
+    @ViewBuilder private var bodyPreview: some View {
+        Group {
+            if let bodyHTML {
+                HTMLView(html: bodyHTML)
+            } else {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading…").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(height: 360)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.quaternary))
     }
 
     private var replyEditor: some View {
