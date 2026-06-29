@@ -1304,21 +1304,12 @@ final class MailboxViewModel {
             setCleanupResult("Cleanup: couldn’t load the selected message.")
             return
         }
-        let target = canonicalContent(selectedBody)
-        guard target.count >= 8 else { setCleanupResult("Cleanup: nothing to compare."); return }
-
-        // Only messages in the same conversation can be quoted by this one; an older
-        // message that's a substring of the selected one is redundant.
-        let candidates = messages.filter {
-            $0.id != selectedId && $0.threadId == selected.threadId && $0.date <= selected.date
+        guard canonicalContent(selectedBody).count >= 8 else {
+            setCleanupResult("Cleanup: nothing to compare."); return
         }
-        var toDelete: [String] = []
-        for (index, cand) in candidates.enumerated() {
-            cleanupProgress = "Cleaning up… comparing \(index + 1) of \(candidates.count)"
-            guard let body = await ensureBody(for: cand) else { continue }
-            let content = canonicalContent(body)
-            guard content.count >= 8, content.count <= target.count else { continue }
-            if target.contains(content) { toDelete.append(cand.id) }
+
+        let toDelete = await redundantMessages(quotedBy: selected) { index, count in
+            cleanupProgress = "Cleaning up… comparing \(index) of \(count)"
         }
 
         if toDelete.isEmpty {
@@ -1328,6 +1319,64 @@ final class MailboxViewModel {
             let n = toDelete.count
             setCleanupResult("Cleanup: deleted \(n) message\(n == 1 ? "" : "s").")
         }
+    }
+
+    /// Runs the conversation cleanup across every message in the current folder: each
+    /// message trashes the earlier same-thread messages it fully quotes. Posts a status
+    /// line when the sweep starts and a summary when it finishes, with live progress in
+    /// between. Deletions happen once at the end so the folder stays stable while walking.
+    func cleanupFolder() async {
+        guard !messages.isEmpty else { return }
+        isCleaningUp = true
+        cleanupResult = nil
+        defer { isCleaningUp = false; cleanupProgress = nil }
+
+        let folderName = currentFolder?.name ?? "folder"
+        let all = messages
+        cleanupProgress = "Cleaning up “\(folderName)”…"
+
+        var deleted: Set<String> = []
+        for (index, message) in all.enumerated() {
+            cleanupProgress = "Cleaning up “\(folderName)”… message \(index + 1) of \(all.count)"
+            if deleted.contains(message.id) { continue }
+            let redundant = await redundantMessages(quotedBy: message, excluding: deleted)
+            deleted.formUnion(redundant)
+        }
+
+        if deleted.isEmpty {
+            setCleanupResult("Cleanup “\(folderName)”: no redundant messages found.")
+        } else {
+            await deleteMessages(Array(deleted))
+            let n = deleted.count
+            setCleanupResult("Cleanup “\(folderName)”: deleted \(n) message\(n == 1 ? "" : "s").")
+        }
+    }
+
+    /// Returns the ids of earlier same-thread messages whose content is quoted in full by
+    /// `selected` (and so are redundant). `excluded` are ids already slated for deletion —
+    /// skipped as candidates. `progress` is called per comparison with (current, total).
+    private func redundantMessages(quotedBy selected: MessageHeader,
+                                   excluding excluded: Set<String> = [],
+                                   progress: (Int, Int) -> Void = { _, _ in }) async -> [String] {
+        guard let selectedBody = await ensureBody(for: selected) else { return [] }
+        let target = canonicalContent(selectedBody)
+        guard target.count >= 8 else { return [] }
+
+        // Only messages in the same conversation can be quoted by this one; an older
+        // message that's a substring of the selected one is redundant.
+        let candidates = messages.filter {
+            $0.id != selected.id && !excluded.contains($0.id)
+                && $0.threadId == selected.threadId && $0.date <= selected.date
+        }
+        var toDelete: [String] = []
+        for (index, cand) in candidates.enumerated() {
+            progress(index + 1, candidates.count)
+            guard let body = await ensureBody(for: cand) else { continue }
+            let content = canonicalContent(body)
+            guard content.count >= 8, content.count <= target.count else { continue }
+            if target.contains(content) { toDelete.append(cand.id) }
+        }
+        return toDelete
     }
 
     /// Shows a cleanup result in the status bar, auto-clearing after a few seconds.

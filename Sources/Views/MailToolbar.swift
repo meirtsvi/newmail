@@ -58,10 +58,22 @@ struct MailToolbar: ToolbarContent {
             .disabled(!hasSelection)
             .help("Delete (⌫)")
 
-            Button { Task { await vm.cleanupConversation() } } label: {
+            Menu {
+                Button { Task { await vm.cleanupConversation() } } label: {
+                    Label("Cleanup Selected", systemImage: "wand.and.rays")
+                }
+                .disabled(vm.selection.count != 1)
+
+                Button { Task { await vm.cleanupFolder() } } label: {
+                    Label("Cleanup Folder", systemImage: "folder")
+                }
+                .disabled(vm.messages.isEmpty)
+            } label: {
                 Label("Cleanup", systemImage: "wand.and.rays")
+            } primaryAction: {
+                Task { await vm.cleanupConversation() }
             }
-            .disabled(vm.selection.count != 1 || vm.isCleaningUp)
+            .disabled(vm.isCleaningUp)
             .help("Cleanup")
 
             Menu {
