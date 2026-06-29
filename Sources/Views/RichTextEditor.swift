@@ -7,6 +7,8 @@ import UniformTypeIdentifiers
 @MainActor
 final class RichTextController: ObservableObject {
     weak var textView: NSTextView?
+    /// The enclosing scroll view, used for display-only zoom (magnification).
+    weak var scrollView: NSScrollView?
     /// Invoked when the user presses Shift-Tab in the body, to move focus back to
     /// the preceding compose field.
     var onShiftTab: (() -> Void)?
@@ -53,6 +55,20 @@ final class RichTextController: ObservableObject {
     func focus() {
         guard let textView else { return }
         textView.window?.makeFirstResponder(textView)
+    }
+
+    /// Display-only zoom of the editor viewport, mirroring the reading view's range
+    /// and 0.1 step. It magnifies only how large the text appears on screen — the
+    /// font sizes in the exported (sent) message are untouched.
+    static let zoomRange: ClosedRange<CGFloat> = 0.5...3.0
+    private var zoom: CGFloat = 1.0
+
+    func zoomIn() { setZoom(zoom + 0.1) }
+    func zoomOut() { setZoom(zoom - 0.1) }
+
+    private func setZoom(_ value: CGFloat) {
+        zoom = min(Self.zoomRange.upperBound, max(Self.zoomRange.lowerBound, value))
+        scrollView?.magnification = zoom
     }
 
     func toggleBold() { toggleTrait(.boldFontMask) }
@@ -438,6 +454,10 @@ struct RichTextEditor: NSViewRepresentable {
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
+        // Display-only zoom: the formatting bar's zoom buttons drive magnification.
+        scrollView.allowsMagnification = true
+        scrollView.minMagnification = RichTextController.zoomRange.lowerBound
+        scrollView.maxMagnification = RichTextController.zoomRange.upperBound
 
         let contentSize = scrollView.contentSize
         let textStorage = NSTextStorage()
@@ -473,6 +493,7 @@ struct RichTextEditor: NSViewRepresentable {
 
         scrollView.documentView = textView
         controller.textView = textView
+        controller.scrollView = scrollView
         return scrollView
     }
 
