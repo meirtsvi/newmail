@@ -136,6 +136,9 @@ private struct MailNotificationCard: View {
     @State private var expanded = false
     /// The fetched full-message HTML body shown when expanded; nil until first loaded.
     @State private var bodyHTML: String?
+    /// Pending expand triggered by hovering the message area; fires after a short dwell
+    /// so a quick pass over the card doesn't pop it open. Cancelled if the pointer leaves.
+    @State private var expandTask: Task<Void, Never>?
     @FocusState private var replyFocused: Bool
 
     private var header: MessageHeader { note.header }
@@ -168,9 +171,17 @@ private struct MailNotificationCard: View {
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
-                // Hovering the message area (title or body) expands the card; it
-                // collapses again only once the pointer leaves the whole card.
-                .onHover { if $0 { expanded = true } }
+                // Hovering the message area (title or body) expands the card after a
+                // one-second dwell; it collapses again only once the pointer leaves the
+                // whole card. Leaving the message area cancels a not-yet-fired expand.
+                .onHover { hovering in
+                    expandTask?.cancel()
+                    guard hovering, !expanded else { expandTask = nil; return }
+                    expandTask = Task {
+                        try? await Task.sleep(for: .seconds(1))
+                        if !Task.isCancelled { expanded = true }
+                    }
+                }
                 .onTapGesture { Task { await vm.focusMessage(note) } }
 
                 Button { vm.dismissNotification(note.id) } label: {
@@ -242,6 +253,8 @@ private struct MailNotificationCard: View {
             } else {
                 // Leaving the card collapses the expanded preview and resumes the
                 // auto-dismiss countdown (unless an inline reply is in progress).
+                expandTask?.cancel()
+                expandTask = nil
                 expanded = false
                 if !replying { vm.scheduleAutoDismiss(note.id) }
             }
