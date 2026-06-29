@@ -153,7 +153,7 @@ struct MessageListView: View {
             }
         }
         .contextMenu(forSelectionType: String.self) { ids in
-            MessageContextMenu(vm: vm, ids: ids.isEmpty ? Array(vm.selection) : Array(ids))
+            MessageContextMenu(vm: vm, ids: contextTargets(clicked: ids))
         } primaryAction: { ids in
             // Double-click (or Return) opens the message in its own window.
             if let id = ids.first { vm.openInWindow(id) }
@@ -276,6 +276,21 @@ struct MessageListView: View {
         }
         // Take keyboard focus so the selection highlights blue and arrow keys work.
         tableFocused = true
+    }
+
+    /// Messages a right-click acts on. Right-click never updates the manual selection
+    /// (the cell-wide `.onDrag` owns the mouse-down), so SwiftUI hands the menu the
+    /// clicked row *unioned* with the stale selection — which silently drops the
+    /// single-message actions (Edit / Open All Links) whenever you right-click a row
+    /// you didn't left-click first (common when scanning a non-date sort like title).
+    /// The hover tracker already knows the exact row under the cursor, so target that:
+    /// right-clicking inside the selection acts on the whole selection, anything else
+    /// acts on just that row.
+    private func contextTargets(clicked ids: Set<String>) -> [String] {
+        if let target = hover.id {
+            return vm.selection.contains(target) ? Array(vm.selection) : [target]
+        }
+        return ids.isEmpty ? Array(vm.selection) : Array(ids)
     }
 
     /// Ids of the displayed rows between two messages, inclusive (order-independent).
