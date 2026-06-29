@@ -42,9 +42,9 @@ struct MailToolbar: ToolbarContent {
             Button { vm.startForward() } label: {
                 Label("Forward", systemImage: "arrowshape.turn.up.right")
             }
-            .keyboardShortcut("f", modifiers: [.command, .shift])
+            .keyboardShortcut("f", modifiers: .command)
             .disabled(!hasSelection)
-            .help("Forward (⇧⌘F)")
+            .help("Forward (⌘F)")
 
             Button { if let id = ids.first { vm.editMessage(id) } } label: {
                 Label("Edit", systemImage: "pencil")
