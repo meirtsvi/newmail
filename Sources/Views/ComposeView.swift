@@ -180,7 +180,7 @@ struct ComposeView: View {
         HStack {
             Text(request.kind.title).font(.headline)
             Spacer()
-            Button("Cancel") { onClose() }
+            Button("Cancel") { closeKeepingDraft() }
             if request.kind == .edit { saveButton } else { sendButton }
         }
         .padding()
