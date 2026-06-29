@@ -13,6 +13,10 @@ struct MessageDetailView: View {
     @State private var showFind = false
     @State private var findText = ""
     @FocusState private var findFocused: Bool
+    /// Display-only body zoom, shared with the reading pane via the same key so the
+    /// two viewers stay in sync. Mirrors `MessagePreviewView`'s range and 0.1 step.
+    @AppStorage("messageZoom") private var zoom: Double = 1.0
+    private static let zoomRange = 0.5...3.0
 
     var body: some View {
         if let header = vm.modalHeader {
@@ -52,6 +56,12 @@ struct MessageDetailView: View {
                 .help("Reply All")
             Button { forward(header) } label: { Image(systemName: "arrowshape.turn.up.right") }
                 .help("Forward")
+            Divider().frame(height: 16)
+            Button { zoom = max(Self.zoomRange.lowerBound, zoom - 0.1) } label: { Image(systemName: "minus.magnifyingglass") }
+                .help("Zoom out")
+            Button { zoom = min(Self.zoomRange.upperBound, zoom + 0.1) } label: { Image(systemName: "plus.magnifyingglass") }
+                .help("Zoom in")
+            Divider().frame(height: 16)
             Button {
                 showFind.toggle()
                 if showFind { findFocused = true }
@@ -122,7 +132,7 @@ struct MessageDetailView: View {
     @ViewBuilder
     private var bodyBlock: some View {
         if let body = vm.modalBody {
-            HTMLView(html: body.html, finder: finder)
+            HTMLView(html: body.html, finder: finder, zoom: zoom)
         } else {
             VStack { Spacer(); ProgressView(); Spacer() }.frame(maxWidth: .infinity)
         }
