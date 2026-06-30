@@ -56,6 +56,8 @@ struct MessageDetailView: View {
                 .help("Reply All")
             Button { forward(header) } label: { Image(systemName: "arrowshape.turn.up.right") }
                 .help("Forward")
+            Button { deleteAndClose(header) } label: { Image(systemName: "trash") }
+                .help("Delete")
             Divider().frame(height: 16)
             Button { zoom = max(Self.zoomRange.lowerBound, zoom - 0.1) } label: { Image(systemName: "minus.magnifyingglass") }
                 .help("Zoom out")
@@ -146,5 +148,14 @@ struct MessageDetailView: View {
     private func forward(_ header: MessageHeader) {
         vm.selection = [header.id]
         vm.startForward()
+    }
+
+    /// Closes the popup first, then trashes the message in the background.
+    /// `deleteMessages` drops it from the list synchronously before its first
+    /// `await`, so the close feels instant and the server trash runs after.
+    private func deleteAndClose(_ header: MessageHeader) {
+        let id = header.id
+        onClose()
+        Task { await vm.deleteMessages([id]) }
     }
 }
