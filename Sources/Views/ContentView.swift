@@ -28,11 +28,14 @@ struct ContentView: View {
         }
         .toolbar {
             MailToolbar(vm: vm)
-            // Centered search field in the title bar (the toolbar's principal slot).
-            ToolbarItem(placement: .principal) {
+            // Wide search field on the leading side, right after the compose button.
+            ToolbarItem(placement: .navigation) {
                 ToolbarSearchField(vm: vm)
             }
         }
+        // Drop the window title so the search field and action buttons reclaim that
+        // space and the whole toolbar fits without an overflow (») menu.
+        .toolbar(removing: .title)
         // Escape clears the search field and reloads the folder's full list.
         .onKeyPress(.escape) {
             guard !vm.searchText.isEmpty else { return .ignored }
@@ -103,7 +106,7 @@ private struct ToolbarSearchField: View {
                     Task { await vm.clearSearch() }
                     return .handled
                 }
-                .frame(minWidth: 600)
+                .frame(minWidth: 700)
             if !vm.searchText.isEmpty {
                 Button { Task { await vm.clearSearch() } } label: {
                     Image(systemName: "xmark.circle.fill")
@@ -135,7 +138,7 @@ private struct ToolbarSearchField: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .frame(maxWidth: 1000)
+        .frame(maxWidth: 900)
         // Re-run the search when the scope changes while a query is active.
         .onChange(of: vm.searchScope) { _, _ in
             if !vm.searchText.isEmpty { Task { await vm.runSearch() } }
