@@ -103,10 +103,16 @@ private struct EventReminderCard: View {
                 // Re-evaluated each minute so it flips as those thresholds pass.
                 TimelineView(.periodic(from: reminder.start, by: 60)) { context in
                     let toStart = reminder.start.timeIntervalSince(context.date)
+                    let started = toStart <= 0
                     let preset: CalendarReminderService.SnoozePreset =
-                        toStart <= 0 ? .fiveMin : (toStart < 5 * 60 ? .atEventTime : .beforeStart)
+                        started ? .fiveMin : (toStart < 5 * 60 ? .atEventTime : .beforeStart)
+                    // Once the event has started, the event-relative presets would
+                    // land in the past and re-fire immediately, so drop them.
+                    let presets = CalendarReminderService.SnoozePreset.allCases.filter {
+                        !started || ($0 != .atEventTime && $0 != .beforeStart)
+                    }
                     Menu(preset.rawValue) {
-                        ForEach(CalendarReminderService.SnoozePreset.allCases) { preset in
+                        ForEach(presets) { preset in
                             Button(preset.rawValue) { vm.snoozeReminder(reminder, preset: preset) }
                         }
                     } primaryAction: {
