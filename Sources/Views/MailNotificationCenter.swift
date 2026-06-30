@@ -94,14 +94,24 @@ private struct EventReminderCard: View {
             }
 
             HStack {
-                Menu("Snooze") {
-                    ForEach(CalendarReminderService.SnoozePreset.allCases) { preset in
-                        Button(preset.rawValue) { vm.snoozeReminder(reminder, preset: preset) }
+                // Under 5 minutes to start, snoozing "5 minutes before start" would
+                // land in the past and re-fire immediately, so default the primary
+                // action (and label) to "At the time of event" instead. Re-evaluated
+                // each minute so it flips as the event crosses the 5-minute mark.
+                TimelineView(.periodic(from: reminder.start, by: 60)) { context in
+                    let preset: CalendarReminderService.SnoozePreset =
+                        reminder.start.timeIntervalSince(context.date) < 5 * 60 ? .atEventTime : .beforeStart
+                    Menu(preset.rawValue) {
+                        ForEach(CalendarReminderService.SnoozePreset.allCases) { preset in
+                            Button(preset.rawValue) { vm.snoozeReminder(reminder, preset: preset) }
+                        }
+                    } primaryAction: {
+                        vm.snoozeReminder(reminder, preset: preset)
                     }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .controlSize(.small)
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .controlSize(.small)
 
                 Spacer()
 
