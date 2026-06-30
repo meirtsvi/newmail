@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import AppKit
+import UserNotifications
 
 @main
 struct NewmailApp: App {
@@ -68,5 +69,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// (e.g. the app was already frontmost, or the extension couldn't open the URL).
     func applicationDidBecomeActive(_ notification: Notification) {
         MainActor.assumeIsolated { vm?.openSharedAttachments() }
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // The Dock unread badge is delivered through the notification system, which
+        // on modern macOS requires (badge) authorization — without it neither the
+        // legacy `dockTile.badgeLabel` nor `setBadgeCount` renders. Ask once.
+        UNUserNotificationCenter.current().requestAuthorization(options: [.badge]) { _, _ in }
     }
 }

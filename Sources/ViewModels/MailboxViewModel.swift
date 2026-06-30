@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import AppKit
+import UserNotifications
 
 /// Drives the entire UI. Holds one `Session` per configured account (each with
 /// its own provider), the per-account folder trees, the current message list,
@@ -243,7 +244,7 @@ final class MailboxViewModel {
         let unread = sessions.reduce(0) { sum, session in
             sum + (foldersByAccount[session.account.id]?.first { $0.kind == .inbox }?.unreadCount ?? 0)
         }
-        NSApplication.shared.dockTile.badgeLabel = unread > 0 ? "\(unread)" : nil
+        UNUserNotificationCenter.current().setBadgeCount(unread)
     }
 
     // MARK: - Bootstrap & accounts
@@ -260,6 +261,9 @@ final class MailboxViewModel {
             if !cached.isEmpty { foldersByAccount[session.account.id] = cached }
         }
         recomputeFavorites()
+        // Show the unread badge straight from cache: a warm start usually fetches
+        // identical folders, so `loadFolders` returns early without updating it.
+        updateDockBadge()
 
         // Reconcile each account from the network. Connection failures here go to
         // the status bar (non-modal) rather than an interrupting alert.
