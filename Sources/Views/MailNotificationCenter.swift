@@ -217,6 +217,7 @@ private struct MailNotificationCard: View {
 
             if replying {
                 replyEditor
+                    .focusWindowOnHover()
             } else {
                 HStack {
                     Spacer()
@@ -252,6 +253,7 @@ private struct MailNotificationCard: View {
                     }
                     .controlSize(.small)
                 }
+                .focusWindowOnHover()
             }
         }
         .padding(14)
@@ -335,6 +337,44 @@ private struct MailNotificationCard: View {
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(sending || replyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
+        }
+    }
+}
+
+private extension View {
+    /// Makes the hosting panel key as soon as the pointer enters, so a control
+    /// inside actuates on the *first* click even when newmail is in the background.
+    /// Without it, the nonactivating notification panel eats the first click just to
+    /// become key, forcing a second click on the button/menu.
+    func focusWindowOnHover() -> some View {
+        background(WindowKeyOnHover().allowsHitTesting(false))
+    }
+}
+
+/// Transparent backing view that makes its window key when the mouse enters its
+/// bounds. Used to give the new-mail card's action controls single-click response.
+private struct WindowKeyOnHover: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { HoverFocusView() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class HoverFocusView: NSView {
+        private var tracking: NSTrackingArea?
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            if let tracking { removeTrackingArea(tracking) }
+            let area = NSTrackingArea(
+                rect: bounds,
+                options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                owner: self
+            )
+            addTrackingArea(area)
+            tracking = area
+        }
+
+        override func mouseEntered(with event: NSEvent) {
+            super.mouseEntered(with: event)
+            if let window, !window.isKeyWindow { window.makeKey() }
         }
     }
 }
