@@ -75,11 +75,16 @@ struct MessagePreviewView: View {
     @ViewBuilder
     private func recipientsBlock(_ header: MessageHeader) -> some View {
         if !header.to.isEmpty {
+            // Key by message so the row's expand/collapse state resets when you
+            // switch messages — otherwise a stale "expanded" leaves an empty
+            // scroll box (a gap) on the next message's short recipient list.
             RecipientRow(label: "To", addresses: header.to)
+                .id("\(header.id)-to")
         }
         let cc = ccFor(header)
         if !cc.isEmpty {
             RecipientRow(label: "Cc", addresses: cc)
+                .id("\(header.id)-cc")
         }
     }
 
@@ -135,26 +140,65 @@ struct MessagePreviewView: View {
     }
 }
 
-/// A "To"/"Cc" label followed by a wrapping run of recipient chips.
+/// A "To"/"Cc" label followed by a wrapping run of recipient chips. A long
+/// list (e.g. every invitee on a calendar event) collapses to roughly two
+/// lines with a "+N more" toggle; left unbounded it grows the header until it
+/// overflows the pane and collides with the window toolbar.
 private struct RecipientRow: View {
     let label: String
     let addresses: [MailAddress]
+    @State private var expanded = false
+
+    /// Above this count the list collapses by default (≈ two lines at a typical
+    /// pane width).
+    private static let collapsedLimit = 12
 
     var body: some View {
+        let overflow = addresses.count > Self.collapsedLimit
+        let shown = (expanded || !overflow) ? addresses : Array(addresses.prefix(Self.collapsedLimit))
         HStack(alignment: .top, spacing: 8) {
             Text(label)
                 .font(.caption).foregroundStyle(.secondary)
                 .frame(width: 24, alignment: .trailing)
                 .padding(.top, 3)
-            FlowLayout(spacing: 6, lineSpacing: 6) {
-                // Keyed by position, not by address: a recipient list can repeat
-                // the same address (Reply-All / list expansion), and duplicate
-                // ids would make SwiftUI drop the repeated chip.
-                ForEach(Array(addresses.enumerated()), id: \.offset) { _, address in
-                    RecipientChip(address: address)
-                }
-            }
+            chips(shown: shown, overflow: overflow)
         }
+    }
+
+    @ViewBuilder
+    private func chips(shown: [MailAddress], overflow: Bool) -> some View {
+        let layout = FlowLayout(spacing: 6, lineSpacing: 6) {
+            // Keyed by position, not by address: a recipient list can repeat
+            // the same address (Reply-All / list expansion), and duplicate
+            // ids would make SwiftUI drop the repeated chip.
+            ForEach(Array(shown.enumerated()), id: \.offset) { _, address in
+                RecipientChip(address: address)
+            }
+            if overflow { moreToggle }
+        }
+        // Once expanded the full list can be long; let it scroll inside a
+        // bounded box rather than pushing the header over the toolbar. Only when
+        // there's overflow to scroll — an empty scroll box would leave a gap.
+        if expanded && overflow {
+            ScrollView(.vertical) { layout }.frame(maxHeight: 160)
+        } else {
+            layout
+        }
+    }
+
+    private var moreToggle: some View {
+        Button { expanded.toggle() } label: {
+            HStack(spacing: 3) {
+                Text(expanded ? "Show less" : "+\(addresses.count - Self.collapsedLimit) more")
+                Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                    .imageScale(.small)
+            }
+            .font(.caption)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(.quaternary, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
     }
 }
 
