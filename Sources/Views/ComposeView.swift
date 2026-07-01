@@ -58,8 +58,10 @@ struct ComposeView: View {
         .frame(minWidth: 480, idealWidth: 640, minHeight: 380,
                idealHeight: request.quotedHTML.isEmpty ? 560 : 680)
         .onAppear {
-            // Shift-Tab out of the body editor returns to the Subject field.
+            // Shift-Tab out of the body editor returns to the Subject field. Both the
+            // rich-text body (new/reply/forward) and the WebView body (edit) route it.
             rich.onShiftTab = { focus = .subject }
+            htmlEditor.onShiftTab = { focus = .subject }
             // A non-image file pasted or dropped into the body (e.g. a PDF) is
             // added as a real attachment rather than inlined as a picture.
             rich.onAttachFiles = { urls in attachments.append(contentsOf: urls) }
@@ -249,11 +251,13 @@ struct ComposeView: View {
                     .textFieldStyle(.roundedBorder)
                     .focused($focus, equals: .subject)
                     // Tab or Return from the subject jumps straight to the body,
-                    // skipping the bold/italic/underline/link/attach buttons;
-                    // Shift-Tab goes back to the Cc field.
+                    // skipping the bold/italic/underline/link/attach buttons.
+                    // Shift-Tab steps back to the Cc field — but when editing, To/Cc
+                    // are disabled, so there's no field before Subject and it stays put
+                    // rather than losing focus into a disabled field.
                     .onKeyPress(keys: [.tab], phases: .down) { press in
                         if press.modifiers.contains(.shift) {
-                            focus = .cc
+                            if request.kind != .edit { focus = .cc }
                             return .handled
                         }
                         focusBody()
@@ -276,7 +280,10 @@ struct ComposeView: View {
     /// runloop — otherwise SwiftUI's focus pass runs afterwards and steals it back.
     private func focusBody() {
         focus = nil
-        DispatchQueue.main.async { rich.focus() }
+        // Editing uses the WebView body; every other kind uses the rich-text body.
+        DispatchQueue.main.async {
+            if request.kind == .edit { htmlEditor.focus() } else { rich.focus() }
+        }
     }
 
     private var formattingBar: some View {
