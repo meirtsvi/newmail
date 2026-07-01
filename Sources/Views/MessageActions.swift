@@ -83,7 +83,7 @@ struct MoveMenu: View {
     }
 }
 
-/// Compact icon buttons revealed when hovering a message row: flag, move, delete.
+/// Compact icon buttons revealed when hovering a message row: flag, move, snooze, delete.
 /// The icon currently under the cursor is emphasized (bold + full-opacity).
 struct HoverActions: View {
     let vm: MailboxViewModel
@@ -106,6 +106,17 @@ struct HoverActions: View {
             .fixedSize()
             .help("Move to folder")
             .onHover { hoveredSymbol = $0 ? "folder" : (hoveredSymbol == "folder" ? nil : hoveredSymbol) }
+
+            Menu {
+                SnoozeMenu(vm: vm, ids: [id])
+            } label: {
+                icon("clock")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Snooze")
+            .onHover { hoveredSymbol = $0 ? "clock" : (hoveredSymbol == "clock" ? nil : hoveredSymbol) }
 
             iconButton("trash", help: "Delete") {
                 Task { await vm.deleteMessages([id]) }

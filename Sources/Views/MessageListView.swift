@@ -336,9 +336,20 @@ struct MessageListView: View {
     }
 
     private func dateCell(_ msg: MessageHeader) -> some View {
-        Text(msg.date.mailListString)
+        // Quick actions sit at the right edge of the row, covering the date text when
+        // the row is hovered (via TableHoverTracker) or selected.
+        let show = hover.id == msg.id || vm.selection.contains(msg.id)
+        return Text(msg.date.mailListString)
             .foregroundStyle(.secondary)
             .font(msg.isRead ? .body : .body.weight(.semibold))
+            .opacity(show ? 0 : 1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .trailing) {
+                if show {
+                    HoverActions(vm: vm, id: msg.id, isFlagged: msg.isFlagged)
+                        .transition(.opacity)
+                }
+            }
             .modifier(rowInteraction(msg))
     }
 
@@ -360,19 +371,12 @@ struct MessageListView: View {
     }
 
     private func fromCell(_ msg: MessageHeader) -> some View {
-        let show = hover.id == msg.id || vm.selection.contains(msg.id)
-        return HStack(spacing: 8) {
+        HStack(spacing: 8) {
             Avatar(address: msg.from)
             Text(msg.from.display)
                 .font(msg.isRead ? .body : .body.weight(.bold))
                 .lineLimit(1)
             Spacer(minLength: 4)
-            // Quick actions appear to the right of the From column when the row is
-            // hovered (via TableHoverTracker) or selected.
-            if show {
-                HoverActions(vm: vm, id: msg.id, isFlagged: msg.isFlagged)
-                    .transition(.opacity)
-            }
         }
         .modifier(rowInteraction(msg))
     }
