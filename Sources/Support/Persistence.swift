@@ -166,6 +166,37 @@ final class CachedBody {
     }
 }
 
+// MARK: - RSS Feeds
+
+/// A subscribed RSS/Atom feed. Polled every few minutes; each new item is inserted
+/// into the Gmail Inbox as a real received message (see `FeedService`).
+@Model
+final class FeedSubscription {
+    @Attribute(.unique) var url: String
+    /// The feed's own `<title>`, resolved on first fetch; falls back to the host.
+    var title: String
+    var createdAt: Date
+
+    init(url: String, title: String, createdAt: Date = .init()) {
+        self.url = url
+        self.title = title
+        self.createdAt = createdAt
+    }
+}
+
+/// Records a feed item that has already been imported (or intentionally skipped on
+/// first add), so it is never imported twice. `key` is `feedURL + "\u{1}" + guid`.
+@Model
+final class SeenFeedItem {
+    @Attribute(.unique) var key: String
+    var createdAt: Date
+
+    init(key: String, createdAt: Date = .init()) {
+        self.key = key
+        self.createdAt = createdAt
+    }
+}
+
 // MARK: - Container
 
 enum Persistence {
@@ -173,6 +204,7 @@ enum Persistence {
         let schema = Schema([
             SnoozeRecord.self, CachedFolder.self, CachedMessage.self, CachedBody.self,
             PersistedAccount.self, CachedContact.self,
+            FeedSubscription.self, SeenFeedItem.self,
         ])
         // Versioned store file: the multi-account schema is incompatible with the
         // single-account one, and the cache is disposable (re-fetched from the

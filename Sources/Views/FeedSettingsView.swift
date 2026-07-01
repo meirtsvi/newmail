@@ -1,0 +1,84 @@
+import SwiftUI
+import AppKit
+
+/// The Settings (⌘,) window: manage the list of RSS/Atom feed URLs and, when more
+/// than one Gmail account is configured, choose which one receives feed items.
+struct FeedSettingsView: View {
+    @Environment(MailboxViewModel.self) private var vm
+    @AppStorage("feedAccountId") private var feedAccountId = ""
+    @State private var newFeedURL = ""
+
+    var body: some View {
+        Form {
+            if vm.gmailSessions.count > 1 {
+                Section("Deliver to") {
+                    Picker("Gmail account", selection: $feedAccountId) {
+                        ForEach(vm.gmailSessions) { session in
+                            Text(session.account.email.isEmpty ? session.account.displayName : session.account.email)
+                                .tag(session.account.id)
+                        }
+                    }
+                    .onChange(of: feedAccountId) { _, _ in vm.startFeeds() }
+                }
+            }
+
+            Section("Feeds") {
+                if vm.feedSubscriptions.isEmpty {
+                    Text("No feeds yet. Add an RSS or Atom feed URL below.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(vm.feedSubscriptions) { sub in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(sub.title.isEmpty ? sub.url : sub.title)
+                            Text(sub.url)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        Spacer()
+                        Button(role: .destructive) { vm.removeFeed(sub) } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Remove feed")
+                    }
+                }
+            }
+
+            Section {
+                HStack {
+                    TextField("Feed URL", text: $newFeedURL, prompt: Text("https://example.com/feed.xml"))
+                        .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: .infinity)
+                        .onSubmit(add)
+                    Button("Add", action: add).disabled(!isValidURL)
+                }
+            } footer: {
+                Text("New items are added to your Gmail Inbox as unread messages, checked every 5 minutes.")
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 760, height: 440)
+        // Escape closes the Settings window (not the default for a Settings scene).
+        .onExitCommand { NSApp.keyWindow?.close() }
+        .onAppear {
+            if feedAccountId.isEmpty { feedAccountId = vm.gmailSessions.first?.account.id ?? "" }
+            vm.reloadFeedSubscriptions()
+        }
+    }
+
+    private var isValidURL: Bool {
+        guard let url = URL(string: newFeedURL.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let scheme = url.scheme?.lowercased() else { return false }
+        return scheme == "http" || scheme == "https"
+    }
+
+    private func add() {
+        guard isValidURL else { return }
+        vm.addFeed(newFeedURL)
+        newFeedURL = ""
+    }
+}

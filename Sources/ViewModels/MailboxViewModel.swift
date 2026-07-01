@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import AppKit
 import UserNotifications
+import SwiftData
 
 /// Drives the entire UI. Holds one `Session` per configured account (each with
 /// its own provider), the per-account folder trees, the current message list,
@@ -47,6 +48,11 @@ final class MailboxViewModel {
     private var snoozeServices: [String: SnoozeService] = [:]
     // Cached Gmail write-scope status (Graph accounts can always write).
     private var gmailWriteScope = true
+
+    // RSS feeds: a single service polls the chosen Gmail account and inserts new
+    // feed items into its Inbox. `feedSubscriptions` backs the Settings editor.
+    @ObservationIgnored private var feedService: FeedService?
+    var feedSubscriptions: [FeedSubscription] = []
 
     /// Email of the currently selected account (used as the compose "from").
     var accountEmail = ""
@@ -294,6 +300,8 @@ final class MailboxViewModel {
         await pollInboxes()
         startPeriodicRefresh()
         await startCalendarReminders()
+        reloadFeedSubscriptions()
+        startFeeds()
     }
 
     /// Begins the background calendar-reminder scheduler for the Google account
@@ -431,6 +439,58 @@ final class MailboxViewModel {
         }
         service.start()
         snoozeServices[session.account.id] = service
+    }
+
+    // MARK: - RSS Feeds
+
+    /// Gmail sessions, the only accounts that can host inserted feed messages.
+    var gmailSessions: [Session] { sessions.filter { $0.account.providerKind == .gmail } }
+
+    private var feedContext: ModelContext { Persistence.container.mainContext }
+
+    /// (Re)starts the feed poller against the account chosen in Settings (or the
+    /// first Gmail account). Safe to call repeatedly — the picker calls it on change.
+    func startFeeds() {
+        let gmail = gmailSessions
+        guard !gmail.isEmpty else { feedService?.stop(); feedService = nil; return }
+        let chosenId = UserDefaults.standard.string(forKey: "feedAccountId")
+        let session = gmail.first { $0.account.id == chosenId } ?? gmail[0]
+        let service = FeedService(provider: session.provider, accountId: session.account.id)
+        service.onNewItems = { [weak self] in Task { await self?.reloadCurrentFolder() } }
+        feedService?.stop()
+        feedService = service
+        service.start()
+    }
+
+    func reloadFeedSubscriptions() {
+        let descriptor = FetchDescriptor<FeedSubscription>(
+            sortBy: [SortDescriptor(\.createdAt, order: .forward)]
+        )
+        feedSubscriptions = (try? feedContext.fetch(descriptor)) ?? []
+    }
+
+    /// Adds a feed URL (http/https). No-op on an invalid or duplicate URL. Kicks an
+    /// immediate poll so its recent items appear without waiting for the timer.
+    func addFeed(_ urlString: String) {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return }
+        guard !feedSubscriptions.contains(where: { $0.url == trimmed }) else { return }
+        feedContext.insert(FeedSubscription(url: trimmed, title: url.host ?? trimmed))
+        try? feedContext.save()
+        reloadFeedSubscriptions()
+        Task { await feedService?.refreshAll() }
+    }
+
+    func removeFeed(_ subscription: FeedSubscription) {
+        // Drop the feed and its de-dup records so re-adding it later starts fresh.
+        let prefix = subscription.url + "\u{1}"
+        let seen = (try? feedContext.fetch(FetchDescriptor<SeenFeedItem>()))?
+            .filter { $0.key.hasPrefix(prefix) } ?? []
+        for item in seen { feedContext.delete(item) }
+        feedContext.delete(subscription)
+        try? feedContext.save()
+        reloadFeedSubscriptions()
     }
 
     private func updateAccountEmail(_ accountId: String, email: String) {
@@ -738,7 +798,7 @@ final class MailboxViewModel {
     /// small batches (Graph 50, Gmail 100), so we keep fetching until we reach
     /// this many — otherwise the list stops a week or two back and older mail is
     /// only reachable via search. Further pages load on demand via `loadMore()`.
-    private static let initialLoadTarget = 300
+    private static let initialLoadTarget = 500
 
     func loadMessages() async {
         guard let folder = currentFolder, let provider = currentProvider else { return }

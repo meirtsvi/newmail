@@ -185,6 +185,45 @@ struct MessageListView: View {
             deleteSelection()
             return .handled
         }
+        // Home/End/PageUp/PageDown scroll the list *and* move the selection. The
+        // backing NSTableView consumes these keys before SwiftUI's onKeyPress, so a
+        // local event monitor intercepts them while the list is focused.
+        .background(ListKeyNavigator(
+            isMessageList: { $0.numberOfRows == vm.displayedMessages.count && !vm.displayedMessages.isEmpty },
+            perform: { move, table in performListMove(move, in: table) }
+        ))
+    }
+
+    /// Moves the single selection to the top/bottom/one page away and scrolls the
+    /// backing table so the new row is visible. `table` is the focused message list.
+    @MainActor
+    private func performListMove(_ move: ListMove, in table: NSTableView) {
+        let msgs = vm.displayedMessages
+        guard !msgs.isEmpty else { return }
+        let currentIndex = vm.selection.first.flatMap { id in msgs.firstIndex { $0.id == id } } ?? 0
+        // Overlap one row when paging, matching typical page-scroll behavior.
+        let pageStep = max(1, table.rows(in: table.visibleRect).length - 1)
+        let target: Int
+        switch move {
+        case .home: target = 0
+        case .end: target = msgs.count - 1
+        case .pageUp: target = max(0, currentIndex - pageStep)
+        case .pageDown: target = min(msgs.count - 1, currentIndex + pageStep)
+        }
+        guard target >= 0, target < msgs.count else { return }
+        vm.selection = [msgs[target].id]
+        // Scroll on the next tick so it runs after SwiftUI applies the selection
+        // change (otherwise its own relayout races ours and leaves a partial row).
+        // Pad the target rect upward by the column-header height so the row clears
+        // the floating header instead of hiding half-under it.
+        DispatchQueue.main.async {
+            guard target < table.numberOfRows else { return }
+            let headerHeight = table.headerView?.bounds.height ?? 0
+            var rect = table.rect(ofRow: target)
+            rect.origin.y -= headerHeight
+            rect.size.height += headerHeight
+            table.scrollToVisible(rect)
+        }
     }
 
     private func deleteSelection() {
@@ -480,6 +519,86 @@ final class TableHoverNSView: NSView {
         guard let table = tableView(at: wp) else { setHovered?(nil); return }
         let row = table.row(at: table.convert(wp, from: nil))
         setHovered?(row >= 0 ? idForRow?(row) : nil)
+    }
+}
+
+/// A list-navigation key that both scrolls and moves the selection.
+enum ListMove {
+    case home, end, pageUp, pageDown
+
+    init?(keyCode: UInt16) {
+        switch keyCode {
+        case 115: self = .home       // Home
+        case 119: self = .end        // End
+        case 116: self = .pageUp     // Page Up
+        case 121: self = .pageDown   // Page Down
+        default: return nil
+        }
+    }
+}
+
+/// Installs a local key-down monitor so Home/End/PageUp/PageDown move the message
+/// list's selection (not just scroll). Acts only while the message-list NSTableView
+/// is first responder — every other responder (sidebar, reading pane, text fields,
+/// compose window) sees the key unchanged.
+private struct ListKeyNavigator: NSViewRepresentable {
+    let isMessageList: @MainActor (NSTableView) -> Bool
+    let perform: @MainActor (ListMove, NSTableView) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView {
+        context.coordinator.install(isMessageList: isMessageList, perform: perform)
+        return NSView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.isMessageList = isMessageList
+        context.coordinator.perform = perform
+    }
+
+    final class Coordinator {
+        var isMessageList: (@MainActor (NSTableView) -> Bool)?
+        var perform: (@MainActor (ListMove, NSTableView) -> Void)?
+        private var monitor: Any?
+
+        func install(isMessageList: @escaping @MainActor (NSTableView) -> Bool,
+                     perform: @escaping @MainActor (ListMove, NSTableView) -> Void) {
+            self.isMessageList = isMessageList
+            self.perform = perform
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                self?.handle(event) ?? event
+            }
+        }
+
+        private func handle(_ event: NSEvent) -> NSEvent? {
+            // Ignore chords (⌘/⌃/⌥/⇧); fn+arrow (which yields Home/End on laptops)
+            // sets only .function, which we allow.
+            guard event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
+                  let move = ListMove(keyCode: event.keyCode),
+                  let table = Self.tableView(from: event.window?.firstResponder) else { return event }
+            var consumed = false
+            MainActor.assumeIsolated {
+                if isMessageList?(table) == true {
+                    perform?(move, table)
+                    consumed = true
+                }
+            }
+            return consumed ? nil : event
+        }
+
+        private static func tableView(from responder: NSResponder?) -> NSTableView? {
+            if let table = responder as? NSTableView { return table }
+            var view = responder as? NSView
+            while let current = view {
+                if let table = current as? NSTableView { return table }
+                view = current.superview
+            }
+            return nil
+        }
+
+        deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
     }
 }
 

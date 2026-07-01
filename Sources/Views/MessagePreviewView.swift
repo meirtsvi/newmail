@@ -74,7 +74,8 @@ struct MessagePreviewView: View {
                 AttachmentList(attachments: body.attachments)
             }
         }
-        .padding(16)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 16)
     }
 
     /// To/Cc recipient chips. The To list lives on the header (always present);
@@ -124,6 +125,7 @@ struct MessagePreviewView: View {
         // instant); the spinner only appears while fetching with nothing to show.
         if let body = vm.currentBody, body.headerId == header.id {
             HTMLView(html: translation.displayHTML(original: body.html), zoom: zoom)
+                .padding(.horizontal, 24)
         } else if vm.isLoadingBody {
             VStack { Spacer(); ProgressView(); Spacer() }.frame(maxWidth: .infinity)
         } else {

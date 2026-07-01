@@ -25,6 +25,12 @@ struct NewmailApp: App {
         .modelContainer(Persistence.container)
         .windowToolbarStyle(.unified)
         .defaultSize(width: 1280, height: 800)
+
+        // The macOS Settings (⌘,) window: manage RSS/Atom feed subscriptions.
+        Settings {
+            FeedSettingsView()
+                .environment(vm)
+        }
     }
 }
 
