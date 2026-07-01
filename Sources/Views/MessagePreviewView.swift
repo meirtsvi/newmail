@@ -109,6 +109,9 @@ struct MessagePreviewView: View {
                 .help("Reply All")
             Button { vm.startForward() } label: { Image(systemName: "arrowshape.turn.up.right") }
                 .help("Forward")
+            Divider().frame(height: 16)
+            Button { Task { await vm.deleteMessages(Array(vm.selection)) } } label: { Image(systemName: "trash") }
+                .help("Delete")
         }
         .buttonStyle(.borderless)
         .imageScale(.large)
