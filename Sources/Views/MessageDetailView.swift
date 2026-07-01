@@ -17,6 +17,8 @@ struct MessageDetailView: View {
     /// two viewers stay in sync. Mirrors `MessagePreviewView`'s range and 0.1 step.
     @AppStorage("messageZoom") private var zoom: Double = 1.0
     private static let zoomRange = 0.5...3.0
+    /// Hebrew translate/summarize state for the shown message.
+    @State private var translation = BodyTranslationModel()
 
     var body: some View {
         if let header = vm.modalHeader {
@@ -44,12 +46,17 @@ struct MessageDetailView: View {
             bodyBlock
         }
         .frame(minWidth: 480, minHeight: 360)
+        .onChange(of: header.id) { _, _ in translation.reset() }
     }
 
     private func toolbar(_ header: MessageHeader) -> some View {
         HStack(spacing: 14) {
             Text(header.subject).font(.headline).lineLimit(1)
             Spacer()
+            if let body = vm.modalBody, body.headerId == header.id {
+                TranslateControls(model: translation, html: body.html, plainText: body.plainText)
+                Divider().frame(height: 16)
+            }
             Button { reply(header, all: false) } label: { Image(systemName: "arrowshape.turn.up.left") }
                 .help("Reply")
             Button { reply(header, all: true) } label: { Image(systemName: "arrowshape.turn.up.left.2") }
@@ -134,7 +141,7 @@ struct MessageDetailView: View {
     @ViewBuilder
     private var bodyBlock: some View {
         if let body = vm.modalBody {
-            HTMLView(html: body.html, finder: finder, zoom: zoom)
+            HTMLView(html: translation.displayHTML(original: body.html), finder: finder, zoom: zoom)
         } else {
             VStack { Spacer(); ProgressView(); Spacer() }.frame(maxWidth: .infinity)
         }

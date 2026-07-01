@@ -7,6 +7,8 @@ struct MessagePreviewView: View {
     @Environment(MailboxViewModel.self) private var vm
     /// Persisted message-body zoom, driven by ⌘+ / ⌘- / ⌘0.
     @AppStorage("messageZoom") private var zoom: Double = 1.0
+    /// Hebrew translate/summarize state for the shown message.
+    @State private var translation = BodyTranslationModel()
 
     private static let zoomRange = 0.5...3.0
 
@@ -38,6 +40,7 @@ struct MessagePreviewView: View {
                 bodyBlock(header)
             }
             .background(zoomShortcuts)
+            .onChange(of: header.id) { _, _ in translation.reset() }
         } else {
             ContentUnavailableView(
                 vm.selection.count > 1 ? "\(vm.selection.count) messages selected" : "No message selected",
@@ -60,6 +63,10 @@ struct MessagePreviewView: View {
                 Avatar(address: header.from)
                 FromField(address: header.from)
                 Spacer()
+                if let body = vm.currentBody, body.headerId == header.id {
+                    TranslateControls(model: translation, html: body.html, plainText: body.plainText)
+                        .foregroundStyle(.secondary)
+                }
                 replyControls
             }
             recipientsBlock(header)
@@ -113,7 +120,7 @@ struct MessagePreviewView: View {
         // Show the body the moment we have it for this message (from cache it's
         // instant); the spinner only appears while fetching with nothing to show.
         if let body = vm.currentBody, body.headerId == header.id {
-            HTMLView(html: body.html, zoom: zoom)
+            HTMLView(html: translation.displayHTML(original: body.html), zoom: zoom)
         } else if vm.isLoadingBody {
             VStack { Spacer(); ProgressView(); Spacer() }.frame(maxWidth: .infinity)
         } else {

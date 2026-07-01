@@ -2,6 +2,8 @@
 token.json
 credentials.json
 Resources/token.json
+Resources/gemini.json
+gemini.json
 *.token
 
 # Xcode / build
