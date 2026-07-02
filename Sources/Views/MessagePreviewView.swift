@@ -126,8 +126,9 @@ struct MessagePreviewView: View {
         // Show the body the moment we have it for this message (from cache it's
         // instant); the spinner only appears while fetching with nothing to show.
         if let body = vm.currentBody, body.headerId == header.id {
-            HTMLView(html: translation.displayHTML(original: body.html), zoom: zoom)
-                .padding(.horizontal, 24)
+            // The 24pt text margin lives inside the page (horizontalMargin), not
+            // as SwiftUI padding, so the scrollbar sits at the pane's right edge.
+            HTMLView(html: translation.displayHTML(original: body.html), zoom: zoom, horizontalMargin: 24)
         } else if vm.isLoadingBody {
             VStack { Spacer(); ProgressView(); Spacer() }.frame(maxWidth: .infinity)
         } else {

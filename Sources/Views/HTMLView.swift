@@ -26,6 +26,9 @@ struct HTMLView: NSViewRepresentable {
     let html: String
     var finder: WebFindController? = nil
     var zoom: Double = 1.0
+    /// Horizontal page margin in CSS px. Kept inside the page (rather than
+    /// SwiftUI padding around the web view) so the scrollbar hugs the pane edge.
+    var horizontalMargin: Int = 16
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -45,7 +48,7 @@ struct HTMLView: NSViewRepresentable {
         // not reload (that would reset scroll position).
         if context.coordinator.loadedHTML != html {
             context.coordinator.loadedHTML = html
-            webView.loadHTMLString(Self.wrap(html), baseURL: nil)
+            webView.loadHTMLString(wrap(html), baseURL: nil)
         }
         webView.pageZoom = zoom
     }
@@ -87,7 +90,7 @@ struct HTMLView: NSViewRepresentable {
         }
     }
 
-    private static func wrap(_ body: String) -> String {
+    private func wrap(_ body: String) -> String {
         """
         <!doctype html><html><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -96,7 +99,7 @@ struct HTMLView: NSViewRepresentable {
           body {
             font: -apple-system-body;
             font-family: -apple-system, "SF Pro Text", Helvetica, Arial, sans-serif;
-            margin: 16px; line-height: 1.5; word-wrap: break-word;
+            margin: 16px \(horizontalMargin)px; line-height: 1.5; word-wrap: break-word;
           }
           img { max-width: 100%; height: auto; }
           table { max-width: 100%; }
