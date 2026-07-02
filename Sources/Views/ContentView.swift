@@ -10,7 +10,7 @@ struct ContentView: View {
         @Bindable var vm = vm
         NavigationSplitView {
             SidebarView()
-                .frame(minWidth: 220)
+                .navigationSplitViewColumnWidth(min: 220, ideal: 220)
         } content: {
             VStack(spacing: 0) {
                 // Always visible so it's ready the instant you switch folders —
@@ -21,10 +21,17 @@ struct ContentView: View {
                 Divider()
                 StatusBar()
             }
-            .frame(minWidth: 440, idealWidth: 540)
+            // navigationSplitViewColumnWidth (not .frame) is what actually
+            // constrains the split-view divider drag on macOS; with only a
+            // .frame minWidth the divider can be dragged past the limit and
+            // the fixed-width pane overflows under its neighbor.
+            .navigationSplitViewColumnWidth(min: 440, ideal: 540)
         } detail: {
             MessagePreviewView()
-                .frame(minWidth: 380)
+                // 440 keeps the header's fixed controls (zoom, reply, forward,
+                // delete, translate) on screen even with the sender name fully
+                // truncated.
+                .navigationSplitViewColumnWidth(min: 440, ideal: 600)
         }
         .toolbar {
             MailToolbar(vm: vm)

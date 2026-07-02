@@ -235,10 +235,13 @@ private struct FromField: View {
                 .font(.body.weight(.semibold))
                 .lineLimit(1)
                 .truncationMode(.tail)
+                // Cap the width so a very long sender name ellipsizes instead of
+                // pushing the reply/zoom controls off the right edge of the pane;
+                // no .fixedSize so it can compress further when the pane is narrow.
+                .frame(maxWidth: 260, alignment: .leading)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .fixedSize()
         .help(address.nameAndEmail)
     }
 }
