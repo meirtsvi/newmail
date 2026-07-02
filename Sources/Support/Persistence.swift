@@ -166,6 +166,26 @@ final class CachedBody {
     }
 }
 
+/// Cached Hebrew translation and summary of a message body, keyed by message id.
+/// Written when a translation/summary is produced — on demand from the viewers'
+/// toggle buttons, or ahead of time for imported RSS feed items — so showing
+/// either again (including across launches) is instant. Empty string = not yet
+/// produced for that variant.
+@Model
+final class CachedTranslation {
+    @Attribute(.unique) var id: String
+    var translatedHTML: String
+    var summaryHTML: String
+    var createdAt: Date
+
+    init(id: String, translatedHTML: String = "", summaryHTML: String = "", createdAt: Date = .init()) {
+        self.id = id
+        self.translatedHTML = translatedHTML
+        self.summaryHTML = summaryHTML
+        self.createdAt = createdAt
+    }
+}
+
 // MARK: - RSS Feeds
 
 /// A subscribed RSS/Atom feed. Polled every few minutes; each new item is inserted
@@ -204,7 +224,7 @@ enum Persistence {
         let schema = Schema([
             SnoozeRecord.self, CachedFolder.self, CachedMessage.self, CachedBody.self,
             PersistedAccount.self, CachedContact.self,
-            FeedSubscription.self, SeenFeedItem.self,
+            FeedSubscription.self, SeenFeedItem.self, CachedTranslation.self,
         ])
         // Versioned store file: the multi-account schema is incompatible with the
         // single-account one, and the cache is disposable (re-fetched from the

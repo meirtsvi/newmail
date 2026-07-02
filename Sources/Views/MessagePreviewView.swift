@@ -64,7 +64,8 @@ struct MessagePreviewView: View {
                 FromField(address: header.from)
                 Spacer()
                 if let body = vm.currentBody, body.headerId == header.id {
-                    TranslateControls(model: translation, html: body.html, plainText: body.plainText)
+                    TranslateControls(model: translation, messageId: body.headerId,
+                                      html: body.html, plainText: body.plainText)
                         .foregroundStyle(.secondary)
                 }
                 replyControls

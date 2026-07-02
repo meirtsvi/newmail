@@ -213,6 +213,34 @@ final class MailStore {
         try? context.save()
     }
 
+    // MARK: Translations
+
+    /// Cached Hebrew translation and summary for a message (nil = not produced yet).
+    func cachedTranslation(id: String) -> (translated: String?, summary: String?) {
+        guard let row = try? context.fetch(
+            FetchDescriptor<CachedTranslation>(predicate: #Predicate { $0.id == id })
+        ).first else { return (nil, nil) }
+        return (row.translatedHTML.isEmpty ? nil : row.translatedHTML,
+                row.summaryHTML.isEmpty ? nil : row.summaryHTML)
+    }
+
+    /// Upserts the cached translation/summary for a message. A nil argument leaves
+    /// that variant untouched, so translation and summary can be saved separately.
+    func saveTranslation(id: String, translated: String? = nil, summary: String? = nil) {
+        let row: CachedTranslation
+        if let existing = try? context.fetch(
+            FetchDescriptor<CachedTranslation>(predicate: #Predicate { $0.id == id })
+        ).first {
+            row = existing
+        } else {
+            row = CachedTranslation(id: id)
+            context.insert(row)
+        }
+        if let translated { row.translatedHTML = translated }
+        if let summary { row.summaryHTML = summary }
+        try? context.save()
+    }
+
     /// Of the given message ids, those whose cached body is a calendar invitation.
     func calendarMessageIds(among ids: [String]) -> Set<String> {
         guard !ids.isEmpty else { return [] }

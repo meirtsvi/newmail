@@ -9,9 +9,10 @@ final class GmailProvider: MailProvider {
     let accountId: String
     private(set) var accountEmail: String = "me"
 
-    /// Concurrency cap for per-message header fetches (kept low to avoid
-    /// Gmail's burst rate-limit, which returns 429 RESOURCE_EXHAUSTED).
-    private let headerFetchWindow = 6
+    /// Concurrency cap for per-message header fetches (kept moderate to avoid
+    /// Gmail's burst rate-limit; a hit surfaces as 429 RESOURCE_EXHAUSTED, which
+    /// `request` retries with backoff).
+    private let headerFetchWindow = 10
 
     init(accountId: String = "gmail", auth: GoogleAuth = .shared) {
         self.accountId = accountId
@@ -41,14 +42,22 @@ final class GmailProvider: MailProvider {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
 
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse else {
-            throw MailError.other("No HTTP response")
+        // Retry transient failures (429 burst-limit, 5xx) with a short backoff so
+        // a momentary rate-limit doesn't surface as a sync error or drop a page.
+        var attempt = 0
+        while true {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            guard let http = resp as? HTTPURLResponse else {
+                throw MailError.other("No HTTP response")
+            }
+            if (200..<300).contains(http.statusCode) { return data }
+            let transient = http.statusCode == 429 || http.statusCode >= 500
+            guard transient, attempt < 2 else {
+                throw MailError.api(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+            }
+            attempt += 1
+            try await Task.sleep(nanoseconds: UInt64(Double(attempt) * 0.7 * 1_000_000_000))
         }
-        guard (200..<300).contains(http.statusCode) else {
-            throw MailError.api(http.statusCode, String(data: data, encoding: .utf8) ?? "")
-        }
-        return data
     }
 
     // MARK: - Profile
@@ -419,10 +428,36 @@ final class GmailProvider: MailProvider {
         try await batchModify(ids: ids, add: [toFolderId], remove: remove)
     }
 
+    /// Trashes messages concurrently (in small windows, like header fetches). A 404
+    /// means the message is already gone — e.g. it was deleted from another client,
+    /// or a retried delete raced an earlier success — and is treated as success, so
+    /// one already-deleted message can't fail the batch (which would make the UI
+    /// restore rows the server no longer has).
     func trash(ids: [String]) async throws {
-        for id in ids {
-            _ = try await request("messages/\(id)/trash", method: "POST")
+        var index = 0
+        var firstError: Error?
+        while index < ids.count {
+            let slice = Array(ids[index..<min(index + headerFetchWindow, ids.count)])
+            await withTaskGroup(of: Error?.self) { group in
+                for id in slice {
+                    group.addTask { [self] in
+                        do {
+                            _ = try await request("messages/\(id)/trash", method: "POST")
+                            return nil
+                        } catch MailError.api(404, _) {
+                            return nil
+                        } catch {
+                            return error
+                        }
+                    }
+                }
+                for await error in group {
+                    if let error, firstError == nil { firstError = error }
+                }
+            }
+            index += headerFetchWindow
         }
+        if let firstError { throw firstError }
     }
 
     /// Untrash restores the message's prior labels (e.g. INBOX), so the message

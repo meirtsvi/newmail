@@ -369,9 +369,15 @@ final class GraphProvider: MailProvider {
 
     func trash(ids: [String]) async throws {
         for id in ids {
-            // Graph assigns a new id to the moved copy; remember it so ⌘Z can
-            // find the message in Deleted Items and move it back.
-            trashedIds[id] = try await moveCapturing(id: id, to: "deleteditems")
+            do {
+                // Graph assigns a new id to the moved copy; remember it so ⌘Z can
+                // find the message in Deleted Items and move it back.
+                trashedIds[id] = try await moveCapturing(id: id, to: "deleteditems")
+            } catch MailError.api(404, _) {
+                // Already gone (deleted elsewhere) — deleting it is a no-op, not
+                // a failure that should restore the row in the UI.
+                continue
+            }
         }
     }
 

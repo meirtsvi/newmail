@@ -54,6 +54,8 @@ struct ZoomControls: View {
 
 struct TranslateControls: View {
     let model: BodyTranslationModel
+    /// Message id — keys the persistent translation/summary cache.
+    let messageId: String
     let html: String
     let plainText: String
 
@@ -62,13 +64,13 @@ struct TranslateControls: View {
             if model.isWorking {
                 ProgressView().controlSize(.small)
             }
-            Button { model.toggleTranslate(html: html) } label: {
+            Button { model.toggleTranslate(messageId: messageId, html: html) } label: {
                 Image(systemName: "character.bubble")
             }
             .help(model.errorText ?? "Translate to Hebrew")
             .foregroundStyle(model.mode == .translated ? Color.accentColor : .secondary)
 
-            Button { model.toggleSummary(plainText: plainText, html: html) } label: {
+            Button { model.toggleSummary(messageId: messageId, plainText: plainText, html: html) } label: {
                 Image(systemName: "list.bullet.rectangle")
             }
             .help(model.errorText ?? "Summarize in Hebrew (5 paragraphs)")

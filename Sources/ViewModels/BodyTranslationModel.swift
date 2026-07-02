@@ -4,6 +4,10 @@ import Observation
 /// Per-viewer state for the Hebrew translate/summarize toggles. Each message
 /// viewer (reading pane, popped-out window) owns one; call `reset()` when the
 /// displayed message changes so cached results don't leak across messages.
+///
+/// Results are also persisted per message id (see `CachedTranslation`), so a
+/// translation produced once — here or pre-computed for an RSS feed item —
+/// shows instantly on every later toggle, in any viewer, across launches.
 @MainActor
 @Observable
 final class BodyTranslationModel {
@@ -16,6 +20,7 @@ final class BodyTranslationModel {
     private var translatedHTML: String?
     private var summaryHTML: String?
     private var task: Task<Void, Never>?
+    @ObservationIgnored private lazy var store = MailStore()
 
     /// The HTML to render for the current mode; falls back to the original while a
     /// result isn't ready yet.
@@ -39,26 +44,40 @@ final class BodyTranslationModel {
         isWorking = false
     }
 
-    func toggleTranslate(html: String) {
+    func toggleTranslate(messageId: String, html: String) {
         if mode == .translated { mode = .original; return }
         if translatedHTML != nil { mode = .translated; return }
-        run(assign: \.translatedHTML, showAs: .translated) {
-            try await TranslationService.shared.translateHTMLToHebrew(html)
+        if let cached = store.cachedTranslation(id: messageId).translated {
+            translatedHTML = cached
+            mode = .translated
+            return
+        }
+        run(assign: \.translatedHTML, showAs: .translated) { [store] in
+            let result = try await TranslationService.shared.translateHTMLToHebrew(html)
+            store.saveTranslation(id: messageId, translated: result)
+            return result
         }
     }
 
-    func toggleSummary(plainText: String, html: String) {
+    func toggleSummary(messageId: String, plainText: String, html: String) {
         if mode == .summary { mode = .original; return }
         if summaryHTML != nil { mode = .summary; return }
-        run(assign: \.summaryHTML, showAs: .summary) {
-            try await TranslationService.shared.summarizeInHebrew(plainText: plainText, html: html)
+        if let cached = store.cachedTranslation(id: messageId).summary {
+            summaryHTML = cached
+            mode = .summary
+            return
+        }
+        run(assign: \.summaryHTML, showAs: .summary) { [store] in
+            let result = try await TranslationService.shared.summarizeInHebrew(plainText: plainText, html: html)
+            store.saveTranslation(id: messageId, summary: result)
+            return result
         }
     }
 
     private func run(
         assign keyPath: ReferenceWritableKeyPath<BodyTranslationModel, String?>,
         showAs mode: Mode,
-        _ work: @escaping () async throws -> String
+        _ work: @escaping @MainActor () async throws -> String
     ) {
         guard !isWorking else { return }
         isWorking = true

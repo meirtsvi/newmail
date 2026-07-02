@@ -256,8 +256,6 @@ final class MailboxViewModel {
     // MARK: - Bootstrap & accounts
 
     func bootstrap() async {
-        gmailWriteScope = (try? await GoogleAuth.shared.hasWriteScope) ?? false
-
         let accounts = ensureSeedAccounts()
         buildSessions(for: accounts)
 
@@ -271,22 +269,42 @@ final class MailboxViewModel {
         // identical folders, so `loadFolders` returns early without updating it.
         updateDockBadge()
 
-        // Reconcile each account from the network. Connection failures here go to
-        // the status bar (non-modal) rather than an interrupting alert.
+        // Open the first account's inbox straight from the cached folder tree, so
+        // the cached message list paints before any network round-trip. The network
+        // refresh inside `selectFolder` runs in the background while the account
+        // reconcile below proceeds concurrently.
+        if let first = sessions.first,
+           let inbox = foldersByAccount[first.account.id]?.first(where: { $0.kind == .inbox }) {
+            sidebarSelection = "acct:\(inbox.compositeId)"
+            Task { await self.selectFolder(inbox) }
+        }
+
+        // Reconcile every account from the network concurrently (a slow account
+        // no longer delays the others or the first paint). Connection failures go
+        // to the status bar (non-modal) rather than an interrupting alert.
         statusMessage = nil
-        for session in sessions {
-            do {
-                try await session.provider.loadProfile()
-                updateAccountEmail(session.account.id, email: session.provider.accountEmail)
-                try await loadFolders(for: session)
-                startSnooze(for: session)
-            } catch {
-                statusMessage = "Couldn’t connect \(connectLabel(session)): \(error.localizedDescription)"
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { @MainActor in
+                self.gmailWriteScope = (try? await GoogleAuth.shared.hasWriteScope) ?? false
+                self.hasWriteScope = self.currentAccountCanWrite
+            }
+            for session in sessions {
+                group.addTask { @MainActor in
+                    do {
+                        try await session.provider.loadProfile()
+                        self.updateAccountEmail(session.account.id, email: session.provider.accountEmail)
+                        try await self.loadFolders(for: session)
+                        self.startSnooze(for: session)
+                    } catch {
+                        self.statusMessage = "Couldn’t connect \(self.connectLabel(session)): \(error.localizedDescription)"
+                    }
+                }
             }
         }
 
-        // Open the first account's inbox.
-        if let first = sessions.first,
+        // First launch (no cached folders yet): open the inbox now that the
+        // folder list has arrived from the server.
+        if currentFolder == nil, let first = sessions.first,
            let inbox = foldersByAccount[first.account.id]?.first(where: { $0.kind == .inbox }) {
             sidebarSelection = "acct:\(inbox.compositeId)"
             await selectFolder(inbox)
@@ -755,8 +773,16 @@ final class MailboxViewModel {
     }
 
     private func refreshCurrentFolderCount() async {
-        guard let folder = currentFolder, let provider = currentProvider,
-              let count = try? await provider.folderCount(id: folder.id) else { return }
+        guard let folder = currentFolder, let provider = currentProvider else { return }
+        var fetched = try? await provider.folderCount(id: folder.id)
+        guard currentFolder?.id == folder.id else { return }
+        // The server's label counters lag behind deletes/moves by seconds. When the
+        // folder is fully loaded on screen (no further pages), the list itself is
+        // authoritative — use it, so a cleaned-out folder reads 0 immediately.
+        if !isSearching, nextPageToken == nil {
+            fetched = (unread: messages.filter { !$0.isRead }.count, total: messages.count)
+        }
+        guard let count = fetched else { return }
         currentFolder?.unreadCount = count.unread
         currentFolder?.totalCount = count.total
         if let i = foldersByAccount[folder.accountId]?.firstIndex(where: { $0.id == folder.id }),
@@ -817,12 +843,13 @@ final class MailboxViewModel {
             // which flickers and snaps the table to the top. `mergeFresh` updates rows
             // in place and prepends genuinely new mail — and on a cold (empty) cache it
             // simply becomes the first page, so there's no regression there.
-            var serverHeaders = result.headers
-            mergeFresh(result.headers)
+            var pageHeaders = withoutTombstoned(result.headers, folderId: folder.id)
+            var serverHeaders = pageHeaders
+            mergeFresh(pageHeaders)
             nextPageToken = result.nextPageToken
-            store.saveHeaders(result.headers)
+            store.saveHeaders(pageHeaders)
             hydrateCalendarIds()
-            recordContacts(from: result.headers, folder: folder)
+            recordContacts(from: pageHeaders, folder: folder)
 
             // Keep paging until we hit the target or run out of mail, re-checking the
             // folder after each fetch for the same reason as above. Append only ids not
@@ -830,12 +857,13 @@ final class MailboxViewModel {
             while messages.count < Self.initialLoadTarget, let token = result.nextPageToken {
                 result = try await provider.listMessages(folderId: folder.id, query: nil, pageToken: token)
                 guard currentFolder?.id == folder.id else { return }
-                serverHeaders.append(contentsOf: result.headers)
+                pageHeaders = withoutTombstoned(result.headers, folderId: folder.id)
+                serverHeaders.append(contentsOf: pageHeaders)
                 let known = Set(messages.map(\.id))
-                messages.append(contentsOf: result.headers.filter { !known.contains($0.id) })
+                messages.append(contentsOf: pageHeaders.filter { !known.contains($0.id) })
                 nextPageToken = result.nextPageToken
-                store.saveHeaders(result.headers)
-                recordContacts(from: result.headers, folder: folder)
+                store.saveHeaders(pageHeaders)
+                recordContacts(from: pageHeaders, folder: folder)
             }
             // Merging never removes, so drop any cached rows that fall within the
             // freshly-fetched (newest-first) window but the server no longer lists —
@@ -881,11 +909,12 @@ final class MailboxViewModel {
             // Don't append this folder's older page onto a list the user has since
             // switched away from.
             guard currentFolder?.id == folder.id else { return }
-            messages.append(contentsOf: result.headers)
+            let page = withoutTombstoned(result.headers, folderId: folder.id)
+            messages.append(contentsOf: page)
             nextPageToken = result.nextPageToken
-            store.saveHeaders(result.headers)
+            store.saveHeaders(page)
             hydrateCalendarIds()
-            recordContacts(from: result.headers, folder: folder)
+            recordContacts(from: page, folder: folder)
             statusMessage = nil
         } catch {
             statusMessage = "Couldn’t load more: \(error.localizedDescription)"
@@ -917,14 +946,51 @@ final class MailboxViewModel {
             let result = try await provider.listMessages(folderId: folder.id, query: nil, pageToken: nil)
             // Bail if the user navigated away or started a search meanwhile.
             guard currentFolder?.id == folder.id, !isSearching else { return }
-            mergeFresh(result.headers)
-            store.saveHeaders(result.headers)
-            recordContacts(from: result.headers, folder: folder)
+            let fresh = withoutTombstoned(result.headers, folderId: folder.id)
+            mergeFresh(fresh)
+            store.saveHeaders(fresh)
+            recordContacts(from: fresh, folder: folder)
             hydrateCalendarIds()
             statusMessage = nil
         } catch {
             statusMessage = "Couldn’t refresh \(folder.name): \(error.localizedDescription)"
         }
+    }
+
+    // MARK: - Delete tombstones
+    //
+    // Gmail (and Graph) listings are eventually consistent: for a few seconds
+    // after a message is trashed/moved, the server can still list it in its old
+    // folder. Without a guard, the periodic refresh re-adds the row ("I deleted
+    // it and it came back") and re-caches the stale header. Each local removal
+    // records a short-lived tombstone keyed by (folder, message); fetched headers
+    // matching a live tombstone are dropped before they're merged or cached.
+
+    /// "folderId\u{1}messageId" → time the tombstone expires.
+    private var deleteTombstones: [String: Date] = [:]
+    private static let tombstoneTTL: TimeInterval = 90
+
+    private func addTombstones(ids: [String], folderId: String?) {
+        guard let folderId else { return }
+        let expiry = Date().addingTimeInterval(Self.tombstoneTTL)
+        for id in ids { deleteTombstones["\(folderId)\u{1}\(id)"] = expiry }
+    }
+
+    /// Clears tombstones for messages deliberately restored (undo), so the next
+    /// refresh doesn't hide them again.
+    private func clearTombstones(ids: [String], folderId: String?) {
+        guard let folderId else { return }
+        for id in ids { deleteTombstones.removeValue(forKey: "\(folderId)\u{1}\(id)") }
+    }
+
+    /// Drops headers that were recently removed from `folderId` locally but that a
+    /// lagging server listing still returns. Expired tombstones are purged.
+    private func withoutTombstoned(_ headers: [MessageHeader], folderId: String) -> [MessageHeader] {
+        guard !deleteTombstones.isEmpty else { return headers }
+        let now = Date()
+        deleteTombstones = deleteTombstones.filter { $0.value > now }
+        guard !deleteTombstones.isEmpty else { return headers }
+        return headers.filter { deleteTombstones["\(folderId)\u{1}\($0.id)"] == nil }
     }
 
     /// Merges a freshly fetched first page into `messages`: updates the fields of
@@ -1292,9 +1358,12 @@ final class MailboxViewModel {
     // MARK: - Actions
 
     func markRead(_ ids: [String], read: Bool) async {
+        let set = Set(ids)
+        let changed = messages.filter { set.contains($0.id) && $0.isRead != read }.count
         await withProvider { try await $0.setRead(ids: ids, read: read) }
         mutateLocal(ids: ids) { $0.isRead = read }
         store.updateRead(ids: ids, read: read)
+        adjustCurrentFolderCounts(total: 0, unread: read ? -changed : changed)
     }
 
     func toggleFlag(_ ids: [String]) async {
@@ -1317,6 +1386,9 @@ final class MailboxViewModel {
         let sourceFolderId = currentFolder?.id
         let sourceAccountId = currentAccountId
         removeLocal(ids: ids)
+        // Tombstone right away so a refresh racing the server-side trash can't
+        // resurrect the rows; a failure below removes the tombstones again.
+        addTombstones(ids: ids, folderId: sourceFolderId)
         do {
             try await provider.trash(ids: ids)
             // Remember this delete so ⌘Z can put it back where it came from.
@@ -1324,6 +1396,7 @@ final class MailboxViewModel {
                 lastDeleted = (removed, sourceFolderId, sourceAccountId)
             }
         } catch {
+            clearTombstones(ids: ids, folderId: sourceFolderId)
             restoreLocal(removed)
             errorMessage = "Couldn’t delete: \(error.localizedDescription)"
         }
@@ -1340,6 +1413,9 @@ final class MailboxViewModel {
         lastDeleted = nil
         do {
             try await session.provider.untrash(ids: batch.headers.map(\.id), toFolderId: batch.folderId)
+            // Forget the delete's tombstones or the next refresh would hide the
+            // restored messages again for the tombstones' lifetime.
+            clearTombstones(ids: batch.headers.map(\.id), folderId: batch.folderId)
             // Reappear instantly if that folder is still on screen. (For Graph the
             // restored copy has a fresh id, so these rows are cosmetic until the
             // next folder refresh reconciles them; Gmail keeps the same id.)
@@ -1479,13 +1555,17 @@ final class MailboxViewModel {
 
     func archiveMessages(_ ids: [String]) async {
         await withProvider { try await $0.archive(ids: ids) }
-        if currentFolder?.kind == .inbox { removeLocal(ids: ids) }
+        if currentFolder?.kind == .inbox {
+            removeLocal(ids: ids)
+            addTombstones(ids: ids, folderId: currentFolder?.id)
+        }
     }
 
     /// Junk-folder action: removes the messages from Spam and files them in the Inbox.
     func markNotSpam(_ ids: [String]) async {
         await withProvider { try await $0.markNotSpam(ids: ids) }
         removeLocal(ids: ids)
+        addTombstones(ids: ids, folderId: currentFolder?.id)
     }
 
     func move(_ ids: [String], to folder: MailFolder) async {
@@ -1500,9 +1580,11 @@ final class MailboxViewModel {
         let removed = messages.filter { ids.contains($0.id) }
         let fromFolderId = currentFolder?.id
         removeLocal(ids: ids)
+        addTombstones(ids: ids, folderId: fromFolderId)
         do {
             try await provider.move(ids: ids, toFolderId: folder.id, fromFolderId: fromFolderId)
         } catch {
+            clearTombstones(ids: ids, folderId: fromFolderId)
             restoreLocal(removed)
             errorMessage = "Couldn’t move: \(error.localizedDescription)"
         }
@@ -1534,6 +1616,7 @@ final class MailboxViewModel {
                 let raw = try await source.provider.exportRawMessage(id: header.id)
                 _ = try await dest.provider.importRawMessage(raw, toFolderId: folder.id, markUnread: !header.isRead)
                 try await source.provider.permanentlyDelete(ids: [header.id])
+                addTombstones(ids: [header.id], folderId: currentFolder?.id)
                 moved += 1
             } catch {
                 // Put back this message and any not yet processed, then stop.
@@ -1556,6 +1639,7 @@ final class MailboxViewModel {
             try await service.snooze(ids: ids, headers: headers, until: wake, fromFolderId: from)
         }
         removeLocal(ids: ids)
+        addTombstones(ids: ids, folderId: from)
     }
 
     func unsnoozeMessages(_ ids: [String]) async {
@@ -1564,6 +1648,7 @@ final class MailboxViewModel {
             try await service.unsnooze(ids: ids)
         }
         removeLocal(ids: ids)
+        addTombstones(ids: ids, folderId: currentFolder?.id)
     }
 
     /// Wake time for a snoozed message (drives the "Snoozed Until" column).
@@ -1847,7 +1932,7 @@ final class MailboxViewModel {
         for session in sessions {
             guard let inbox = foldersByAccount[session.account.id]?.first(where: { $0.kind == .inbox }) else { continue }
             guard let result = try? await session.provider.listMessages(folderId: inbox.id, query: nil, pageToken: nil) else { continue }
-            let headers = result.headers
+            let headers = withoutTombstoned(result.headers, folderId: inbox.id)
             // This poll already fetches every account's inbox; persist it so each
             // account's cached inbox stays fresh (every 30s) even while off screen.
             // Then switching to that account paints a near-current list instead of a
@@ -1895,8 +1980,10 @@ final class MailboxViewModel {
         // Close the popup right away; perform the delete in the background.
         dismissNotification(note.id)
         guard let session = sessions.first(where: { $0.account.id == note.accountId }) else { return }
+        let inboxId = foldersByAccount[note.accountId]?.first(where: { $0.kind == .inbox })?.id
         do {
             try await session.provider.trash(ids: [note.id])
+            addTombstones(ids: [note.id], folderId: inboxId)
             // Reflect the removal in the list if that account's folder is on screen.
             if currentAccountId == note.accountId { removeLocal(ids: [note.id]) }
         } catch {
@@ -1914,6 +2001,7 @@ final class MailboxViewModel {
         let inboxId = foldersByAccount[note.accountId]?.first(where: { $0.kind == .inbox })?.id
         do {
             try await session.provider.move(ids: [note.id], toFolderId: folder.id, fromFolderId: inboxId)
+            addTombstones(ids: [note.id], folderId: inboxId)
             // Reflect the removal in the list if that account's folder is on screen.
             if currentAccountId == note.accountId { removeLocal(ids: [note.id]) }
         } catch {
@@ -2337,6 +2425,8 @@ final class MailboxViewModel {
         guard !toAdd.isEmpty else { return }
         messages.append(contentsOf: toAdd)
         store.saveHeaders(toAdd)
+        adjustCurrentFolderCounts(total: toAdd.count,
+                                  unread: toAdd.filter { !$0.isRead }.count)
     }
 
     private func removeLocal(ids: [String]) {
@@ -2344,6 +2434,7 @@ final class MailboxViewModel {
         // Remember where the removed rows sat (in the visible order) so we can
         // land the selection on whatever message takes their place.
         let firstRemovedIndex = displayedMessages.firstIndex { set.contains($0.id) }
+        let removedHeaders = messages.filter { set.contains($0.id) }
 
         messages.removeAll { set.contains($0.id) }
         selection.subtract(set)
@@ -2359,6 +2450,25 @@ final class MailboxViewModel {
                 selection = [remaining[min(idx, remaining.count - 1)].id]
             }
         }
+
+        adjustCurrentFolderCounts(total: -removedHeaders.count,
+                                  unread: -removedHeaders.filter { !$0.isRead }.count)
+    }
+
+    /// Applies an optimistic delta to the current folder's sidebar counts, so a
+    /// delete/move/read is reflected immediately instead of waiting out the lag in
+    /// the server's label counters.
+    private func adjustCurrentFolderCounts(total: Int, unread: Int) {
+        guard total != 0 || unread != 0, let folder = currentFolder, !isSearching else { return }
+        let newTotal = max(0, folder.totalCount + total)
+        let newUnread = max(0, folder.unreadCount + unread)
+        currentFolder?.totalCount = newTotal
+        currentFolder?.unreadCount = newUnread
+        if let i = foldersByAccount[folder.accountId]?.firstIndex(where: { $0.id == folder.id }) {
+            foldersByAccount[folder.accountId]?[i].totalCount = newTotal
+            foldersByAccount[folder.accountId]?[i].unreadCount = newUnread
+        }
+        updateDockBadge()
     }
 }
 

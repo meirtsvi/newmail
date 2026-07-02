@@ -322,7 +322,8 @@ private struct MailNotificationCard: View {
             ZoomControls(zoom: $zoom)
             Divider().frame(height: 16)
             if let body = messageBody {
-                TranslateControls(model: translation, html: body.html, plainText: body.plainText)
+                TranslateControls(model: translation, messageId: body.headerId,
+                                  html: body.html, plainText: body.plainText)
             }
             Button { vm.startReply(note, all: false) } label: { Image(systemName: "arrowshape.turn.up.left") }
                 .help("Reply")

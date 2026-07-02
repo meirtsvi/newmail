@@ -54,7 +54,8 @@ struct MessageDetailView: View {
             Text(header.subject).font(.headline).lineLimit(1)
             Spacer()
             if let body = vm.modalBody, body.headerId == header.id {
-                TranslateControls(model: translation, html: body.html, plainText: body.plainText)
+                TranslateControls(model: translation, messageId: body.headerId,
+                                  html: body.html, plainText: body.plainText)
                 Divider().frame(height: 16)
             }
             Button { reply(header, all: false) } label: { Image(systemName: "arrowshape.turn.up.left") }
