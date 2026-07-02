@@ -159,6 +159,8 @@ private struct MailNotificationCard: View {
     @State private var expanded = false
     /// The fetched full message shown when expanded; nil until first loaded.
     @State private var messageBody: MessageBody?
+    /// Hebrew translate/summarize state for the expanded body preview.
+    @State private var translation = BodyTranslationModel()
     /// RSVP state for an invite message: the optional note to the organizer, the
     /// response currently being sent, and the schedule for the invite's day.
     @State private var inviteNote = ""
@@ -224,6 +226,7 @@ private struct MailNotificationCard: View {
                 if let invite {
                     inviteSection(invite)
                 } else {
+                    expandedActions
                     bodyPreview
                 }
             }
@@ -287,13 +290,14 @@ private struct MailNotificationCard: View {
                 vm.cancelAutoDismiss(note.id)
             } else {
                 // Leaving the card collapses the expanded preview and resumes the
-                // auto-dismiss countdown (unless an inline reply or an RSVP — a typed
-                // note or a response in flight — is in progress).
+                // auto-dismiss countdown (unless an inline reply, an RSVP — a typed
+                // note or a response in flight — or a translate/summarize request
+                // is in progress).
                 expandTask?.cancel()
                 expandTask = nil
-                let rsvping = inviteSending != nil || !inviteNote.isEmpty
-                if !rsvping { expanded = false }
-                if !replying && !rsvping { vm.scheduleAutoDismiss(note.id) }
+                let busy = inviteSending != nil || !inviteNote.isEmpty || translation.isWorking
+                if !busy { expanded = false }
+                if !replying && !busy { vm.scheduleAutoDismiss(note.id) }
             }
         }
     }
@@ -307,13 +311,38 @@ private struct MailNotificationCard: View {
         return invite
     }
 
+    /// The reading pane's action row above the expanded body preview: Hebrew
+    /// translate/summarize (toggling the preview in place) plus Reply / Reply All /
+    /// Forward (each opens a full compose window) and Delete.
+    private var expandedActions: some View {
+        HStack(spacing: 14) {
+            Spacer()
+            if let body = messageBody {
+                TranslateControls(model: translation, html: body.html, plainText: body.plainText)
+            }
+            Button { vm.startReply(note, all: false) } label: { Image(systemName: "arrowshape.turn.up.left") }
+                .help("Reply")
+            Button { vm.startReply(note, all: true) } label: { Image(systemName: "arrowshape.turn.up.left.2") }
+                .help("Reply All")
+            Button { vm.startForward(note) } label: { Image(systemName: "arrowshape.turn.up.right") }
+                .help("Forward")
+            Divider().frame(height: 16)
+            Button { Task { await vm.deleteNotification(note) } } label: { Image(systemName: "trash") }
+                .help("Delete")
+        }
+        .buttonStyle(.borderless)
+        .imageScale(.large)
+        .foregroundStyle(.secondary)
+        .focusWindowOnHover()
+    }
+
     /// The full message rendered in a fixed-height, natively-scrollable web view
     /// (inline images and formatting intact). Shows a brief loading state until the
     /// body has been fetched.
     @ViewBuilder private var bodyPreview: some View {
         Group {
             if let html = messageBody?.html {
-                HTMLView(html: html)
+                HTMLView(html: translation.displayHTML(original: html))
             } else {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)

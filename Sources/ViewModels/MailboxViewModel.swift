@@ -1679,21 +1679,7 @@ final class MailboxViewModel {
         guard let header = selectedHeaders.first else { return }
         Task {
             let body = await ensureBody(for: header)
-            let to = header.from.email
-            let subject = header.subject.hasPrefix("Re:") ? header.subject : "Re: \(header.subject)"
-            let quoted = """
-            <br><br>
-            <p>On \(header.date.mailFullString), \(escape(header.from.display)) &lt;\(escape(header.from.email))&gt; wrote:</p>
-            <blockquote style="margin:0 0 0 8px;padding-left:10px;border-left:2px solid #ccc">
-            \(quotedBody(body, fallbackSnippet: header.snippet))
-            </blockquote>
-            """
-            composeWindows.open(ComposeRequest(
-                kind: all ? .replyAll : .reply,
-                to: to,
-                subject: subject,
-                quotedHTML: quoted
-            ), vm: self)
+            openReplyCompose(header: header, body: body, all: all)
         }
     }
 
@@ -1701,20 +1687,59 @@ final class MailboxViewModel {
         guard let header = selectedHeaders.first else { return }
         Task {
             let body = await ensureBody(for: header)
-            let subject = header.subject.hasPrefix("Fwd:") ? header.subject : "Fwd: \(header.subject)"
-            let forwardHeader = """
-            <p>---------- Forwarded message ----------<br>
-            From: \(escape(header.from.display)) &lt;\(escape(header.from.email))&gt;<br>
-            Date: \(header.date.mailFullString)<br>
-            Subject: \(escape(header.subject))</p>
-            """
-            composeWindows.open(ComposeRequest(
-                kind: .forward,
-                subject: subject,
-                quotedHTML: forwardHeader + quotedBody(body, fallbackSnippet: header.snippet),
-                attachments: body?.attachments ?? []
-            ), vm: self)
+            openForwardCompose(header: header, body: body)
         }
+    }
+
+    /// Reply from a new-mail popup: the same full compose as the reading pane's
+    /// Reply, quoting the body fetched via the account that received the message.
+    /// Closes the popup — the interaction continues in the compose window.
+    func startReply(_ note: MailNotification, all: Bool) {
+        dismissNotification(note.id)
+        Task {
+            let body = await notificationBody(note)
+            openReplyCompose(header: note.header, body: body, all: all)
+        }
+    }
+
+    /// Forward from a new-mail popup; see `startReply(_:all:)`.
+    func startForward(_ note: MailNotification) {
+        dismissNotification(note.id)
+        Task {
+            let body = await notificationBody(note)
+            openForwardCompose(header: note.header, body: body)
+        }
+    }
+
+    private func openReplyCompose(header: MessageHeader, body: MessageBody?, all: Bool) {
+        let quoted = """
+        <br><br>
+        <p>On \(header.date.mailFullString), \(escape(header.from.display)) &lt;\(escape(header.from.email))&gt; wrote:</p>
+        <blockquote style="margin:0 0 0 8px;padding-left:10px;border-left:2px solid #ccc">
+        \(quotedBody(body, fallbackSnippet: header.snippet))
+        </blockquote>
+        """
+        composeWindows.open(ComposeRequest(
+            kind: all ? .replyAll : .reply,
+            to: header.from.email,
+            subject: header.subject.hasPrefix("Re:") ? header.subject : "Re: \(header.subject)",
+            quotedHTML: quoted
+        ), vm: self)
+    }
+
+    private func openForwardCompose(header: MessageHeader, body: MessageBody?) {
+        let forwardHeader = """
+        <p>---------- Forwarded message ----------<br>
+        From: \(escape(header.from.display)) &lt;\(escape(header.from.email))&gt;<br>
+        Date: \(header.date.mailFullString)<br>
+        Subject: \(escape(header.subject))</p>
+        """
+        composeWindows.open(ComposeRequest(
+            kind: .forward,
+            subject: header.subject.hasPrefix("Fwd:") ? header.subject : "Fwd: \(header.subject)",
+            quotedHTML: forwardHeader + quotedBody(body, fallbackSnippet: header.snippet),
+            attachments: body?.attachments ?? []
+        ), vm: self)
     }
 
     /// Returns the message body for quoting/forwarding: the open preview, then the
