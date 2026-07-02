@@ -1935,16 +1935,30 @@ final class MailboxViewModel {
         dismissNotification(note.id)
     }
 
-    /// The fully rendered HTML body of a popup's message (with inline images already
+    /// The fully rendered body of a popup's message (with inline images already
     /// embedded), fetched via the account that received it (not necessarily the
     /// selected one), for the expanded hover preview. Returns nil if the body can't be
     /// fetched. The fetched body is cached by the store so opening it later is instant.
-    func notificationBodyHTML(_ note: MailNotification) async -> String? {
-        if let cached = store.cachedBody(id: note.id) { return cached.html }
+    /// A cached body doesn't carry the parsed ICS, so a message known to be a calendar
+    /// invitation is refetched to recover the invite the popup's RSVP controls need.
+    func notificationBody(_ note: MailNotification) async -> MessageBody? {
+        let cached = store.cachedBody(id: note.id)
+        if let cached, store.calendarMessageIds(among: [note.id]).isEmpty { return cached }
         guard let provider = sessions.first(where: { $0.account.id == note.accountId })?.provider,
-              let fetched = try? await provider.fetchBody(id: note.id) else { return nil }
+              let fetched = try? await provider.fetchBody(id: note.id) else { return cached }
         store.saveBody(fetched)
-        return fetched.html
+        return fetched
+    }
+
+    /// The user's Google Calendar events on an invitation's day, for a popup card's
+    /// timeline. Quietly returns an empty schedule when the account isn't Gmail, the
+    /// calendar scope hasn't been granted, or the fetch fails — the popup isn't the
+    /// place to walk through Calendar auth (the reading pane's card handles that).
+    func notificationDayEvents(for invite: CalendarInvite, accountId: String) async -> [CalEvent] {
+        guard let day = invite.start,
+              sessions.first(where: { $0.account.id == accountId })?.account.providerKind == .gmail,
+              (try? await GoogleAuth.shared.hasCalendarScope) == true else { return [] }
+        return (try? await GoogleCalendarService.shared.events(onDayOf: day)) ?? []
     }
 
     /// Sends a quick plain-text reply to a popup's message via the account that
@@ -2109,9 +2123,12 @@ final class MailboxViewModel {
 
     /// Sends an RSVP to the invitation's organizer as an iCalendar REPLY email.
     /// Returns whether the reply was sent (the caller updates its UI state).
+    /// Sends via `accountId`'s account when given (a popup's invite may belong to
+    /// an account other than the selected one); defaults to the current account.
     @discardableResult
-    func respondToInvite(_ invite: CalendarInvite, response: InviteResponse, note: String = "") async -> Bool {
-        guard let provider = currentProvider else {
+    func respondToInvite(_ invite: CalendarInvite, response: InviteResponse, note: String = "",
+                         accountId: String? = nil) async -> Bool {
+        guard let session = sessions.first(where: { $0.account.id == (accountId ?? currentAccountId) }) else {
             errorMessage = "No account is selected."
             return false
         }
@@ -2119,16 +2136,16 @@ final class MailboxViewModel {
             errorMessage = "This invitation has no organizer to reply to."
             return false
         }
-        let me = MailAddress(name: "", email: accountEmail)
+        let me = MailAddress(name: "", email: session.account.email)
         let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
         let ics = ICSReplyBuilder.reply(to: invite, attendee: me, response: response,
                                         comment: trimmedNote, now: Date())
         let subject = "\(response.subjectPrefix): \(invite.summary)"
         let mime = MIMEBuilder.buildICSReply(
-            from: accountEmail, to: organizer.email, subject: subject, ics: ics, note: trimmedNote
+            from: session.account.email, to: organizer.email, subject: subject, ics: ics, note: trimmedNote
         )
         do {
-            try await provider.send(rawMIME: mime)
+            try await session.provider.send(rawMIME: mime)
             return true
         } catch {
             errorMessage = error.localizedDescription

@@ -142,7 +142,10 @@ private struct EventReminderCard: View {
 }
 
 /// A single new-mail card: sender, subject, snippet, and a Reply button that
-/// expands into an inline plain-text reply editor.
+/// expands into an inline plain-text reply editor. When the message is a calendar
+/// invitation, the expanded preview shows the invite instead of the raw body:
+/// event details, a note to the organizer, Accept / Maybe / Decline, and a day
+/// timeline of the user's schedule — the same affordances as the reading pane.
 private struct MailNotificationCard: View {
     @Environment(MailboxViewModel.self) private var vm
     let note: MailNotification
@@ -154,8 +157,14 @@ private struct MailNotificationCard: View {
     /// into a full, scrollable body preview. Stays true until the pointer leaves the
     /// whole card (see card onHover).
     @State private var expanded = false
-    /// The fetched full-message HTML body shown when expanded; nil until first loaded.
-    @State private var bodyHTML: String?
+    /// The fetched full message shown when expanded; nil until first loaded.
+    @State private var messageBody: MessageBody?
+    /// RSVP state for an invite message: the optional note to the organizer, the
+    /// response currently being sent, and the schedule for the invite's day.
+    @State private var inviteNote = ""
+    @State private var inviteSending: InviteResponse?
+    @State private var dayEvents: [CalEvent] = []
+    @State private var dayEventsLoaded = false
     /// Pending expand triggered by hovering the message area; fires after a short dwell
     /// so a quick pass over the card doesn't pop it open. Cancelled if the pointer leaves.
     @State private var expandTask: Task<Void, Never>?
@@ -212,7 +221,11 @@ private struct MailNotificationCard: View {
             }
 
             if expanded {
-                bodyPreview
+                if let invite {
+                    inviteSection(invite)
+                } else {
+                    bodyPreview
+                }
             }
 
             if replying {
@@ -264,8 +277,8 @@ private struct MailNotificationCard: View {
         .animation(.easeInOut(duration: 0.15), value: expanded)
         // Fetch the full body the first time the card expands; reused on later hovers.
         .task(id: expanded) {
-            if expanded, bodyHTML == nil {
-                bodyHTML = await vm.notificationBodyHTML(note)
+            if expanded, messageBody == nil {
+                messageBody = await vm.notificationBody(note)
             }
         }
         // Keep the card up while the mouse is over it; restart its countdown on exit.
@@ -274,13 +287,24 @@ private struct MailNotificationCard: View {
                 vm.cancelAutoDismiss(note.id)
             } else {
                 // Leaving the card collapses the expanded preview and resumes the
-                // auto-dismiss countdown (unless an inline reply is in progress).
+                // auto-dismiss countdown (unless an inline reply or an RSVP — a typed
+                // note or a response in flight — is in progress).
                 expandTask?.cancel()
                 expandTask = nil
-                expanded = false
-                if !replying { vm.scheduleAutoDismiss(note.id) }
+                let rsvping = inviteSending != nil || !inviteNote.isEmpty
+                if !rsvping { expanded = false }
+                if !replying && !rsvping { vm.scheduleAutoDismiss(note.id) }
             }
         }
+    }
+
+    /// The calendar invite carried by this message (once its body has loaded), for
+    /// the kinds the reading pane's card handles too.
+    private var invite: CalendarInvite? {
+        guard let invite = messageBody?.calendar,
+              invite.method == .request || invite.method == .cancel || invite.method == .counter
+        else { return nil }
+        return invite
     }
 
     /// The full message rendered in a fixed-height, natively-scrollable web view
@@ -288,8 +312,8 @@ private struct MailNotificationCard: View {
     /// body has been fetched.
     @ViewBuilder private var bodyPreview: some View {
         Group {
-            if let bodyHTML {
-                HTMLView(html: bodyHTML)
+            if let html = messageBody?.html {
+                HTMLView(html: html)
             } else {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
@@ -302,6 +326,138 @@ private struct MailNotificationCard: View {
         .frame(height: 360)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.quaternary))
+    }
+
+    // MARK: Calendar invite
+
+    /// The expanded preview for an invite message: event details plus the same
+    /// affordances as the reading pane's invite card — a note to the organizer,
+    /// Accept / Maybe / Decline (a cancellation gets a notice and Delete; a
+    /// proposed new time hands off to Google Calendar), and a day timeline with
+    /// the user's schedule around the proposed slot.
+    @ViewBuilder private func inviteSection(_ invite: CalendarInvite) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            inviteDetail("clock", invite.whenText)
+            if !invite.location.isEmpty { inviteDetail("mappin.and.ellipse", invite.location) }
+            if invite.method != .counter, let organizer = invite.organizer {
+                inviteDetail("person.crop.circle", "Organized by \(organizer.display)")
+            }
+
+            switch invite.method {
+            case .cancel:  inviteCanceledControls
+            case .counter: inviteCounterControls(invite)
+            default:       inviteRSVPControls(invite)
+            }
+
+            if let start = invite.start {
+                CalendarDayTimeline(
+                    day: start,
+                    events: dayEvents,
+                    inviteStart: start,
+                    inviteEnd: invite.end ?? start.addingTimeInterval(3600)
+                )
+                .frame(height: 200)
+            }
+        }
+        .padding(10)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.quaternary))
+        .focusWindowOnHover()
+        .task {
+            if !dayEventsLoaded {
+                dayEventsLoaded = true
+                dayEvents = await vm.notificationDayEvents(for: invite, accountId: note.accountId)
+            }
+        }
+    }
+
+    private func inviteDetail(_ symbol: String, _ text: String) -> some View {
+        Label(text, systemImage: symbol)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+    }
+
+    private func inviteRSVPControls(_ invite: CalendarInvite) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextEditor(text: $inviteNote)
+                .font(.body)
+                .frame(height: 48)
+                .padding(4)
+                .overlay(alignment: .topLeading) {
+                    if inviteNote.isEmpty {
+                        Text("Optional message to organizer")
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 9).padding(.vertical, 12)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
+                .scrollContentBackground(.hidden)
+                .background(RoundedRectangle(cornerRadius: 6).fill(.background))
+            HStack(spacing: 8) {
+                rsvpButton(invite, .accepted, "Accept", "checkmark.circle.fill", .green)
+                rsvpButton(invite, .tentative, "Maybe", "questionmark.circle.fill", .orange)
+                rsvpButton(invite, .declined, "Decline", "xmark.circle.fill", .red)
+            }
+        }
+    }
+
+    private func rsvpButton(_ invite: CalendarInvite, _ response: InviteResponse,
+                            _ title: String, _ symbol: String, _ tint: Color) -> some View {
+        Button {
+            inviteSending = response
+            vm.cancelAutoDismiss(note.id)
+            Task {
+                let ok = await vm.respondToInvite(invite, response: response, note: inviteNote,
+                                                  accountId: note.accountId)
+                inviteSending = nil
+                // On a sent RSVP the invitation is dealt with — trash it and close
+                // the card (same as the reading pane removing the message).
+                if ok { await vm.deleteNotification(note) }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                if inviteSending == response { ProgressView().controlSize(.small) }
+                else { Image(systemName: symbol) }
+                Text(title)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .tint(tint)
+        .controlSize(.small)
+        .disabled(inviteSending != nil)
+    }
+
+    private var inviteCanceledControls: some View {
+        HStack {
+            Text("This event was canceled by the organizer.")
+                .font(.subheadline).foregroundStyle(.red)
+            Spacer()
+            Button(role: .destructive) {
+                Task { await vm.deleteNotification(note) }
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            .controlSize(.small)
+        }
+    }
+
+    private func inviteCounterControls(_ invite: CalendarInvite) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("\(invite.attendees.first?.display ?? "A guest") proposed a new time.")
+                .font(.subheadline)
+            Button {
+                CalendarLauncher.open(invite.eventURL
+                    ?? URL(string: "https://calendar.google.com/calendar/r")!)
+                vm.dismissNotification(note.id)
+            } label: {
+                Label("Open in Google Calendar", systemImage: "calendar")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        }
     }
 
     private var replyEditor: some View {
