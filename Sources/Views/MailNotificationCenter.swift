@@ -161,6 +161,8 @@ private struct MailNotificationCard: View {
     @State private var messageBody: MessageBody?
     /// Hebrew translate/summarize state for the expanded body preview.
     @State private var translation = BodyTranslationModel()
+    /// Body-preview zoom, shared with the reading pane's persisted level.
+    @AppStorage("messageZoom") private var zoom: Double = 1.0
     /// RSVP state for an invite message: the optional note to the organizer, the
     /// response currently being sent, and the schedule for the invite's day.
     @State private var inviteNote = ""
@@ -317,6 +319,8 @@ private struct MailNotificationCard: View {
     private var expandedActions: some View {
         HStack(spacing: 14) {
             Spacer()
+            ZoomControls(zoom: $zoom)
+            Divider().frame(height: 16)
             if let body = messageBody {
                 TranslateControls(model: translation, html: body.html, plainText: body.plainText)
             }
@@ -342,7 +346,7 @@ private struct MailNotificationCard: View {
     @ViewBuilder private var bodyPreview: some View {
         Group {
             if let html = messageBody?.html {
-                HTMLView(html: translation.displayHTML(original: html))
+                HTMLView(html: translation.displayHTML(original: html), zoom: zoom)
             } else {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)

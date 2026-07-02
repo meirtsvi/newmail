@@ -303,8 +303,10 @@ struct ComposeView: View {
             Divider().frame(height: 16)
             Button { showImporter = true } label: { Image(systemName: "paperclip") }.help("Attach file")
             Divider().frame(height: 16)
-            Button { rich.zoomOut() } label: { Image(systemName: "minus.magnifyingglass") }.help("Zoom out")
-            Button { rich.zoomIn() } label: { Image(systemName: "plus.magnifyingglass") }.help("Zoom in")
+            ZoomControls(zoom: Binding(
+                get: { Double(rich.zoom) },
+                set: { rich.setZoom(CGFloat($0)) }
+            ))
             Spacer()
         }
         .buttonStyle(.borderless)

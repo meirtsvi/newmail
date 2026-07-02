@@ -61,12 +61,13 @@ final class RichTextController: ObservableObject {
     /// and 0.1 step. It magnifies only how large the text appears on screen — the
     /// font sizes in the exported (sent) message are untouched.
     static let zoomRange: ClosedRange<CGFloat> = 0.5...3.0
-    private var zoom: CGFloat = 1.0
+    /// Published so the formatting bar's zoom control can show the current level.
+    @Published private(set) var zoom: CGFloat = 1.0
 
     func zoomIn() { setZoom(zoom + 0.1) }
     func zoomOut() { setZoom(zoom - 0.1) }
 
-    private func setZoom(_ value: CGFloat) {
+    func setZoom(_ value: CGFloat) {
         zoom = min(Self.zoomRange.upperBound, max(Self.zoomRange.lowerBound, value))
         scrollView?.magnification = zoom
     }

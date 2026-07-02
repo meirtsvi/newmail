@@ -104,6 +104,8 @@ struct MessagePreviewView: View {
 
     private var replyControls: some View {
         HStack(spacing: 14) {
+            ZoomControls(zoom: $zoom, range: Self.zoomRange)
+            Divider().frame(height: 16)
             Button { vm.startReply(all: false) } label: { Image(systemName: "arrowshape.turn.up.left") }
                 .help("Reply")
             Button { vm.startReply(all: true) } label: { Image(systemName: "arrowshape.turn.up.left.2") }
