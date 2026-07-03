@@ -1982,11 +1982,14 @@ final class MailboxViewModel {
     }
 
     /// Pre-computes and caches the Hebrew translation + summary for a just-popped
-    /// message in the background (warming the body cache on the way), so the
+    /// RSS feed item in the background (warming the body cache on the way), so the
     /// expanded card's Translate/Summary toggles show instantly instead of waiting
-    /// on Gemini at click time. Same idea as FeedService's pre-translation pass.
+    /// on Gemini at click time. Only feed items are pre-translated; this jumps a
+    /// popped item ahead of FeedService's oldest-first import-time queue. Regular
+    /// mail still translates on demand (and caches the result).
     private func enqueuePretranslation(_ note: MailNotification) {
-        guard GeminiConfig.apiKey != nil else { return }
+        guard note.header.from.email == FeedService.fromAddress,
+              GeminiConfig.apiKey != nil else { return }
         pretranslateQueue.append(note)
         guard !pretranslateWorkerRunning else { return }
         pretranslateWorkerRunning = true

@@ -12,7 +12,9 @@ final class FeedService {
     private static let firstAddBacklog = 10
     /// Poll cadence.
     private static let interval: TimeInterval = 300
-    private static let fromAddress = "feeds@rss.local"
+    /// Sender address of every materialized feed message; also how other code
+    /// (e.g. the popup pre-translation) recognizes a message as a feed item.
+    static let fromAddress = "feeds@rss.local"
     /// Low-specificity default so inline SVG icons (sized only by the site's CSS
     /// classes) don't balloon to full width if that stylesheet fails to load; the
     /// site's class-based rules override this when the CSS is present.
@@ -112,6 +114,10 @@ final class FeedService {
                     recordSeen(entry.key, into: &seenKeys)
                     importedAny = true
                     translationQueue.append(messageId)
+                    // Start translating right away rather than after the whole
+                    // pass, so the first item is likely ready by the time its
+                    // popup appears (a no-op if the worker is already running).
+                    startTranslationWorker()
                 } catch {
                     // Leave it unrecorded so the next pass retries it.
                     continue
