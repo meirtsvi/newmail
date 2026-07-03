@@ -81,6 +81,9 @@ final class MailboxViewModel {
     @ObservationIgnored private var notificationPanel: NotificationPanelController?
     // Per-popup auto-dismiss timers (cancelled if the user starts a reply).
     @ObservationIgnored private var dismissTasks: [String: Task<Void, Never>] = [:]
+    // Popups queued for Hebrew pre-translation, worked one at a time.
+    @ObservationIgnored private var pretranslateQueue: [MailNotification] = []
+    @ObservationIgnored private var pretranslateWorkerRunning = false
     private static let maxNotifications = 5
     private static let autoDismissSeconds = 10
     /// App Group shared with the Share extension; must match both targets' entitlements.
@@ -1967,13 +1970,50 @@ final class MailboxViewModel {
 
     private func presentNotification(_ header: MessageHeader, accountId: String) {
         guard !notifications.contains(where: { $0.id == header.id }) else { return }
-        notifications.insert(MailNotification(header: header, accountId: accountId), at: 0)
+        let note = MailNotification(header: header, accountId: accountId)
+        notifications.insert(note, at: 0)
         if notifications.count > Self.maxNotifications {
             notifications.removeLast(notifications.count - Self.maxNotifications)
         }
         syncNotificationPanel()
         // Auto-dismiss the card after a few seconds (unless the user starts a reply).
         scheduleAutoDismiss(header.id)
+        enqueuePretranslation(note)
+    }
+
+    /// Pre-computes and caches the Hebrew translation + summary for a just-popped
+    /// message in the background (warming the body cache on the way), so the
+    /// expanded card's Translate/Summary toggles show instantly instead of waiting
+    /// on Gemini at click time. Same idea as FeedService's pre-translation pass.
+    private func enqueuePretranslation(_ note: MailNotification) {
+        guard GeminiConfig.apiKey != nil else { return }
+        pretranslateQueue.append(note)
+        guard !pretranslateWorkerRunning else { return }
+        pretranslateWorkerRunning = true
+        Task { [weak self] in
+            while let next = self?.dequeuePretranslation() {
+                await self?.pretranslate(next)
+            }
+            self?.pretranslateWorkerRunning = false
+        }
+    }
+
+    private func dequeuePretranslation() -> MailNotification? {
+        pretranslateQueue.isEmpty ? nil : pretranslateQueue.removeFirst()
+    }
+
+    private func pretranslate(_ note: MailNotification) async {
+        guard let body = await notificationBody(note) else { return }
+        let existing = store.cachedTranslation(id: note.id)
+        if existing.translated == nil,
+           let translated = try? await TranslationService.shared.translateHTMLToHebrew(body.html) {
+            store.saveTranslation(id: note.id, translated: translated)
+        }
+        if existing.summary == nil,
+           let summary = try? await TranslationService.shared.summarizeInHebrew(
+               plainText: body.plainText, html: body.html) {
+            store.saveTranslation(id: note.id, summary: summary)
+        }
     }
 
     /// (Re)starts a card's auto-dismiss timer. Called when a card first appears and
