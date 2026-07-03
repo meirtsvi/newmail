@@ -1,8 +1,9 @@
 import SwiftUI
 import AppKit
 
-/// The Settings (⌘,) window: manage the list of RSS/Atom feed URLs and, when more
-/// than one Gmail account is configured, choose which one receives feed items.
+/// The Settings (⌘,) window: re-run Google sign-in (fixes 401s from an expired or
+/// revoked token), manage the list of RSS/Atom feed URLs and, when more than one
+/// Gmail account is configured, choose which one receives feed items.
 struct FeedSettingsView: View {
     @Environment(MailboxViewModel.self) private var vm
     @AppStorage("feedAccountId") private var feedAccountId = ""
@@ -10,6 +11,34 @@ struct FeedSettingsView: View {
 
     var body: some View {
         Form {
+            Section("Google account") {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(vm.gmailSessions.first.map { $0.account.email.isEmpty ? $0.account.displayName : $0.account.email } ?? "Google")
+                        if let message = vm.authMessage {
+                            Text(message)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    Button {
+                        Task { await vm.signInForWriteAccess() }
+                    } label: {
+                        if vm.isSigningIn {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.small)
+                                Text("Signing in…")
+                            }
+                        } else {
+                            Text("Sign in again…")
+                        }
+                    }
+                    .disabled(vm.isSigningIn)
+                    .help("Re-run the Google sign-in in your browser to fix authorization errors")
+                }
+            }
+
             if vm.gmailSessions.count > 1 {
                 Section("Deliver to") {
                     Picker("Gmail account", selection: $feedAccountId) {
