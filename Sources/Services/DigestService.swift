@@ -1,10 +1,10 @@
 import Foundation
 import SwiftData
 
-/// Builds the on-demand Hebrew newsletter digest: collects every newsletter-labeled
-/// message no previous digest has covered (across Gmail accounts), has Gemini merge
-/// duplicate stories and summarize everything into one RTL Hebrew page — covering
-/// every item, with all source links — and delivers it as a real Inbox message via
+/// Builds the on-demand Hebrew newsletter digest: collects the last week's
+/// newsletter-labeled messages no previous digest has covered (across Gmail
+/// accounts), has Gemini — in small coverage-checked batches — merge duplicate
+/// stories and summarize everything into one RTL Hebrew page, and delivers it via
 /// `MIMEBuilder` + `importRawMessage` (the same machinery behind RSS items). A
 /// `DigestRecord` remembers the covered messages for the "Delete source mails"
 /// button and to keep them out of the next digest.
@@ -24,6 +24,15 @@ final class DigestService {
     /// (e.g. a daily AI roundup) pack many distinct stories into one mail, and a
     /// tight cap silently drops the stories in the truncated tail.
     private static let maxItemChars = 12000
+    /// How far back sources reach. Marking a sender labels its entire history —
+    /// without a window one digest would sweep a year of archived newsletters
+    /// (real but ancient stories that read as hallucinations).
+    private static let sourceWindow: TimeInterval = 7 * 24 * 3600
+    /// Batch limits per Gemini call. One call over dozens of messages exceeds
+    /// what the model reliably covers — items silently fall out. Small batches
+    /// plus a per-batch coverage retry make message-level coverage dependable.
+    private static let maxBatchItems = 8
+    private static let maxBatchChars = 60_000
 
     private let store: MailStore
     private let context: ModelContext
@@ -40,17 +49,17 @@ final class DigestService {
         destination: MailProvider,
         progress: @escaping (String) -> Void
     ) async throws -> (digestId: String, sourceCount: Int)? {
-        // Sources: every newsletter-labeled message a prior digest hasn't covered.
-        // No date window — marking a sender labels its whole history, and all of
-        // it belongs in the next digest; the covered ledger alone is what makes
-        // an immediate re-run find nothing new.
+        // Sources: newsletter-labeled messages from the last week that no prior
+        // digest covered. The ledger keeps an immediate re-run empty; the window
+        // keeps a newly-marked sender's multi-year history out.
         let records = (try? context.fetch(FetchDescriptor<DigestRecord>())) ?? []
         let covered = Set(records.flatMap { $0.sources.map(\.messageId) })
+        let since = Date().addingTimeInterval(-Self.sourceWindow)
 
         var sources: [(account: SourceAccount, header: MessageHeader)] = []
         for account in accounts {
             for header in store.headers(withLabel: account.labelId, accountId: account.accountId,
-                                        since: .distantPast)
+                                        since: since)
             where header.from.email != Self.fromAddress && !covered.contains(header.id) {
                 sources.append((account, header))
             }
@@ -74,12 +83,35 @@ final class DigestService {
             ])
         }
 
-        progress("Digest: summarizing \(items.count) item\(items.count == 1 ? "" : "s") with Gemini…")
-        let output = try await summarize(items)
-        let uncovered = sources.enumerated().filter { !output.covered.contains($0.offset) }
-        let html = Self.assemble(digestBody: output.html,
+        // Summarize in small batches, re-asking once per batch for anything the
+        // model failed to cover. Coverage is checked per message index, so a
+        // dropped message can't slip through silently — the worst case is the
+        // (now rare) fallback list, never a missing item.
+        let batches = Self.packBatches(items)
+        var sections: [String] = []
+        var uncoveredIndexes: [Int] = []
+        var lastError: Error?
+        for (number, batch) in batches.enumerated() {
+            progress("Digest: summarizing part \(number + 1) of \(batches.count)…")
+            var pending = batch
+            for _ in 0..<2 {
+                do {
+                    let output = try await summarize(pending.map { items[$0] })
+                    sections.append(output.html)
+                    pending = pending.filter { !output.covered.contains($0) }
+                } catch {
+                    lastError = error
+                    break
+                }
+                if pending.isEmpty { break }
+            }
+            uncoveredIndexes.append(contentsOf: pending)
+        }
+        if sections.isEmpty, let lastError { throw lastError }
+        let uncovered = uncoveredIndexes.sorted().map { (items[$0], sources[$0].header) }
+        let html = Self.assemble(digestBody: sections.joined(separator: "\n"),
                                  itemCount: sources.count,
-                                 uncovered: uncovered.map { (items[$0.offset], $0.element.header) })
+                                 uncovered: uncovered)
 
         progress("Digest: delivering to the Inbox…")
         let to = destination.accountEmail.isEmpty ? Self.fromAddress : destination.accountEmail
@@ -107,6 +139,27 @@ final class DigestService {
     }
 
     // MARK: - Gemini
+
+    /// Groups item indexes into batches bounded by item count and total chars
+    /// (same idea as the translator's `packBatches`).
+    private static func packBatches(_ items: [[String: Any]]) -> [[Int]] {
+        var batches: [[Int]] = []
+        var current: [Int] = []
+        var currentChars = 0
+        for (i, item) in items.enumerated() {
+            let size = (item["text"] as? String)?.count ?? 0
+            if !current.isEmpty && (currentChars + size > maxBatchChars || current.count >= maxBatchItems) {
+                batches.append(current)
+                current = [i]
+                currentChars = size
+            } else {
+                current.append(i)
+                currentChars += size
+            }
+        }
+        if !current.isEmpty { batches.append(current) }
+        return batches
+    }
 
     private struct DigestOutput: Decodable {
         let html: String
