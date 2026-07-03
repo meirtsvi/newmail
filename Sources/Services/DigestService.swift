@@ -2,9 +2,9 @@ import Foundation
 import SwiftData
 
 /// Builds the on-demand Hebrew newsletter digest: collects the last week's
-/// newsletter-labeled messages no previous digest has covered (across Gmail
-/// accounts), has Gemini — in small coverage-checked batches — merge duplicate
-/// stories and summarize everything into one RTL Hebrew page, and delivers it via
+/// newsletter-labeled messages still sitting in the Inbox that no previous digest
+/// has covered (across Gmail accounts), has Gemini — in small coverage-checked
+/// batches — merge duplicate stories into one RTL Hebrew page, and delivers it via
 /// `MIMEBuilder` + `importRawMessage` (the same machinery behind RSS items). A
 /// `DigestRecord` remembers the covered messages for the "Delete source mails"
 /// button and to keep them out of the next digest.

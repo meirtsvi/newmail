@@ -198,20 +198,29 @@ final class MailStore {
         return rows.map(\.id)
     }
 
-    /// Cached headers in `accountId` carrying `labelId`, dated after `since`
-    /// (oldest-first) — the digest's source set. Trashed/spam rows are skipped.
+    /// Cached headers in `accountId` carrying `labelId` that are still in the
+    /// Inbox, dated after `since` (oldest-first) — the digest's source set.
+    /// Mail moved to a folder, archived, trashed, or marked spam is excluded:
+    /// the digest covers only what's sitting in the Inbox.
     func headers(withLabel labelId: String, accountId: String, since: Date) -> [MessageHeader] {
         let needle = ",\(labelId),"
         let rows = (try? context.fetch(
             FetchDescriptor<CachedMessage>(
+                // Only the narrowing conditions live in the #Predicate — piling
+                // the folder checks in too blows the macro's type-check budget.
                 predicate: #Predicate {
                     $0.accountId == accountId && $0.labelIdsRaw.contains(needle) && $0.date > since
-                        && !$0.labelIdsRaw.contains(",TRASH,") && !$0.labelIdsRaw.contains(",SPAM,")
                 },
                 sortBy: [SortDescriptor(\.date, order: .forward)]
             )
         )) ?? []
-        return rows.map(Self.header(from:))
+        return rows
+            .filter {
+                $0.labelIdsRaw.contains(",INBOX,")
+                    && !$0.labelIdsRaw.contains(",TRASH,")
+                    && !$0.labelIdsRaw.contains(",SPAM,")
+            }
+            .map(Self.header(from:))
     }
 
     private func mutate(ids: [String], _ change: (CachedMessage) -> Void) {
