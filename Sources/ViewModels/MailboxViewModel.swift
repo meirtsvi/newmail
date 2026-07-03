@@ -1871,9 +1871,9 @@ final class MailboxViewModel {
     // MARK: - Newsletter digest
 
     /// Generates the on-demand Hebrew digest: every newsletter-category message
-    /// (all Gmail accounts) since the last digest, deduplicated and summarized by
-    /// Gemini, delivered as a real Inbox message that is then selected in the list.
-    /// Progress shows in the status bar (same slot as cleanup).
+    /// (all Gmail accounts) no previous digest has covered, deduplicated and
+    /// summarized by Gemini, delivered as a real Inbox message that is then
+    /// selected in the list. Progress shows in the status bar (same slot as cleanup).
     func generateDigest() async {
         guard !isGeneratingDigest else { return }
         guard GeminiConfig.isConfigured else {

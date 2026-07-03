@@ -240,8 +240,8 @@ final class NewsletterRule {
 }
 
 /// Maps a generated digest message to the newsletter messages it covered, so the
-/// digest's "Delete source mails" button knows exactly what to trash. The newest
-/// record's `createdAt` is also the watermark the next digest starts from.
+/// digest's "Delete source mails" button knows exactly what to trash — and so the
+/// next digest covers only messages no earlier digest has.
 /// Sources are "accountId\u{1}messageId" pairs joined by ",".
 @Model
 final class DigestRecord {

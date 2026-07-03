@@ -2,12 +2,12 @@ import Foundation
 import SwiftData
 
 /// Builds the on-demand Hebrew newsletter digest: collects every newsletter-labeled
-/// message since the previous digest (across Gmail accounts), has Gemini merge
+/// message no previous digest has covered (across Gmail accounts), has Gemini merge
 /// duplicate stories and summarize everything into one RTL Hebrew page — covering
 /// every item, with all source links — and delivers it as a real Inbox message via
 /// `MIMEBuilder` + `importRawMessage` (the same machinery behind RSS items). A
 /// `DigestRecord` remembers the covered messages for the "Delete source mails"
-/// button and serves as the next run's watermark.
+/// button and to keep them out of the next digest.
 @MainActor
 final class DigestService {
 
@@ -20,12 +20,6 @@ final class DigestService {
 
     /// Sender of every digest message; how the reading pane recognizes a digest.
     static let fromAddress = "digest@newmail.local"
-    /// How far back the first digest reaches when no watermark exists yet.
-    private static let firstRunWindow: TimeInterval = 24 * 3600
-    /// Slack behind the watermark: feed items are imported with their original
-    /// publication date, so an item fetched after the last digest can be *dated*
-    /// before it. Reaching back and excluding already-covered ids closes that gap.
-    private static let watermarkSlack: TimeInterval = 48 * 3600
     /// Per-item text budget sent to Gemini (full articles can be very long).
     private static let maxItemChars = 2500
 
@@ -44,17 +38,17 @@ final class DigestService {
         destination: MailProvider,
         progress: @escaping (String) -> Void
     ) async throws -> (digestId: String, sourceCount: Int)? {
-        // Sources: newsletter-labeled messages newer than the watermark (with
-        // slack for late-arriving feed items), minus anything a prior digest
-        // already covered — so re-running immediately finds nothing new.
+        // Sources: every newsletter-labeled message a prior digest hasn't covered.
+        // No date window — marking a sender labels its whole history, and all of
+        // it belongs in the next digest; the covered ledger alone is what makes
+        // an immediate re-run find nothing new.
         let records = (try? context.fetch(FetchDescriptor<DigestRecord>())) ?? []
         let covered = Set(records.flatMap { $0.sources.map(\.messageId) })
-        let since = records.map(\.createdAt).max().map { $0.addingTimeInterval(-Self.watermarkSlack) }
-            ?? Date().addingTimeInterval(-Self.firstRunWindow)
 
         var sources: [(account: SourceAccount, header: MessageHeader)] = []
         for account in accounts {
-            for header in store.headers(withLabel: account.labelId, accountId: account.accountId, since: since)
+            for header in store.headers(withLabel: account.labelId, accountId: account.accountId,
+                                        since: .distantPast)
             where header.from.email != Self.fromAddress && !covered.contains(header.id) {
                 sources.append((account, header))
             }

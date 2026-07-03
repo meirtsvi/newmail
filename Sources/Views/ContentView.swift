@@ -113,7 +113,9 @@ private struct ToolbarSearchField: View {
                     Task { await vm.clearSearch() }
                     return .handled
                 }
-                .frame(minWidth: 700)
+                // 620 (was 700) makes room for the Newsletters + Digest toolbar
+                // buttons; any wider and the search field falls into the » menu.
+                .frame(minWidth: 620)
             if !vm.searchText.isEmpty {
                 Button { Task { await vm.clearSearch() } } label: {
                     Image(systemName: "xmark.circle.fill")
