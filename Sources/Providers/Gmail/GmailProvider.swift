@@ -73,7 +73,12 @@ final class GmailProvider: MailProvider {
     func listFolders() async throws -> [MailFolder] {
         let data = try await request("labels")
         let list = try JSONDecoder().decode(GmailAPI.LabelsList.self, from: data)
-        let shown = list.labels.filter { Self.isFolderLabel($0) }
+        // The Newsletter category label is surfaced via the list's Category column
+        // and filter (not as a folder), so keep it out of the sidebar tree.
+        let shown = list.labels.filter {
+            Self.isFolderLabel($0)
+                && $0.name.caseInsensitiveCompare(NewsletterCategory.labelName) != .orderedSame
+        }
 
         // Build folders directly from the single labels call (no counts yet) so
         // the sidebar populates immediately and never depends on count requests.
@@ -470,6 +475,14 @@ final class GmailProvider: MailProvider {
 
     func markNotSpam(ids: [String]) async throws {
         try await batchModify(ids: ids, add: ["INBOX"], remove: ["SPAM"])
+    }
+
+    /// Adds or removes a single label on the messages (used by the Newsletter
+    /// category, whose label doesn't behave like a folder move).
+    func setLabel(ids: [String], labelId: String, on: Bool) async throws {
+        try await batchModify(ids: ids,
+                              add: on ? [labelId] : [],
+                              remove: on ? [] : [labelId])
     }
 
     private func batchModify(ids: [String], add: [String], remove: [String]) async throws {

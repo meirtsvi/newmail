@@ -246,10 +246,10 @@ struct MessageListView: View {
                     value: \MessageHeader.attachmentSort) { msg in attachmentCell(msg) }
             .width(16)
             .customizationID("attachment")
-        TableColumn(Text("\(Image(systemName: "calendar"))").font(.caption),
-                    value: \MessageHeader.calendarSort) { msg in calendarCell(msg) }
+        TableColumn(Text("\(Image(systemName: "tag"))").font(.caption),
+                    value: \MessageHeader.categorySort) { msg in categoryCell(msg) }
             .width(16)
-            .customizationID("calendar")
+            .customizationID("category")
         TableColumn("From", value: \MessageHeader.from.display) { msg in fromCell(msg) }
             .width(min: 120, ideal: 240)
             .customizationID("from")
@@ -365,10 +365,14 @@ struct MessageListView: View {
         .modifier(rowInteraction(msg))
     }
 
-    private func calendarCell(_ msg: MessageHeader) -> some View {
+    /// Category column: calendar events keep their icon, newsletters get theirs,
+    /// regular mail shows nothing. Calendar wins when a message is somehow both.
+    private func categoryCell(_ msg: MessageHeader) -> some View {
         Group {
             if vm.isCalendarEvent(msg.id) {
                 Image(systemName: "calendar").font(.caption).foregroundStyle(.secondary).help("Calendar event")
+            } else if vm.isNewsletterMessage(msg) {
+                Image(systemName: "newspaper").font(.caption).foregroundStyle(.secondary).help("Newsletter")
             }
         }
         .modifier(rowInteraction(msg))

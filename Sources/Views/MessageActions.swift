@@ -174,6 +174,14 @@ struct MessageContextMenu: View {
                 Button("Mark Unread") { Task { await vm.markRead(ids, read: false) } }
             }
             Button("Flag") { Task { await vm.toggleFlag(ids) } }
+            if ids.count == 1, let entry = vm.newsletterMenuEntry(for: ids[0]) {
+                switch entry {
+                case .add(let title):
+                    Button(title) { Task { await vm.addNewsletterRule(forMessage: ids[0]) } }
+                case .remove(let title):
+                    Button(title) { Task { await vm.removeNewsletterRule(forMessage: ids[0]) } }
+                }
+            }
             Menu("Move to") { MoveMenu(vm: vm, ids: ids) }
             Menu("Snooze") { SnoozeMenu(vm: vm, ids: ids) }
             Divider()

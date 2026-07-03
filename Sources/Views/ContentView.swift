@@ -202,6 +202,13 @@ struct StatusBar: View {
             Image(systemName: "checkmark.circle")
                 .foregroundStyle(.secondary)
             Text(result).foregroundStyle(.secondary).lineLimit(1)
+        } else if vm.isGeneratingDigest {
+            ProgressView().controlSize(.small)
+            Text(vm.digestProgress ?? "Generating digest…").foregroundStyle(.secondary)
+        } else if let result = vm.digestResult {
+            Image(systemName: "checkmark.circle")
+                .foregroundStyle(.secondary)
+            Text(result).foregroundStyle(.secondary).lineLimit(1)
         } else if vm.isSearchInProgress {
             ProgressView().controlSize(.small)
             Text("Searching…").foregroundStyle(.secondary)

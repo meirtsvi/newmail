@@ -78,6 +78,12 @@ final class FeedService {
         let subscriptions = (try? context.fetch(FetchDescriptor<FeedSubscription>())) ?? []
         guard !subscriptions.isEmpty else { return }
         var seenKeys = Set((try? context.fetch(FetchDescriptor<SeenFeedItem>()))?.map(\.key) ?? [])
+        // Feeds in the Newsletter category: their items get the label at import.
+        let newsletterFeedURLs = Set(
+            ((try? context.fetch(FetchDescriptor<NewsletterRule>())) ?? [])
+                .filter { $0.kindRaw == "feed" }
+                .map(\.key)
+        )
 
         var importedAny = false
         for sub in subscriptions {
@@ -111,6 +117,9 @@ final class FeedService {
             for entry in toImport {
                 do {
                     let messageId = try await importItem(entry.item, feedTitle: displayTitle)
+                    if newsletterFeedURLs.contains(sub.url) {
+                        await applyNewsletterLabel(to: messageId)
+                    }
                     recordSeen(entry.key, into: &seenKeys)
                     importedAny = true
                     translationQueue.append(messageId)
@@ -200,6 +209,20 @@ final class FeedService {
         guard !missing.isEmpty else { return }
         translationQueue.append(contentsOf: missing)
         startTranslationWorker()
+    }
+
+    /// Id of the feed account's "Newsletter" label, resolved once per service.
+    private var newsletterLabelId: String?
+
+    /// Labels a just-imported item of a Newsletter-category feed. Best-effort:
+    /// a miss here is corrected by the view model's rule pass on the next sync.
+    private func applyNewsletterLabel(to messageId: String) async {
+        guard let gmail = provider as? GmailProvider else { return }
+        if newsletterLabelId == nil {
+            newsletterLabelId = try? await provider.ensureFolder(named: NewsletterCategory.labelName)
+        }
+        guard let labelId = newsletterLabelId else { return }
+        try? await gmail.setLabel(ids: [messageId], labelId: labelId, on: true)
     }
 
     private func recordSeen(_ key: String, into seenKeys: inout Set<String>) {

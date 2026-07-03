@@ -49,7 +49,7 @@ final class TranslationService {
             text = try await session.innerText().trimmingCharacters(in: .whitespacesAndNewlines)
         }
         guard !text.isEmpty else { throw TranslationError.emptyInput }
-        let out = try await geminiGenerate(system: Self.summarySystem, userText: text, jsonArraySchema: false)
+        let out = try await geminiGenerate(system: Self.summarySystem, userText: text)
         return Self.wrapSummary(out)
     }
 
@@ -98,7 +98,8 @@ final class TranslationService {
 
         for attempt in 0..<3 {
             do {
-                let text = try await geminiGenerate(system: Self.translationSystem, userText: input, jsonArraySchema: true)
+                let text = try await geminiGenerate(system: Self.translationSystem, userText: input,
+                                                    responseSchema: ["type": "ARRAY", "items": ["type": "STRING"]])
                 if let data = text.data(using: .utf8),
                    let parsed = try? JSONDecoder().decode([String].self, from: data),
                    parsed.count == texts.count {
@@ -117,7 +118,10 @@ final class TranslationService {
 
     // MARK: - Gemini REST
 
-    private func geminiGenerate(system: String, userText: String, jsonArraySchema: Bool) async throws -> String {
+    /// One Gemini `generateContent` call. Pass a `responseSchema` to force JSON
+    /// output of that shape (translation uses a string array; the digest an object).
+    /// Internal so other Gemini-backed features (e.g. the digest) reuse one client.
+    func geminiGenerate(system: String, userText: String, responseSchema: [String: Any]? = nil) async throws -> String {
         guard let apiKey = GeminiConfig.apiKey else { throw TranslationError.notConfigured }
 
         var components = URLComponents(string:
@@ -129,9 +133,9 @@ final class TranslationService {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         var generationConfig: [String: Any] = ["temperature": 0.2]
-        if jsonArraySchema {
+        if let responseSchema {
             generationConfig["responseMimeType"] = "application/json"
-            generationConfig["responseSchema"] = ["type": "ARRAY", "items": ["type": "STRING"]]
+            generationConfig["responseSchema"] = responseSchema
         }
         let payload: [String: Any] = [
             "systemInstruction": ["parts": [["text": system]]],

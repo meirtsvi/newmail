@@ -58,6 +58,16 @@ struct MessageDetailView: View {
                                   html: body.html, plainText: body.plainText)
                 Divider().frame(height: 16)
             }
+            if let count = vm.digestSourceCount(for: header) {
+                Button {
+                    Task { await vm.deleteDigestSources(for: header) }
+                } label: {
+                    Label("Delete sources (\(count))", systemImage: "trash")
+                        .labelStyle(.titleAndIcon)
+                }
+                .help("Trash the \(count) newsletter messages this digest covers")
+                Divider().frame(height: 16)
+            }
             Button { reply(header, all: false) } label: { Image(systemName: "arrowshape.turn.up.left") }
                 .help("Reply")
             Button { reply(header, all: true) } label: { Image(systemName: "arrowshape.turn.up.left.2") }

@@ -217,6 +217,45 @@ final class SeenFeedItem {
     }
 }
 
+// MARK: - Newsletter category
+
+/// A user-defined rule marking mail as "Newsletter": every message from a sender
+/// (or every item of an RSS feed) carries the Newsletter Gmail label, past and
+/// future. `key` is the sender email (lowercased) for sender rules, or the feed's
+/// URL for feed rules (all feed items share one sender address, so the feed URL —
+/// resolved from the From display name via `FeedSubscription` — is the stable key).
+@Model
+final class NewsletterRule {
+    @Attribute(.unique) var key: String
+    var kindRaw: String            // "sender" | "feed"
+    var displayName: String        // shown in menus: the sender email or feed title
+    var createdAt: Date
+
+    init(key: String, kindRaw: String, displayName: String, createdAt: Date = .init()) {
+        self.key = key
+        self.kindRaw = kindRaw
+        self.displayName = displayName
+        self.createdAt = createdAt
+    }
+}
+
+/// Maps a generated digest message to the newsletter messages it covered, so the
+/// digest's "Delete source mails" button knows exactly what to trash. The newest
+/// record's `createdAt` is also the watermark the next digest starts from.
+/// Sources are "accountId\u{1}messageId" pairs joined by ",".
+@Model
+final class DigestRecord {
+    @Attribute(.unique) var digestMessageId: String
+    var sourcesRaw: String
+    var createdAt: Date
+
+    init(digestMessageId: String, sourcesRaw: String, createdAt: Date = .init()) {
+        self.digestMessageId = digestMessageId
+        self.sourcesRaw = sourcesRaw
+        self.createdAt = createdAt
+    }
+}
+
 // MARK: - Container
 
 enum Persistence {
@@ -225,6 +264,7 @@ enum Persistence {
             SnoozeRecord.self, CachedFolder.self, CachedMessage.self, CachedBody.self,
             PersistedAccount.self, CachedContact.self,
             FeedSubscription.self, SeenFeedItem.self, CachedTranslation.self,
+            NewsletterRule.self, DigestRecord.self,
         ])
         // Versioned store file: the multi-account schema is incompatible with the
         // single-account one, and the cache is disposable (re-fetched from the

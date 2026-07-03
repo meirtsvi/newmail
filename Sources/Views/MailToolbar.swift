@@ -104,6 +104,34 @@ struct MailToolbar: ToolbarContent {
             }
             .keyboardShortcut("r", modifiers: [.command, .option])
             .help("Sync (⌥⌘R)")
+
+            Button { vm.cycleNewsletterFilter() } label: {
+                Label("Newsletters", systemImage: newsletterFilterIcon)
+            }
+            .help(newsletterFilterHelp)
+
+            Button { Task { await vm.generateDigest() } } label: {
+                Label("Digest", systemImage: "sparkles")
+            }
+            .disabled(vm.isGeneratingDigest)
+            .help("Generate a Hebrew digest of new newsletter items")
+        }
+    }
+
+    /// Tristate filter icon: all mail / only newsletters / everything but newsletters.
+    private var newsletterFilterIcon: String {
+        switch vm.newsletterFilter {
+        case .all: return "newspaper"
+        case .onlyNewsletters: return "newspaper.fill"
+        case .noNewsletters: return "newspaper.circle"
+        }
+    }
+
+    private var newsletterFilterHelp: String {
+        switch vm.newsletterFilter {
+        case .all: return "Showing all mail — click to show only newsletters"
+        case .onlyNewsletters: return "Showing only newsletters — click to hide newsletters"
+        case .noNewsletters: return "Hiding newsletters — click to show all mail"
         }
     }
 

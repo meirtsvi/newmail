@@ -176,6 +176,44 @@ final class MailStore {
         }
     }
 
+    /// Adds/removes a label on the cached rows (mirrors a server-side batchModify).
+    func updateLabel(ids: [String], label: String, present: Bool) {
+        mutate(ids: ids) { row in
+            row.labelIdsRaw = Self.adjustLabel(row.labelIdsRaw, label, present: present)
+        }
+    }
+
+    /// Ids of cached messages in `accountId` from the given sender (optionally
+    /// narrowed to a From display name — how RSS feed items are told apart, since
+    /// they all share one sender address).
+    func messageIds(fromEmail: String, fromName: String? = nil, accountId: String) -> [String] {
+        let rows = (try? context.fetch(
+            FetchDescriptor<CachedMessage>(
+                predicate: #Predicate { $0.accountId == accountId && $0.fromEmail == fromEmail }
+            )
+        )) ?? []
+        if let fromName {
+            return rows.filter { $0.fromName == fromName }.map(\.id)
+        }
+        return rows.map(\.id)
+    }
+
+    /// Cached headers in `accountId` carrying `labelId`, dated after `since`
+    /// (oldest-first) — the digest's source set. Trashed/spam rows are skipped.
+    func headers(withLabel labelId: String, accountId: String, since: Date) -> [MessageHeader] {
+        let needle = ",\(labelId),"
+        let rows = (try? context.fetch(
+            FetchDescriptor<CachedMessage>(
+                predicate: #Predicate {
+                    $0.accountId == accountId && $0.labelIdsRaw.contains(needle) && $0.date > since
+                        && !$0.labelIdsRaw.contains(",TRASH,") && !$0.labelIdsRaw.contains(",SPAM,")
+                },
+                sortBy: [SortDescriptor(\.date, order: .forward)]
+            )
+        )) ?? []
+        return rows.map(Self.header(from:))
+    }
+
     private func mutate(ids: [String], _ change: (CachedMessage) -> Void) {
         guard !ids.isEmpty else { return }
         let rows = (try? context.fetch(

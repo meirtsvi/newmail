@@ -156,6 +156,15 @@ final class MailboxViewModel {
     var cleanupProgress: String?
     var cleanupResult: String?
 
+    // Newsletter category: the toolbar's tristate list filter, digest-generation
+    // progress/result for the status bar, and each Gmail account's id for the
+    // "Newsletter" label (resolved lazily — created on the first rule).
+    var newsletterFilter: NewsletterFilter = .all
+    var isGeneratingDigest = false
+    var digestProgress: String?
+    var digestResult: String?
+    @ObservationIgnored private var newsletterLabelIds: [String: String] = [:]
+
     init() {}
 
     /// Provider for the currently selected account.
@@ -169,9 +178,15 @@ final class MailboxViewModel {
     }
 
     var displayedMessages: [MessageHeader] {
+        let base: [MessageHeader]
+        switch newsletterFilter {
+        case .all: base = messages
+        case .onlyNewsletters: base = messages.filter { isNewsletterMessage($0) }
+        case .noNewsletters: base = messages.filter { !isNewsletterMessage($0) }
+        }
         if let primary = sortOrder.first, primary.keyPath == \MessageHeader.flagSort {
             let flaggedFirst = primary.order == .forward
-            return messages.sorted { a, b in
+            return base.sorted { a, b in
                 if a.isFlagged != b.isFlagged {
                     return flaggedFirst ? a.isFlagged : b.isFlagged
                 }
@@ -179,17 +194,18 @@ final class MailboxViewModel {
                 return a.id < b.id
             }
         }
-        if let primary = sortOrder.first, primary.keyPath == \MessageHeader.calendarSort {
-            let eventsFirst = primary.order == .forward
-            return messages.sorted { a, b in
-                if a.isCalendarEvent != b.isCalendarEvent {
-                    return eventsFirst ? a.isCalendarEvent : b.isCalendarEvent
+        if let primary = sortOrder.first, primary.keyPath == \MessageHeader.categorySort {
+            let categorizedFirst = primary.order == .forward
+            return base.sorted { a, b in
+                if a.categorySort != b.categorySort {
+                    return categorizedFirst ? a.categorySort > b.categorySort
+                                            : a.categorySort < b.categorySort
                 }
                 if a.date != b.date { return a.date > b.date }
                 return a.id < b.id
             }
         }
-        return messages.sorted(using: stableComparators)
+        return base.sorted(using: stableComparators)
     }
 
     /// The active sort with a unique `id` tiebreaker appended so no two rows ever
@@ -213,22 +229,24 @@ final class MailboxViewModel {
     private func noteCalendar(_ body: MessageBody) {
         if body.calendar != nil {
             calendarMessageIds.insert(body.headerId)
-            applyCalendarFlags()
+            applyCategoryFlags()
         }
     }
 
     /// Hydrates the calendar-event set from already-cached bodies for the listed ids.
     private func hydrateCalendarIds() {
         calendarMessageIds.formUnion(store.calendarMessageIds(among: messages.map(\.id)))
-        applyCalendarFlags()
+        applyCategoryFlags()
     }
 
-    /// Mirrors the invite set onto the loaded headers so the calendar column reads
-    /// and (when sorted) orders correctly.
-    private func applyCalendarFlags() {
+    /// Mirrors the invite set and Newsletter-label membership onto the loaded
+    /// headers so the Category column reads and (when sorted) orders correctly.
+    private func applyCategoryFlags() {
         for i in messages.indices {
             let isEvent = calendarMessageIds.contains(messages[i].id)
             if messages[i].isCalendarEvent != isEvent { messages[i].isCalendarEvent = isEvent }
+            let isNews = isNewsletterMessage(messages[i])
+            if messages[i].isNewsletter != isNews { messages[i].isNewsletter = isNews }
         }
     }
 
@@ -244,7 +262,7 @@ final class MailboxViewModel {
             guard let self, !Task.isCancelled,
                   self.currentFolder?.id == folderId, self.currentAccountId == accountId else { return }
             self.calendarMessageIds.formUnion(ids)
-            self.applyCalendarFlags()
+            self.applyCategoryFlags()
         }
     }
 
@@ -323,6 +341,7 @@ final class MailboxViewModel {
         await startCalendarReminders()
         reloadFeedSubscriptions()
         startFeeds()
+        await resolveNewsletterLabels()
     }
 
     /// Begins the background calendar-reminder scheduler for the Google account
@@ -512,6 +531,174 @@ final class MailboxViewModel {
         feedContext.delete(subscription)
         try? feedContext.save()
         reloadFeedSubscriptions()
+    }
+
+    // MARK: - Newsletter category
+
+    /// What a newsletter rule for this message would target: the whole feed for an
+    /// RSS item (all items of that feed URL, not just this message), otherwise the
+    /// sender address. Nil for non-Gmail accounts (the label is Gmail-only) and for
+    /// feed items whose subscription can no longer be resolved.
+    private struct NewsletterTarget {
+        let key: String          // rule key: sender email (lowercased) or feed URL
+        let kindRaw: String      // "sender" | "feed"
+        let displayName: String
+        let fromEmail: String    // cache-matching fields (all feed items share one
+        let fromName: String?    // sender, so feeds also match on the display name)
+    }
+
+    private func newsletterTarget(for header: MessageHeader) -> NewsletterTarget? {
+        guard sessions.first(where: { $0.account.id == header.accountId })?.account.providerKind == .gmail
+        else { return nil }
+        if header.from.email == FeedService.fromAddress {
+            guard let sub = feedSubscriptions.first(where: { $0.title == header.from.name }) else { return nil }
+            return NewsletterTarget(key: sub.url, kindRaw: "feed", displayName: sub.title,
+                                    fromEmail: FeedService.fromAddress, fromName: sub.title)
+        }
+        let email = header.from.email.lowercased()
+        guard !email.isEmpty else { return nil }
+        return NewsletterTarget(key: email, kindRaw: "sender", displayName: header.from.email,
+                                fromEmail: header.from.email, fromName: nil)
+    }
+
+    private func newsletterRules() -> [NewsletterRule] {
+        (try? feedContext.fetch(FetchDescriptor<NewsletterRule>())) ?? []
+    }
+
+    /// Whether the message carries its account's Newsletter label.
+    func isNewsletterMessage(_ header: MessageHeader) -> Bool {
+        guard let labelId = newsletterLabelIds[header.accountId] else { return false }
+        return header.labelIds.contains(labelId)
+    }
+
+    /// The context-menu entry for this message: add or remove, with the exact
+    /// title (feed items name the feed — the rule covers the whole feed URL).
+    /// Nil when the category doesn't apply (Graph account, unresolvable feed).
+    func newsletterMenuEntry(for id: String) -> NewsletterMenuEntry? {
+        guard let header = messages.first(where: { $0.id == id }),
+              let target = newsletterTarget(for: header) else { return nil }
+        let exists = newsletterRules().contains { $0.key == target.key }
+        switch (target.kindRaw == "feed", exists) {
+        case (true, false): return .add("Add Feed “\(target.displayName)” to Newsletter Category")
+        case (true, true): return .remove("Remove Feed “\(target.displayName)” from Newsletter Category")
+        case (false, false): return .add("Add Sender to Newsletter Category")
+        case (false, true): return .remove("Remove Sender from Newsletter Category")
+        }
+    }
+
+    func addNewsletterRule(forMessage id: String) async {
+        guard let header = messages.first(where: { $0.id == id }),
+              let target = newsletterTarget(for: header) else { return }
+        if !newsletterRules().contains(where: { $0.key == target.key }) {
+            feedContext.insert(NewsletterRule(key: target.key, kindRaw: target.kindRaw,
+                                              displayName: target.displayName))
+            try? feedContext.save()
+        }
+        await setNewsletterLabel(matching: target, on: true)
+    }
+
+    func removeNewsletterRule(forMessage id: String) async {
+        guard let header = messages.first(where: { $0.id == id }),
+              let target = newsletterTarget(for: header) else { return }
+        for rule in newsletterRules() where rule.key == target.key {
+            feedContext.delete(rule)
+        }
+        try? feedContext.save()
+        await setNewsletterLabel(matching: target, on: false)
+    }
+
+    /// Applies/clears the Newsletter label on every cached message matching the
+    /// rule — server-side (batchModify), in the header cache, and on screen.
+    private func setNewsletterLabel(matching target: NewsletterTarget, on: Bool) async {
+        for session in gmailSessions {
+            let accountId = session.account.id
+            guard let gmail = session.provider as? GmailProvider,
+                  let labelId = await newsletterLabelId(accountId: accountId) else { continue }
+            let ids = store.messageIds(fromEmail: target.fromEmail, fromName: target.fromName,
+                                       accountId: accountId)
+            guard !ids.isEmpty else { continue }
+            do {
+                try await gmail.setLabel(ids: ids, labelId: labelId, on: on)
+                markLabeledLocally(ids: ids, labelId: labelId, on: on)
+            } catch {
+                statusMessage = "Couldn’t update the Newsletter category: \(error.localizedDescription)"
+            }
+        }
+        applyCategoryFlags()
+    }
+
+    /// Reflects a server-side label change in the header cache and the on-screen list.
+    private func markLabeledLocally(ids: [String], labelId: String, on: Bool) {
+        store.updateLabel(ids: ids, label: labelId, present: on)
+        let set = Set(ids)
+        for i in messages.indices where set.contains(messages[i].id) {
+            if on {
+                if !messages[i].labelIds.contains(labelId) { messages[i].labelIds.append(labelId) }
+            } else {
+                messages[i].labelIds.removeAll { $0 == labelId }
+            }
+        }
+    }
+
+    /// The account's Newsletter label id, resolving (and caching) it on first use.
+    /// The label is only created once at least one rule exists, so users who never
+    /// touch the feature never get a label added to their Gmail.
+    private func newsletterLabelId(accountId: String) async -> String? {
+        if let id = newsletterLabelIds[accountId] { return id }
+        guard !newsletterRules().isEmpty,
+              let session = gmailSessions.first(where: { $0.account.id == accountId }),
+              let id = try? await session.provider.ensureFolder(named: NewsletterCategory.labelName)
+        else { return nil }
+        newsletterLabelIds[accountId] = id
+        return id
+    }
+
+    /// Resolves each Gmail account's Newsletter label id at launch (when rules
+    /// exist), so cached headers render their category icons immediately.
+    private func resolveNewsletterLabels() async {
+        guard !newsletterRules().isEmpty else { return }
+        for session in gmailSessions {
+            _ = await newsletterLabelId(accountId: session.account.id)
+        }
+        applyCategoryFlags()
+    }
+
+    /// Labels freshly-synced headers that match a newsletter rule but don't carry
+    /// the label yet (mail that arrived since the rule was created). Fire-and-forget:
+    /// a failure is retried naturally on the next sync pass.
+    private func applyNewsletterRules(to headers: [MessageHeader], accountId: String) {
+        guard sessions.first(where: { $0.account.id == accountId })?.account.providerKind == .gmail
+        else { return }
+        let rules = newsletterRules()
+        guard !rules.isEmpty else { return }
+        let senderKeys = Set(rules.filter { $0.kindRaw == "sender" }.map(\.key))
+        let feedURLs = Set(rules.filter { $0.kindRaw == "feed" }.map(\.key))
+        let feedTitles = Set(feedSubscriptions.filter { feedURLs.contains($0.url) }.map(\.title))
+        Task { [weak self] in
+            guard let self, let labelId = await self.newsletterLabelId(accountId: accountId) else { return }
+            let matching = headers.filter { header in
+                guard !header.labelIds.contains(labelId) else { return false }
+                if header.from.email == FeedService.fromAddress {
+                    return feedTitles.contains(header.from.name)
+                }
+                return senderKeys.contains(header.from.email.lowercased())
+            }.map(\.id)
+            guard !matching.isEmpty,
+                  let gmail = self.sessions.first(where: { $0.account.id == accountId })?.provider as? GmailProvider
+            else { return }
+            guard (try? await gmail.setLabel(ids: matching, labelId: labelId, on: true)) != nil else { return }
+            self.markLabeledLocally(ids: matching, labelId: labelId, on: true)
+            self.applyCategoryFlags()
+        }
+    }
+
+    /// Cycles the toolbar filter: all → only newsletters → all without newsletters.
+    func cycleNewsletterFilter() {
+        switch newsletterFilter {
+        case .all: newsletterFilter = .onlyNewsletters
+        case .onlyNewsletters: newsletterFilter = .noNewsletters
+        case .noNewsletters: newsletterFilter = .all
+        }
     }
 
     private func updateAccountEmail(_ accountId: String, email: String) {
@@ -886,6 +1073,7 @@ final class MailboxViewModel {
             // mail that left the folder since it was last cached. Rows older than the
             // window stay; they're the not-yet-refreshed tail reachable via `loadMore`.
             pruneStale(within: serverHeaders)
+            applyNewsletterRules(to: serverHeaders, accountId: folder.accountId)
             statusMessage = nil
             // Paged to the end without navigating away: `messages` is now the complete
             // server-side contents of this folder, so reconcile the cache to evict rows
@@ -931,6 +1119,7 @@ final class MailboxViewModel {
             store.saveHeaders(page)
             hydrateCalendarIds()
             recordContacts(from: page, folder: folder)
+            applyNewsletterRules(to: page, accountId: folder.accountId)
             statusMessage = nil
         } catch {
             statusMessage = "Couldn’t load more: \(error.localizedDescription)"
@@ -967,6 +1156,7 @@ final class MailboxViewModel {
             store.saveHeaders(fresh)
             recordContacts(from: fresh, folder: folder)
             hydrateCalendarIds()
+            applyNewsletterRules(to: fresh, accountId: folder.accountId)
             statusMessage = nil
         } catch {
             statusMessage = "Couldn’t refresh \(folder.name): \(error.localizedDescription)"
@@ -1356,6 +1546,7 @@ final class MailboxViewModel {
             nextPageToken = result.nextPageToken
             activeSearchQuery = text
             store.saveHeaders(result.headers)
+            applyCategoryFlags()
             if result.headers.isEmpty {
                 searchResultSummary = "No results"
             } else {
@@ -1677,6 +1868,129 @@ final class MailboxViewModel {
         await reloadCurrentFolder()
     }
 
+    // MARK: - Newsletter digest
+
+    /// Generates the on-demand Hebrew digest: every newsletter-category message
+    /// (all Gmail accounts) since the last digest, deduplicated and summarized by
+    /// Gemini, delivered as a real Inbox message that is then selected in the list.
+    /// Progress shows in the status bar (same slot as cleanup).
+    func generateDigest() async {
+        guard !isGeneratingDigest else { return }
+        guard GeminiConfig.isConfigured else {
+            setDigestResult("Digest: add Resources/gemini.json to enable Gemini.")
+            return
+        }
+        // Deliver into the same Gmail account that receives RSS feeds.
+        let gmail = gmailSessions
+        let chosenId = UserDefaults.standard.string(forKey: "feedAccountId")
+        guard let dest = gmail.first(where: { $0.account.id == chosenId }) ?? gmail.first else {
+            setDigestResult("Digest: a Gmail account is required.")
+            return
+        }
+        isGeneratingDigest = true
+        digestResult = nil
+        digestProgress = "Digest: collecting newsletter mail…"
+        defer { isGeneratingDigest = false; digestProgress = nil }
+
+        var accounts: [DigestService.SourceAccount] = []
+        for session in gmail {
+            if let labelId = await newsletterLabelId(accountId: session.account.id) {
+                accounts.append(.init(accountId: session.account.id,
+                                      provider: session.provider, labelId: labelId))
+            }
+        }
+        guard !accounts.isEmpty else {
+            setDigestResult("Digest: no newsletter category yet — mark some mail as newsletter first.")
+            return
+        }
+
+        let service = DigestService(store: store, context: feedContext)
+        do {
+            guard let result = try await service.generate(
+                accounts: accounts,
+                destination: dest.provider,
+                progress: { [weak self] phase in self?.digestProgress = phase }
+            ) else {
+                setDigestResult("Digest: nothing new since the last digest.")
+                return
+            }
+            setDigestResult("Digest ready — \(result.sourceCount) item\(result.sourceCount == 1 ? "" : "s") covered.")
+            await focusDigestMessage(result.digestId, accountId: dest.account.id)
+        } catch {
+            setDigestResult("Digest failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Shows a digest result in the status bar, auto-clearing after a few seconds.
+    private func setDigestResult(_ message: String) {
+        digestResult = message
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(8))
+            if self?.digestResult == message { self?.digestResult = nil }
+        }
+    }
+
+    /// Opens the delivering account's Inbox and selects the fresh digest message.
+    private func focusDigestMessage(_ id: String, accountId: String) async {
+        // The digest itself isn't newsletter-labeled, so an "only newsletters"
+        // filter would hide the row we're about to select.
+        if newsletterFilter == .onlyNewsletters { newsletterFilter = .all }
+        if let inbox = foldersByAccount[accountId]?.first(where: { $0.kind == .inbox }) {
+            sidebarSelection = "acct:\(inbox.compositeId)"
+            await selectFolder(inbox)
+            if !messages.contains(where: { $0.id == id }) {
+                await refreshMessages()
+            }
+        }
+        guard messages.contains(where: { $0.id == id }) else { return }
+        selection = [id]
+        await openMessage(id)
+    }
+
+    /// Number of source messages behind a digest message, or nil when the header
+    /// isn't a digest — drives the reading pane's "Delete source mails" button.
+    func digestSourceCount(for header: MessageHeader) -> Int? {
+        guard header.from.email == DigestService.fromAddress else { return nil }
+        let count = digestRecord(for: header.id)?.sources.count ?? 0
+        return count > 0 ? count : nil
+    }
+
+    /// Trashes every message the digest covered, via each message's own account.
+    func deleteDigestSources(for header: MessageHeader) async {
+        guard let record = digestRecord(for: header.id) else { return }
+        var byAccount: [String: [String]] = [:]
+        for source in record.sources {
+            byAccount[source.accountId, default: []].append(source.messageId)
+        }
+        var deleted = 0
+        for (accountId, ids) in byAccount {
+            guard let session = sessions.first(where: { $0.account.id == accountId }) else { continue }
+            do {
+                try await session.provider.trash(ids: ids)
+                deleted += ids.count
+                let inboxId = foldersByAccount[accountId]?.first { $0.kind == .inbox }?.id
+                addTombstones(ids: ids, folderId: inboxId)
+                if currentAccountId == accountId {
+                    removeLocal(ids: ids)
+                } else {
+                    store.deleteMessages(ids: ids)
+                }
+            } catch {
+                errorMessage = "Couldn’t delete the digest’s sources: \(error.localizedDescription)"
+                return
+            }
+        }
+        setDigestResult("Deleted \(deleted) digest source message\(deleted == 1 ? "" : "s").")
+    }
+
+    private func digestRecord(for digestMessageId: String) -> DigestRecord? {
+        (try? feedContext.fetch(
+            FetchDescriptor<DigestRecord>(
+                predicate: #Predicate { $0.digestMessageId == digestMessageId }
+            )
+        ))?.first
+    }
+
     // MARK: - Compose
 
     /// Ranked address suggestions for the compose To/Cc autocomplete.
@@ -1954,6 +2268,7 @@ final class MailboxViewModel {
             // Then switching to that account paints a near-current list instead of a
             // stale one, so there's little to reconcile against the server.
             store.saveHeaders(headers)
+            applyNewsletterRules(to: headers, accountId: session.account.id)
             let currentIds = Set(headers.map(\.id))
             guard let seen = seenInboxIds[session.account.id] else {
                 seenInboxIds[session.account.id] = currentIds
@@ -2528,6 +2843,17 @@ final class MailboxViewModel {
         }
         updateDockBadge()
     }
+}
+
+/// The toolbar's tristate newsletter filter over the message list.
+enum NewsletterFilter {
+    case all, onlyNewsletters, noNewsletters
+}
+
+/// A context-menu entry for the Newsletter category, carrying its exact title.
+enum NewsletterMenuEntry {
+    case add(String)
+    case remove(String)
 }
 
 /// A newly-arrived message shown as a top-right popup card.

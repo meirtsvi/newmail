@@ -168,12 +168,24 @@ struct MessageHeader: Identifiable, Hashable {
     /// Whether this message is a calendar invitation. Derived at runtime from the
     /// view model's invite set (not from the provider), so the column can sort.
     var isCalendarEvent: Bool = false
+    /// Whether this message carries the Newsletter category label. Mirrored from
+    /// `labelIds` by the view model (which knows each account's label id), so the
+    /// Category column can render and sort on it.
+    var isNewsletter: Bool = false
 
     // Comparable sort keys for boolean columns (Bool isn't Comparable).
     var readSort: Int { isRead ? 1 : 0 }
     var flagSort: Int { isFlagged ? 1 : 0 }
     var attachmentSort: Int { hasAttachments ? 1 : 0 }
-    var calendarSort: Int { isCalendarEvent ? 1 : 0 }
+    /// Category column sort key: regular < newsletter < calendar event.
+    var categorySort: Int { isCalendarEvent ? 2 : (isNewsletter ? 1 : 0) }
+}
+
+// MARK: - Newsletter category
+
+enum NewsletterCategory {
+    /// Name of the Gmail user label backing the category (created on first use).
+    static let labelName = "Newsletter"
 }
 
 struct MailAttachment: Identifiable, Hashable, Codable {

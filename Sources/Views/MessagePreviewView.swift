@@ -71,6 +71,14 @@ struct MessagePreviewView: View {
                 replyControls
             }
             recipientsBlock(header)
+            if let count = vm.digestSourceCount(for: header) {
+                Button(role: .destructive) {
+                    Task { await vm.deleteDigestSources(for: header) }
+                } label: {
+                    Label("Delete source mails (\(count))", systemImage: "trash")
+                }
+                .help("Trash the \(count) newsletter messages this digest covers")
+            }
             if let body = vm.currentBody, !body.attachments.isEmpty {
                 AttachmentList(attachments: body.attachments)
             }
