@@ -198,12 +198,21 @@ final class MailStore {
         return rows.map(\.id)
     }
 
-    /// Cached headers in `accountId` carrying `labelId` that are still in the
-    /// Inbox, dated after `since` (oldest-first) — the digest's source set.
-    /// Mail moved to a folder, archived, trashed, or marked spam is excluded:
-    /// the digest covers only what's sitting in the Inbox.
+    /// Cached headers in `accountId` carrying `labelId` that sit in the Inbox
+    /// *proper*, dated after `since` (oldest-first) — the digest's source set.
+    /// "Inbox proper" means the INBOX label and no folder label: Gmail can list
+    /// a message in the Inbox and a folder at once, and a nested label like
+    /// "Inbox/temp" is a folder in name only — mail filed anywhere (custom
+    /// folder, Snoozed, Trash, Spam, …) is excluded.
     func headers(withLabel labelId: String, accountId: String, since: Date) -> [MessageHeader] {
         let needle = ",\(labelId),"
+        // Every sidebar folder id except the Inbox itself (and the category
+        // label being queried, defensively — it's hidden from the folder list).
+        let otherFolderIds = Set(
+            ((try? context.fetch(FetchDescriptor<CachedFolder>(
+                predicate: #Predicate { $0.accountId == accountId }
+            ))) ?? []).map(\.id)
+        ).subtracting(["INBOX", labelId])
         let rows = (try? context.fetch(
             FetchDescriptor<CachedMessage>(
                 // Only the narrowing conditions live in the #Predicate — piling
@@ -215,10 +224,10 @@ final class MailStore {
             )
         )) ?? []
         return rows
-            .filter {
-                $0.labelIdsRaw.contains(",INBOX,")
-                    && !$0.labelIdsRaw.contains(",TRASH,")
-                    && !$0.labelIdsRaw.contains(",SPAM,")
+            .filter { row in
+                guard row.labelIdsRaw.contains(",INBOX,") else { return false }
+                let labels = row.labelIdsRaw.split(separator: ",")
+                return !labels.contains { otherFolderIds.contains(String($0)) }
             }
             .map(Self.header(from:))
     }
