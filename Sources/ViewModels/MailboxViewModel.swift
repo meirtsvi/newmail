@@ -760,7 +760,12 @@ final class MailboxViewModel {
         messages = store.cachedHeaders(folderId: folder.id, accountId: folder.accountId)
         hydrateCalendarIds()
         scanCalendarEvents(for: folder)
+        // Fetch the folder's count right away, concurrently with the header load —
+        // the load can take several paged round-trips, and the sidebar's unread
+        // badge shouldn't wait behind it.
+        let countRefresh = Task { await refreshCurrentFolderCount(trustLocalList: false) }
         await loadMessages()
+        await countRefresh.value
         await refreshCurrentFolderCount()
     }
 
@@ -772,17 +777,23 @@ final class MailboxViewModel {
         }
     }
 
-    private func refreshCurrentFolderCount() async {
+    /// Refreshes the current folder's (unread, total) in the sidebar — the folder
+    /// tree and the Favorites copies — and on the Dock badge. Pass
+    /// `trustLocalList: false` while a header load is still in flight, so a list
+    /// showing only cached headers isn't mistaken for a fully loaded one.
+    private func refreshCurrentFolderCount(trustLocalList: Bool = true) async {
         guard let folder = currentFolder, let provider = currentProvider else { return }
-        var fetched = try? await provider.folderCount(id: folder.id)
-        guard currentFolder?.id == folder.id else { return }
+        let count: (unread: Int, total: Int)
         // The server's label counters lag behind deletes/moves by seconds. When the
         // folder is fully loaded on screen (no further pages), the list itself is
         // authoritative — use it, so a cleaned-out folder reads 0 immediately.
-        if !isSearching, nextPageToken == nil {
-            fetched = (unread: messages.filter { !$0.isRead }.count, total: messages.count)
+        if trustLocalList, !isSearching, nextPageToken == nil {
+            count = (unread: messages.filter { !$0.isRead }.count, total: messages.count)
+        } else {
+            guard let fetched = try? await provider.folderCount(id: folder.id),
+                  currentFolder?.id == folder.id else { return }
+            count = fetched
         }
-        guard let count = fetched else { return }
         currentFolder?.unreadCount = count.unread
         currentFolder?.totalCount = count.total
         if let i = foldersByAccount[folder.accountId]?.firstIndex(where: { $0.id == folder.id }),
@@ -792,6 +803,8 @@ final class MailboxViewModel {
             // re-render the sidebar List and can leave a stale selection highlight.
             foldersByAccount[folder.accountId]?[i].unreadCount = count.unread
             foldersByAccount[folder.accountId]?[i].totalCount = count.total
+            // Favorites hold copies of the folder rows, so refresh their badges too.
+            recomputeFavorites()
         }
         updateDockBadge()
     }
@@ -2467,6 +2480,8 @@ final class MailboxViewModel {
         if let i = foldersByAccount[folder.accountId]?.firstIndex(where: { $0.id == folder.id }) {
             foldersByAccount[folder.accountId]?[i].totalCount = newTotal
             foldersByAccount[folder.accountId]?[i].unreadCount = newUnread
+            // Favorites hold copies of the folder rows, so refresh their badges too.
+            recomputeFavorites()
         }
         updateDockBadge()
     }
