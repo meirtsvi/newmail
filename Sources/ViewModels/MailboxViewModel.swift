@@ -1986,6 +1986,22 @@ final class MailboxViewModel {
         setDigestResult("Deleted \(deleted) digest source message\(deleted == 1 ? "" : "s").")
     }
 
+    /// Number of digests remembered in the ledger (drives the Settings button).
+    var digestLedgerCount: Int {
+        (try? feedContext.fetchCount(FetchDescriptor<DigestRecord>())) ?? 0
+    }
+
+    /// Forgets every generated digest, so the next digest covers all
+    /// newsletter-category mail again — including already-digested items.
+    /// (Old digest messages lose their "Delete source mails" button.)
+    func clearDigestLedger() {
+        for record in (try? feedContext.fetch(FetchDescriptor<DigestRecord>())) ?? [] {
+            feedContext.delete(record)
+        }
+        try? feedContext.save()
+        setDigestResult("Digest history cleared — the next digest covers everything.")
+    }
+
     private func digestRecord(for digestMessageId: String) -> DigestRecord? {
         (try? feedContext.fetch(
             FetchDescriptor<DigestRecord>(

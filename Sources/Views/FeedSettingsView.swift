@@ -8,6 +8,9 @@ struct FeedSettingsView: View {
     @Environment(MailboxViewModel.self) private var vm
     @AppStorage("feedAccountId") private var feedAccountId = ""
     @State private var newFeedURL = ""
+    /// Flips after a clear so the row confirms it (the count itself is not
+    /// observable state — it's fetched from the store on each render).
+    @State private var ledgerCleared = false
 
     var body: some View {
         Form {
@@ -88,6 +91,26 @@ struct FeedSettingsView: View {
             } footer: {
                 Text("New items are added to your Gmail Inbox as unread messages, checked every 5 minutes.")
             }
+
+            Section {
+                HStack {
+                    Text(ledgerCleared
+                         ? "Digest history cleared."
+                         : "\(vm.digestLedgerCount) digest\(vm.digestLedgerCount == 1 ? "" : "s") remembered")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Clear Digest History") {
+                        vm.clearDigestLedger()
+                        ledgerCleared = true
+                    }
+                    .disabled(ledgerCleared || vm.digestLedgerCount == 0)
+                    .help("Forget which items past digests covered")
+                }
+            } header: {
+                Text("Digest")
+            } footer: {
+                Text("The digest only covers newsletter items it hasn't covered before. Clearing the history makes the next digest include everything again (old digest messages lose their “Delete source mails” button).")
+            }
         }
         .formStyle(.grouped)
         .frame(width: 760, height: 440)
@@ -96,6 +119,7 @@ struct FeedSettingsView: View {
         .onAppear {
             if feedAccountId.isEmpty { feedAccountId = vm.gmailSessions.first?.account.id ?? "" }
             vm.reloadFeedSubscriptions()
+            ledgerCleared = false
         }
     }
 
