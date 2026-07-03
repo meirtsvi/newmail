@@ -198,21 +198,14 @@ final class MailStore {
         return rows.map(\.id)
     }
 
-    /// Cached headers in `accountId` carrying `labelId` that sit in the Inbox
-    /// *proper*, dated after `since` (oldest-first) — the digest's source set.
-    /// "Inbox proper" means the INBOX label and no folder label: Gmail can list
-    /// a message in the Inbox and a folder at once, and a nested label like
-    /// "Inbox/temp" is a folder in name only — mail filed anywhere (custom
-    /// folder, Snoozed, Trash, Spam, …) is excluded.
+    /// Cached headers in `accountId` carrying `labelId` that the Inbox view
+    /// shows, dated after `since` (oldest-first) — the digest's source set.
+    /// Matches the Inbox listing exactly (INBOX label, minus Trash/Spam): what
+    /// you see in the Inbox is what gets digested. A message Gmail lists both
+    /// in the Inbox and in a folder (labeled rather than moved) counts as in
+    /// the Inbox; mail properly moved to a folder loses INBOX and drops out.
     func headers(withLabel labelId: String, accountId: String, since: Date) -> [MessageHeader] {
         let needle = ",\(labelId),"
-        // Every sidebar folder id except the Inbox itself (and the category
-        // label being queried, defensively — it's hidden from the folder list).
-        let otherFolderIds = Set(
-            ((try? context.fetch(FetchDescriptor<CachedFolder>(
-                predicate: #Predicate { $0.accountId == accountId }
-            ))) ?? []).map(\.id)
-        ).subtracting(["INBOX", labelId])
         let rows = (try? context.fetch(
             FetchDescriptor<CachedMessage>(
                 // Only the narrowing conditions live in the #Predicate — piling
@@ -224,10 +217,10 @@ final class MailStore {
             )
         )) ?? []
         return rows
-            .filter { row in
-                guard row.labelIdsRaw.contains(",INBOX,") else { return false }
-                let labels = row.labelIdsRaw.split(separator: ",")
-                return !labels.contains { otherFolderIds.contains(String($0)) }
+            .filter {
+                $0.labelIdsRaw.contains(",INBOX,")
+                    && !$0.labelIdsRaw.contains(",TRASH,")
+                    && !$0.labelIdsRaw.contains(",SPAM,")
             }
             .map(Self.header(from:))
     }
