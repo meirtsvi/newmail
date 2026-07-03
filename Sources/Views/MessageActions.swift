@@ -68,8 +68,11 @@ struct MoveMenu: View {
     var quickOnly = false
 
     private var folders: [MailFolder] {
-        quickOnly ? vm.quickMoveForCurrentAccount
-                  : vm.currentFolders.filter { $0.kind != .inbox }
+        let all = quickOnly ? vm.quickMoveForCurrentAccount
+                            : vm.currentFolders.filter { $0.kind != .inbox }
+        // Never offer the folder that's already open: "moving" into it makes
+        // Gmail add and remove the same label, which it rejects (400).
+        return all.filter { $0.compositeId != vm.currentFolder?.compositeId }
     }
 
     var body: some View {

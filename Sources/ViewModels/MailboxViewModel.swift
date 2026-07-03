@@ -1776,6 +1776,9 @@ final class MailboxViewModel {
     }
 
     func move(_ ids: [String], to folder: MailFolder) async {
+        // Moving into the folder that's already open is a no-op (and Gmail
+        // rejects add+remove of the same label with a 400).
+        guard folder.compositeId != currentFolder?.compositeId else { return }
         guard let provider = currentProvider else {
             errorMessage = "No account is selected."
             return

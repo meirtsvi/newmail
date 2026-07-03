@@ -430,6 +430,9 @@ final class GmailProvider: MailProvider {
     func move(ids: [String], toFolderId: String, fromFolderId: String?) async throws {
         var remove = ["INBOX"]
         if let fromFolderId, fromFolderId != "INBOX" { remove = [fromFolderId] }
+        // Gmail rejects a batchModify whose add and remove sets overlap
+        // ("Cannot both add and remove the same label", HTTP 400).
+        remove.removeAll { $0 == toFolderId }
         try await batchModify(ids: ids, add: [toFolderId], remove: remove)
     }
 
