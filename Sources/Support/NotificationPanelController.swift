@@ -53,13 +53,38 @@ final class NotificationPanelController: NSObject, NSWindowDelegate {
         )
     }
 
+    /// Duration of the panel's fade-in/out.
+    private static let fadeDuration: TimeInterval = 0.25
+    /// Bumped on every show/hide so a stale fade-out completion can't hide a
+    /// panel that was re-shown mid-fade.
+    private var fadeGeneration = 0
+
     func show() {
+        fadeGeneration += 1
         reposition()
+        if !panel.isVisible { panel.alphaValue = 0 }
         panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = Self.fadeDuration
+            panel.animator().alphaValue = 1
+        }
     }
 
     func hide() {
-        panel.orderOut(nil)
+        guard panel.isVisible else { return }
+        fadeGeneration += 1
+        let generation = fadeGeneration
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = Self.fadeDuration
+            panel.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            // NSAnimationContext completion handlers run on the main thread.
+            MainActor.assumeIsolated {
+                guard let self, self.fadeGeneration == generation else { return }
+                self.panel.orderOut(nil)
+                self.panel.alphaValue = 1
+            }
+        })
     }
 
     /// Keep the panel glued to the bottom-right corner as its height changes (the

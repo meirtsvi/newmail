@@ -8,12 +8,18 @@ struct NotificationStackView: View {
         VStack(alignment: .trailing, spacing: 10) {
             ForEach(vm.eventReminders) { reminder in
                 EventReminderCard(reminder: reminder, showDismissAll: vm.eventReminders.count > 1)
+                    .transition(.opacity)
             }
             ForEach(vm.notifications) { note in
                 MailNotificationCard(note: note)
+                    .transition(.opacity)
             }
         }
         .padding(12)
+        // Fade cards in/out as they arrive and are dismissed while the panel stays
+        // up (the panel window itself fades when it first shows or finally hides).
+        .animation(.easeInOut(duration: 0.25), value: vm.notifications.map(\.id))
+        .animation(.easeInOut(duration: 0.25), value: vm.eventReminders.map(\.id))
     }
 }
 
