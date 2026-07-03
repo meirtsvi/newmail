@@ -20,8 +20,10 @@ final class DigestService {
 
     /// Sender of every digest message; how the reading pane recognizes a digest.
     static let fromAddress = "digest@newmail.local"
-    /// Per-item text budget sent to Gemini (full articles can be very long).
-    private static let maxItemChars = 2500
+    /// Per-message text budget sent to Gemini. Generous: digest-style newsletters
+    /// (e.g. a daily AI roundup) pack many distinct stories into one mail, and a
+    /// tight cap silently drops the stories in the truncated tail.
+    private static let maxItemChars = 12000
 
     private let store: MailStore
     private let context: ModelContext
@@ -127,8 +129,11 @@ final class DigestService {
         for attempt in 0..<2 {
             if attempt > 0 { try? await Task.sleep(for: .seconds(2)) }
             do {
+                // A many-story digest in Hebrew is long; the default output cap
+                // would truncate the JSON mid-string and fail the parse.
                 let text = try await TranslationService.shared.geminiGenerate(
-                    system: Self.digestSystem, userText: input, responseSchema: schema
+                    system: Self.digestSystem, userText: input, responseSchema: schema,
+                    maxOutputTokens: 32768
                 )
                 if let parsed = try? JSONDecoder().decode(DigestOutput.self, from: Data(text.utf8)),
                    !parsed.html.isEmpty {
@@ -142,21 +147,25 @@ final class DigestService {
     }
 
     private static let digestSystem = """
-    You build a Hebrew digest of newsletter and RSS items. The input is a JSON array of \
-    items: {index, title, source, date, link, text}.
+    You build a Hebrew news digest from newsletter and RSS messages. The input is a JSON \
+    array of messages: {index, title, source, date, link, text}. A single message is often \
+    itself a newsletter whose text contains MANY distinct news items.
     Rules:
+    - Extract EVERY distinct news item from EVERY message. Never compress a multi-story \
+    newsletter into one entry — a message reporting 12 stories yields 12 entries (before \
+    merging duplicates). Nothing substantive in the input text may be skipped.
+    - Entries that report the SAME story (within or across messages) must be merged into \
+    ONE entry; that entry's source list must include EVERY merged source.
+    - Group entries under short Hebrew topic headings (<h3>).
+    - Each entry: a bold title line (<b>), a 1–3 sentence Hebrew summary, then its sources \
+    as <a href="...">source name</a>, comma-separated (use the plain source name when the \
+    message's link field is empty).
     - Write natural, fluent Hebrew prose — do not transliterate. Keep product names, \
     company names, model names, code, CLI commands, and URLs in English.
-    - Group related items under short Hebrew topic headings (<h3>).
-    - Items that report the SAME story must be merged into ONE entry; that entry's link \
-    list must include EVERY merged item's link.
-    - Cover EVERY input item exactly once. Do not skip or drop any item.
-    - Each entry: a bold title line (<b>), a 1–3 sentence Hebrew summary, then its source \
-    links as <a href="...">source name</a>, comma-separated. Skip the link when an item's \
-    link field is empty.
     - Return JSON: {"html": "...", "covered": [...]} where html is the digest as HTML \
     body markup (no <html>/<head>/<body> wrapper, no dir attributes — it is wrapped in an \
-    RTL container later) and covered lists the index of every input item you included.
+    RTL container later) and covered lists the index of every input message whose content \
+    you included.
     """
 
     // MARK: - HTML assembly

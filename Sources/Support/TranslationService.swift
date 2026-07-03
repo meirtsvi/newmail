@@ -119,9 +119,11 @@ final class TranslationService {
     // MARK: - Gemini REST
 
     /// One Gemini `generateContent` call. Pass a `responseSchema` to force JSON
-    /// output of that shape (translation uses a string array; the digest an object).
+    /// output of that shape (translation uses a string array; the digest an object),
+    /// and `maxOutputTokens` when the response can outgrow the model's default cap.
     /// Internal so other Gemini-backed features (e.g. the digest) reuse one client.
-    func geminiGenerate(system: String, userText: String, responseSchema: [String: Any]? = nil) async throws -> String {
+    func geminiGenerate(system: String, userText: String, responseSchema: [String: Any]? = nil,
+                        maxOutputTokens: Int? = nil) async throws -> String {
         guard let apiKey = GeminiConfig.apiKey else { throw TranslationError.notConfigured }
 
         var components = URLComponents(string:
@@ -136,6 +138,9 @@ final class TranslationService {
         if let responseSchema {
             generationConfig["responseMimeType"] = "application/json"
             generationConfig["responseSchema"] = responseSchema
+        }
+        if let maxOutputTokens {
+            generationConfig["maxOutputTokens"] = maxOutputTokens
         }
         let payload: [String: Any] = [
             "systemInstruction": ["parts": [["text": system]]],

@@ -166,6 +166,12 @@ struct StatusBar: View {
         HStack(spacing: 6) {
             statusContent
             Spacer()
+            if vm.selection.count > 1 {
+                Text("\(vm.selection.count) selected")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                Text("·").foregroundStyle(.tertiary)
+            }
             if let folder = vm.currentFolder, folder.totalCount > 0 {
                 Text("\(folder.totalCount) messages")
                     .foregroundStyle(.secondary)
