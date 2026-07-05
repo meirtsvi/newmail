@@ -2619,13 +2619,15 @@ final class MailboxViewModel {
             authMessage = """
             Calendar access wasn’t granted. On Google’s sign-in screen: pick your account; if it warns \
             “Google hasn’t verified this app”, click Advanced → “Go to newmail (unsafe)”; then keep the \
-            “See the events on all your calendars” permission checked and click Continue.
+            “View and edit events on all your calendars” permission checked and click Continue.
             """
         }
     }
 
-    /// Sends an RSVP to the invitation's organizer as an iCalendar REPLY email.
-    /// Returns whether the reply was sent (the caller updates its UI state).
+    /// RSVPs to the invitation — via the Google Calendar API when possible (so
+    /// Google sends the organizer its standard notification mail), otherwise as
+    /// an iCalendar REPLY email to the organizer.
+    /// Returns whether the response was sent (the caller updates its UI state).
     /// Sends via `accountId`'s account when given (a popup's invite may belong to
     /// an account other than the selected one); defaults to the current account.
     @discardableResult
@@ -2639,8 +2641,27 @@ final class MailboxViewModel {
             errorMessage = "This invitation has no organizer to reply to."
             return false
         }
-        let me = MailAddress(name: "", email: session.account.email)
         let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Google accounts: record the RSVP on the calendar event itself, so Google
+        // mails the organizer its own notification — identical to responding in the
+        // Google Calendar UI. Falls back to the emailed iCalendar REPLY below when
+        // the API can't (token still on calendar.readonly, event not on the
+        // calendar, user not an attendee).
+        if session.account.providerKind == .gmail, !invite.uid.isEmpty,
+           (try? await GoogleAuth.shared.hasCalendarWriteScope) == true {
+            do {
+                try await GoogleCalendarService.shared.respond(
+                    icalUID: invite.uid, attendeeEmail: session.account.email,
+                    status: response.googleResponseStatus, comment: trimmedNote
+                )
+                return true
+            } catch {
+                // Fall through to the email REPLY.
+            }
+        }
+
+        let me = MailAddress(name: "", email: session.account.email)
         let ics = ICSReplyBuilder.reply(to: invite, attendee: me, response: response,
                                         comment: trimmedNote, now: Date())
         let subject = "\(response.subjectPrefix): \(invite.summary)"

@@ -67,6 +67,10 @@ enum InviteResponse: String {
         case .declined:  return "Declined"
         }
     }
+
+    /// The Google Calendar API `attendee.responseStatus` value — exactly the
+    /// lowercase of the matching PARTSTAT for all three responses.
+    var googleResponseStatus: String { rawValue.lowercased() }
 }
 
 // MARK: - Parser

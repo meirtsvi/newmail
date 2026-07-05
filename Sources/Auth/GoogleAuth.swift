@@ -111,6 +111,16 @@ actor GoogleAuth {
         }
     }
 
+    /// Whether events can be written (RSVP via the Calendar API), i.e. the token
+    /// carries `calendar.events` or the full `calendar` scope — not just the
+    /// `calendar.readonly` grant older sign-ins have.
+    var hasCalendarWriteScope: Bool {
+        get throws {
+            let s = try loadIfNeeded().scopes ?? []
+            return s.contains { $0.hasSuffix("auth/calendar.events") || $0.hasSuffix("auth/calendar") }
+        }
+    }
+
     // MARK: Loading
 
     @discardableResult

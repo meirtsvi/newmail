@@ -10,12 +10,13 @@ import AppKit
 actor OAuthService {
     static let shared = OAuthService()
 
-    /// Read + modify (move/label/read-state/trash), send, and read-only calendar
-    /// (to show your schedule alongside meeting invitations).
+    /// Read + modify (move/label/read-state/trash), send, and calendar events
+    /// read/write (to show your schedule alongside meeting invitations and to
+    /// record RSVPs on the event so Google itself notifies the organizer).
     let scopes = [
         "https://www.googleapis.com/auth/gmail.modify",
         "https://www.googleapis.com/auth/gmail.send",
-        "https://www.googleapis.com/auth/calendar.readonly",
+        "https://www.googleapis.com/auth/calendar.events",
     ]
     private let authEndpoint = "https://accounts.google.com/o/oauth2/v2/auth"
     private let tokenEndpoint = "https://oauth2.googleapis.com/token"

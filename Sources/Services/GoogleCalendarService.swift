@@ -164,6 +164,56 @@ actor GoogleCalendarService {
         return out
     }
 
+    /// Records the user's RSVP on the calendar event itself (PATCH with
+    /// `sendUpdates=all`), so Google — not this app — mails the organizer, with
+    /// the same notification it sends when responding in the Calendar UI.
+    /// Requires the `calendar.events` scope. Throws when the event isn't on the
+    /// primary calendar or the user isn't among its attendees; callers fall back
+    /// to an emailed iCalendar REPLY.
+    func respond(icalUID: String, attendeeEmail: String, status: String, comment: String) async throws {
+        let token = try await auth.accessToken()
+
+        // Google Calendar auto-adds Gmail invitations to the recipient's primary
+        // calendar under the invite's iCalendar UID — look the event up by it.
+        var comps = URLComponents(string: "https://www.googleapis.com/calendar/v3/calendars/primary/events")!
+        comps.queryItems = [.init(name: "iCalUID", value: icalUID)]
+        var lookup = URLRequest(url: comps.url!)
+        lookup.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, resp) = try await URLSession.shared.data(for: lookup)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw MailError.api((resp as? HTTPURLResponse)?.statusCode ?? 0,
+                                String(data: data, encoding: .utf8) ?? "")
+        }
+        let list = try JSONDecoder().decode(EventsList.self, from: data)
+        guard let item = list.items.first(where: { $0.status != "cancelled" && $0.id != nil }),
+              let eventId = item.id,
+              var attendees = item.attendees,
+              let mine = attendees.firstIndex(where: {
+                  $0.isSelf == true || ($0.email ?? "").caseInsensitiveCompare(attendeeEmail) == .orderedSame
+              })
+        else {
+            throw MailError.other("Event \(icalUID) not found on the primary calendar")
+        }
+
+        // Attendees may only change their own entry; Google ignores edits to the
+        // rest of the list, so sending it back as-is is safe.
+        attendees[mine].responseStatus = status
+        if !comment.isEmpty { attendees[mine].comment = comment }
+
+        var patchComps = URLComponents(string: "https://www.googleapis.com/calendar/v3/calendars/primary/events/\(eventId)")!
+        patchComps.queryItems = [.init(name: "sendUpdates", value: "all")]
+        var patch = URLRequest(url: patchComps.url!)
+        patch.httpMethod = "PATCH"
+        patch.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        patch.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        patch.httpBody = try JSONEncoder().encode(AttendeesPatch(attendees: attendees))
+        let (patchData, patchResp) = try await URLSession.shared.data(for: patch)
+        guard let patchHTTP = patchResp as? HTTPURLResponse, (200..<300).contains(patchHTTP.statusCode) else {
+            throw MailError.api((patchResp as? HTTPURLResponse)?.statusCode ?? 0,
+                                String(data: patchData, encoding: .utf8) ?? "")
+        }
+    }
+
     // MARK: - JSON
 
     private struct EventsList: Codable {
@@ -182,6 +232,25 @@ actor GoogleCalendarService {
         var hangoutLink: String?
         var conferenceData: ConferenceData?
         var htmlLink: String?
+        var attendees: [Attendee]?
+    }
+    private struct Attendee: Codable {
+        var email: String?
+        var displayName: String?
+        var organizer: Bool?
+        var isSelf: Bool?
+        var resource: Bool?
+        var optional: Bool?
+        var responseStatus: String?
+        var comment: String?
+
+        enum CodingKeys: String, CodingKey {
+            case email, displayName, organizer, resource, optional, responseStatus, comment
+            case isSelf = "self"
+        }
+    }
+    private struct AttendeesPatch: Codable {
+        var attendees: [Attendee]
     }
     private struct ConferenceData: Codable {
         var entryPoints: [EntryPoint]?
