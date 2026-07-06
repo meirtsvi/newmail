@@ -76,6 +76,8 @@ final class MailboxViewModel {
     @ObservationIgnored private var reminderService: CalendarReminderService?
     // Last time the alert sound played, to debounce simultaneous pop-ups.
     @ObservationIgnored private var lastAlertSound: Date?
+    // The currently playing alert; file-based NSSounds stop if released mid-play.
+    @ObservationIgnored private var alertSound: NSSound?
     // Inbox message ids already seen per account, so only genuinely new mail pops.
     private var seenInboxIds: [String: Set<String>] = [:]
     @ObservationIgnored private var notificationPanel: NotificationPanelController?
@@ -2311,7 +2313,9 @@ final class MailboxViewModel {
             notifications.removeLast(notifications.count - Self.maxNotifications)
         }
         syncNotificationPanel()
-        if NotificationPrefs.mailSoundEnabled { playAlertSound() }
+        if NotificationPrefs.mailSoundEnabled {
+            playAlertSound(customKey: NotificationPrefs.mailSoundFileKey)
+        }
         // Auto-dismiss the card after a few seconds (unless the user starts a reply).
         scheduleAutoDismiss(header.id)
         enqueuePretranslation(note)
@@ -2517,17 +2521,24 @@ final class MailboxViewModel {
             didAdd = true
         }
         syncNotificationPanel()
-        if didAdd, NotificationPrefs.reminderSoundEnabled { playAlertSound() }
+        if didAdd, NotificationPrefs.reminderSoundEnabled {
+            playAlertSound(customKey: NotificationPrefs.reminderSoundFileKey)
+        }
     }
 
-    /// Plays a single alert sound when popup cards (new mail or reminders) appear.
-    /// Callers check their own sound preference first. Debounced so a batch firing
-    /// together (or back-to-back ticks) makes one sound, not one per card.
-    private func playAlertSound() {
+    /// Plays a single alert sound when popup cards (new mail or reminders) appear:
+    /// the user's custom sound for the source if one is set (see Settings →
+    /// Notifications), else the built-in Glass. Callers check their own sound
+    /// preference first. Debounced so a batch firing together (or back-to-back
+    /// ticks) makes one sound, not one per card.
+    private func playAlertSound(customKey: String) {
         let now = Date()
         if let last = lastAlertSound, now.timeIntervalSince(last) < 2 { return }
         lastAlertSound = now
-        (NSSound(named: "Glass") ?? NSSound(named: "Ping"))?.play()
+        let custom = NotificationPrefs.customSoundURL(forKey: customKey)
+            .flatMap { NSSound(contentsOf: $0, byReference: true) }
+        alertSound = custom ?? NSSound(named: "Glass") ?? NSSound(named: "Ping")
+        alertSound?.play()
     }
 
     func snoozeReminder(_ reminder: EventReminder, preset: CalendarReminderService.SnoozePreset) {

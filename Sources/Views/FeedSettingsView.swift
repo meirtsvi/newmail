@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 /// The Settings (⌘,) window, split into tabs by area:
 ///   Account — re-run Google sign-in (fixes 401s from an expired or revoked token)
@@ -74,10 +75,23 @@ enum NotificationPrefs {
     static let mailPopupsKey = "mailPopupsEnabled"
     static let reminderPopupsKey = "reminderPopupsEnabled"
 
+    /// Paths of user-chosen sound files (copied into Application Support);
+    /// empty/absent means the built-in alert sound.
+    static let mailSoundFileKey = "mailSoundFile"
+    static let reminderSoundFileKey = "reminderSoundFile"
+
     static var mailSoundEnabled: Bool { isEnabled(mailSoundKey) }
     static var reminderSoundEnabled: Bool { isEnabled(reminderSoundKey) }
     static var mailPopupsEnabled: Bool { isEnabled(mailPopupsKey) }
     static var reminderPopupsEnabled: Bool { isEnabled(reminderPopupsKey) }
+
+    /// The custom sound stored under `key`, if one was chosen and its file
+    /// still exists; nil falls back to the built-in sound.
+    static func customSoundURL(forKey key: String) -> URL? {
+        guard let path = UserDefaults.standard.string(forKey: key), !path.isEmpty,
+              FileManager.default.fileExists(atPath: path) else { return nil }
+        return URL(fileURLWithPath: path)
+    }
 
     private static func isEnabled(_ key: String) -> Bool {
         UserDefaults.standard.object(forKey: key) as? Bool ?? true
@@ -97,12 +111,14 @@ private struct NotificationSettingsTab: View {
                     .help("Show a card in the top-right corner when new mail arrives")
                 Toggle("Play sound", isOn: $mailSound)
                     .help("Play an alert sound when a new mail card appears")
+                CustomSoundRow(storageKey: NotificationPrefs.mailSoundFileKey, folder: "mail")
             }
             Section {
                 Toggle("Show popups", isOn: $reminderPopups)
                     .help("Show a card when a calendar event reminder fires")
                 Toggle("Play sound", isOn: $reminderSound)
                     .help("Play an alert sound when a reminder card appears")
+                CustomSoundRow(storageKey: NotificationPrefs.reminderSoundFileKey, folder: "reminder")
             } header: {
                 Text("Calendar reminders")
             } footer: {
@@ -110,6 +126,84 @@ private struct NotificationSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+/// The "Sound file" row of a notification section: shows the current choice
+/// (built-in or a picked file), a Choose… button that copies the picked audio
+/// file into Application Support (so it keeps working if the original moves),
+/// and Use Default to revert. The picked sound plays once as confirmation.
+private struct CustomSoundRow: View {
+    let storageKey: String
+    /// Subfolder under Application Support/Sounds; one per source so mail and
+    /// reminder picks don't overwrite each other.
+    let folder: String
+
+    @AppStorage private var soundPath: String
+    /// Keeps the confirmation sound alive while it plays.
+    @State private var preview: NSSound?
+
+    init(storageKey: String, folder: String) {
+        self.storageKey = storageKey
+        self.folder = folder
+        _soundPath = AppStorage(wrappedValue: "", storageKey)
+    }
+
+    var body: some View {
+        HStack {
+            Text("Sound file")
+            Spacer()
+            Text(soundPath.isEmpty ? "Built-in (Glass)"
+                                   : URL(fileURLWithPath: soundPath).lastPathComponent)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if !soundPath.isEmpty {
+                Button("Use Default") { revert() }
+                    .help("Go back to the built-in alert sound")
+            }
+            Button("Choose…", action: choose)
+                .help("Pick an audio file to play instead of the built-in sound")
+        }
+    }
+
+    private func choose() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audio]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let source = panel.url else { return }
+        do {
+            let dir = try FileManager.default
+                .url(for: .applicationSupportDirectory, in: .userDomainMask,
+                     appropriateFor: nil, create: true)
+                .appendingPathComponent("Sounds/\(folder)", isDirectory: true)
+            // One custom sound per source: drop the previous copy first.
+            try? FileManager.default.removeItem(at: dir)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let dest = dir.appendingPathComponent(source.lastPathComponent)
+            try FileManager.default.copyItem(at: source, to: dest)
+            guard let sound = NSSound(contentsOf: dest, byReference: true) else {
+                // Copied fine but NSSound can't decode it — reject rather than
+                // storing a file that would silently fall back at alert time.
+                try? FileManager.default.removeItem(at: dir)
+                NSSound.beep()
+                return
+            }
+            soundPath = dest.path
+            preview = sound
+            sound.play()
+        } catch {
+            NSSound.beep()
+        }
+    }
+
+    private func revert() {
+        if !soundPath.isEmpty {
+            try? FileManager.default.removeItem(
+                at: URL(fileURLWithPath: soundPath).deletingLastPathComponent())
+        }
+        soundPath = ""
     }
 }
 
