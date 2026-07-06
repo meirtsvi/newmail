@@ -2303,6 +2303,7 @@ final class MailboxViewModel {
     }
 
     private func presentNotification(_ header: MessageHeader, accountId: String) {
+        guard NotificationPrefs.mailPopupsEnabled else { return }
         guard !notifications.contains(where: { $0.id == header.id }) else { return }
         let note = MailNotification(header: header, accountId: accountId)
         notifications.insert(note, at: 0)
@@ -2508,6 +2509,7 @@ final class MailboxViewModel {
     /// Raises a popup card for each fired reminder. Unlike mail popups, reminder
     /// cards have no auto-dismiss timer — they persist until the user acts.
     private func presentReminders(_ reminders: [EventReminder]) {
+        guard NotificationPrefs.reminderPopupsEnabled else { return }
         var didAdd = false
         for reminder in reminders where !eventReminders.contains(where: { $0.id == reminder.id }) {
             eventReminders.insert(reminder, at: 0)
@@ -2521,6 +2523,7 @@ final class MailboxViewModel {
     /// of reminders firing together (or back-to-back ticks) makes one sound, not one
     /// per card.
     private func playReminderSound() {
+        guard NotificationPrefs.soundEnabled else { return }
         let now = Date()
         if let last = lastReminderSound, now.timeIntervalSince(last) < 2 { return }
         lastReminderSound = now

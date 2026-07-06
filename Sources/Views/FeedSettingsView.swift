@@ -7,11 +7,14 @@ import AppKit
 ///             choose which one receives feed items
 ///   Digest  — clear the digest coverage history
 ///   AI      — the Gemini API key used for translation and digest summaries
+///   Notifications — popup and sound toggles for new mail and calendar reminders
 struct FeedSettingsView: View {
     var body: some View {
         TabView {
             AccountSettingsTab()
                 .tabItem { Label("Account", systemImage: "person.crop.circle") }
+            NotificationSettingsTab()
+                .tabItem { Label("Notifications", systemImage: "bell.badge") }
             FeedsSettingsTab()
                 .tabItem { Label("Feeds", systemImage: "dot.radiowaves.up.forward") }
             DigestSettingsTab()
@@ -56,6 +59,47 @@ private struct AccountSettingsTab: View {
                     .disabled(vm.isSigningIn)
                     .help("Re-run the Google sign-in in your browser to fix authorization errors")
                 }
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+/// UserDefaults-backed switches for the popup cards and their alert sound.
+/// MailboxViewModel checks the same keys before presenting cards or playing
+/// the sound; absent keys read as enabled so existing installs keep behaving.
+enum NotificationPrefs {
+    static let soundKey = "notificationSoundEnabled"
+    static let mailPopupsKey = "mailPopupsEnabled"
+    static let reminderPopupsKey = "reminderPopupsEnabled"
+
+    static var soundEnabled: Bool { isEnabled(soundKey) }
+    static var mailPopupsEnabled: Bool { isEnabled(mailPopupsKey) }
+    static var reminderPopupsEnabled: Bool { isEnabled(reminderPopupsKey) }
+
+    private static func isEnabled(_ key: String) -> Bool {
+        UserDefaults.standard.object(forKey: key) as? Bool ?? true
+    }
+}
+
+private struct NotificationSettingsTab: View {
+    @AppStorage(NotificationPrefs.mailPopupsKey) private var mailPopups = true
+    @AppStorage(NotificationPrefs.reminderPopupsKey) private var reminderPopups = true
+    @AppStorage(NotificationPrefs.soundKey) private var sound = true
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("New mail popups", isOn: $mailPopups)
+                    .help("Show a card in the top-right corner when new mail arrives")
+                Toggle("Calendar reminder popups", isOn: $reminderPopups)
+                    .help("Show a card when a calendar event reminder fires")
+                Toggle("Play sound", isOn: $sound)
+                    .help("Play an alert sound when a reminder card appears")
+            } header: {
+                Text("Notifications")
+            } footer: {
+                Text("Popups appear in the top-right corner of the screen. Turning one off only stops new cards; anything already on screen stays until dismissed.")
             }
         }
         .formStyle(.grouped)
