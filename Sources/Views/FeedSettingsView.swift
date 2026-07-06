@@ -3,7 +3,8 @@ import AppKit
 import UniformTypeIdentifiers
 
 /// The Settings (⌘,) window, split into tabs by area:
-///   Account — re-run Google sign-in (fixes 401s from an expired or revoked token)
+///   Account — re-run the Google / Microsoft sign-in (fixes 401s from an
+///             expired or revoked token)
 ///   Feeds   — manage RSS/Atom feed URLs and, with more than one Gmail account,
 ///             choose which one receives feed items
 ///   Digest  — clear the digest coverage history
@@ -70,6 +71,31 @@ private struct AccountSettingsTab: View {
                     .help(vm.hasConnectedGoogleAccount
                           ? "Re-run the Google sign-in in your browser to fix authorization errors"
                           : "Sign in with Google in your browser to connect your Gmail account")
+                }
+            }
+
+            Section("Microsoft account") {
+                HStack {
+                    Text(vm.hasConnectedMicrosoftAccount
+                         ? vm.graphSessions.first.map { $0.account.email.isEmpty ? $0.account.displayName : $0.account.email } ?? "Microsoft"
+                         : "Not connected")
+                    Spacer()
+                    Button {
+                        Task { await vm.addMicrosoftAccount() }
+                    } label: {
+                        if vm.isSigningIn {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.small)
+                                Text("Signing in…")
+                            }
+                        } else {
+                            Text(vm.hasConnectedMicrosoftAccount ? "Sign in again…" : "Sign in…")
+                        }
+                    }
+                    .disabled(vm.isSigningIn)
+                    .help(vm.hasConnectedMicrosoftAccount
+                          ? "Re-run the Microsoft sign-in to fix authorization errors"
+                          : "Sign in with Microsoft to connect your Outlook account")
                 }
             }
         }

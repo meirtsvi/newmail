@@ -145,6 +145,20 @@ private struct ToolbarSearchField: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
             }
+            // Natural-language search: sparkles asks Gemini to rewrite the typed
+            // text into search operators; the proposal opens in the popover below.
+            if vm.isRewritingSearch {
+                ProgressView().controlSize(.small)
+            } else {
+                Button { Task { await vm.rewriteSearchQuery() } } label: {
+                    Image(systemName: "sparkles")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(vm.searchText.isEmpty)
+                .help("Rewrite as search operators with AI (⌘↩)")
+            }
             Menu {
                 Picker("Scope", selection: $vm.searchScope) {
                     ForEach(SearchScope.allCases) { scope in
@@ -170,6 +184,13 @@ private struct ToolbarSearchField: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .frame(maxWidth: 900)
+        // The editable AI-rewrite proposal, anchored under the search field.
+        .popover(isPresented: Binding(
+            get: { vm.nlProposedQuery != nil },
+            set: { if !$0 { vm.nlProposedQuery = nil } }
+        ), arrowEdge: .bottom) {
+            NaturalSearchProposal(vm: vm)
+        }
         // Re-run the search when the scope changes while a query is active.
         .onChange(of: vm.searchScope) { _, _ in
             if !vm.searchText.isEmpty { Task { await vm.runSearch() } }
@@ -203,6 +224,56 @@ private struct ToolbarSearchField: View {
             if let found = searchField(in: sub) { return found }
         }
         return nil
+    }
+}
+
+/// The editable "chip" showing Gemini's operator rewrite of the natural-language
+/// search text. Return (or Search) runs it through the normal search path;
+/// Escape or Cancel dismisses without searching.
+private struct NaturalSearchProposal: View {
+    @Bindable var vm: MailboxViewModel
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("AI search query", systemImage: "sparkles")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField("Search query", text: proposedQuery)
+                .textFieldStyle(.roundedBorder)
+                .font(.body.monospaced())
+                .focused($focused)
+                .onSubmit { run() }
+                .frame(width: 440)
+            HStack {
+                Text("Edit if needed, then press Return to search.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Spacer()
+                Button("Cancel") { vm.nlProposedQuery = nil }
+                Button("Search") { run() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(trimmedQuery.isEmpty)
+            }
+        }
+        .padding(14)
+        .onAppear { focused = true }
+    }
+
+    private var proposedQuery: Binding<String> {
+        // Ignore write-backs once dismissed (nil): the TextField pushes its last
+        // value while the popover tears down, which would re-open it empty.
+        Binding(get: { vm.nlProposedQuery ?? "" },
+                set: { if vm.nlProposedQuery != nil { vm.nlProposedQuery = $0 } })
+    }
+
+    private var trimmedQuery: String {
+        (vm.nlProposedQuery ?? "").trimmingCharacters(in: .whitespaces)
+    }
+
+    private func run() {
+        guard !trimmedQuery.isEmpty else { return }
+        Task { await vm.runProposedSearch() }
     }
 }
 

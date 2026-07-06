@@ -142,6 +142,11 @@ final class MailboxViewModel {
     private var searchTask: Task<Void, Never>?
     // Toggled by ⌘F / ⌘T to pull keyboard focus into the search field.
     var focusSearchRequested = false
+    // Natural-language search: Gemini's operator rewrite of the search text,
+    // shown as an editable proposal in the toolbar. Nil = no proposal showing.
+    var nlProposedQuery: String?
+    // True while Gemini is rewriting the search text (drives the sparkles spinner).
+    var isRewritingSearch = false
     // ⌘K quick-open palette over the loaded message list.
     var showMessagePalette = false
     // Set by the palette on Enter; the message list scrolls this row into view.
@@ -958,6 +963,7 @@ final class MailboxViewModel {
         isSearchInProgress = false
         activeSearchQuery = nil
         searchResultSummary = nil
+        nlProposedQuery = nil
         messages = store.cachedHeaders(folderId: folder.id, accountId: folder.accountId)
         hydrateCalendarIds()
         scanCalendarEvents(for: folder)
@@ -1546,6 +1552,15 @@ final class MailboxViewModel {
         gmailSessions.contains { !$0.account.email.isEmpty }
     }
 
+    /// Microsoft (Graph) sessions, for the Settings account rows.
+    var graphSessions: [Session] { sessions.filter { $0.account.providerKind == .graph } }
+
+    /// Whether any Microsoft account has connected — same role as
+    /// `hasConnectedGoogleAccount` for the Settings wording.
+    var hasConnectedMicrosoftAccount: Bool {
+        graphSessions.contains { !$0.account.email.isEmpty }
+    }
+
     /// Re-runs the Gmail side of `bootstrap` after an interactive sign-in: loads
     /// each session's profile and folders and clears the stale connection error
     /// from the failed attempt — so the fix takes effect without relaunching.
@@ -1585,6 +1600,7 @@ final class MailboxViewModel {
         searchText = ""
         activeSearchQuery = nil
         searchResultSummary = nil
+        nlProposedQuery = nil
         if let folder = currentFolder {
             messages = store.cachedHeaders(folderId: folder.id, accountId: folder.accountId)
         }
@@ -1603,6 +1619,36 @@ final class MailboxViewModel {
         let task = Task { await performSearch(text) }
         searchTask = task
         await task.value
+    }
+
+    /// Rewrites the free text in the search field into the current provider's
+    /// search operators via Gemini. The result lands in `nlProposedQuery` and is
+    /// shown as an editable proposal — nothing runs until the user confirms it.
+    func rewriteSearchQuery() async {
+        let text = searchText.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty, !isRewritingSearch else { return }
+        guard GeminiConfig.isConfigured else {
+            errorMessage = "Add a Gemini API key in Settings → AI to use natural-language search."
+            return
+        }
+        isRewritingSearch = true
+        defer { isRewritingSearch = false }
+        let kind = sessions.first { $0.account.id == currentAccountId }?.account.providerKind ?? .gmail
+        do {
+            nlProposedQuery = try await NaturalSearchService.rewrite(text, dialect: .init(kind))
+        } catch {
+            errorMessage = "Couldn’t rewrite the search: \(error.localizedDescription)"
+        }
+    }
+
+    /// Runs the (possibly user-edited) proposed operator query through the
+    /// normal search path, replacing the natural-language text in the field.
+    func runProposedSearch() async {
+        guard let query = nlProposedQuery?.trimmingCharacters(in: .whitespaces),
+              !query.isEmpty else { return }
+        nlProposedQuery = nil
+        searchText = query
+        await runSearch()
     }
 
     private func performSearch(_ text: String) async {

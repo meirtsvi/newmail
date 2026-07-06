@@ -9,6 +9,11 @@ struct MessagePreviewView: View {
     @AppStorage("messageZoom") private var zoom: Double = 1.0
     /// Hebrew translate/summarize state for the shown message.
     @State private var translation = BodyTranslationModel()
+    /// In-message find (⇧⌘F), mirroring the detail window's find bar.
+    @StateObject private var finder = WebFindController()
+    @State private var showFind = false
+    @State private var findText = ""
+    @FocusState private var findFocused: Bool
 
     private static let zoomRange = 0.5...3.0
 
@@ -32,6 +37,10 @@ struct MessagePreviewView: View {
             VStack(alignment: .leading, spacing: 0) {
                 headerBlock(header)
                 Divider()
+                if showFind {
+                    findBar
+                    Divider()
+                }
                 if let invite = inviteFor(header) {
                     CalendarInviteView(invite: invite, messageId: header.id)
                         .padding(.vertical, 10)
@@ -40,7 +49,10 @@ struct MessagePreviewView: View {
                 bodyBlock(header)
             }
             .background(zoomShortcuts)
-            .onChange(of: header.id) { _, _ in translation.reset() }
+            .onChange(of: header.id) { _, _ in
+                translation.reset()
+                finder.status = ""
+            }
         } else {
             ContentUnavailableView(
                 vm.selection.count > 1 ? "\(vm.selection.count) messages selected" : "No message selected",
@@ -48,6 +60,34 @@ struct MessagePreviewView: View {
                 description: Text("Select a message to read it here.")
             )
         }
+    }
+
+    /// The in-message find bar shown below the header when ⇧⌘F toggles it on.
+    private var findBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Find in message", text: $findText)
+                .textFieldStyle(.roundedBorder)
+                .focused($findFocused)
+                .onSubmit { finder.find(findText, forward: true) }
+                .frame(maxWidth: 280)
+            Button { finder.find(findText, forward: false) } label: { Image(systemName: "chevron.up") }
+                .help("Previous")
+                .disabled(findText.isEmpty)
+            Button { finder.find(findText, forward: true) } label: { Image(systemName: "chevron.down") }
+                .help("Next")
+                .disabled(findText.isEmpty)
+            if !finder.status.isEmpty {
+                Text(finder.status).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button { showFind = false } label: { Image(systemName: "xmark.circle.fill") }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 8)
+        .onExitCommand { showFind = false }
     }
 
     private func headerBlock(_ header: MessageHeader) -> some View {
@@ -146,7 +186,7 @@ struct MessagePreviewView: View {
         if let body = vm.currentBody, body.headerId == header.id {
             // The 24pt text margin lives inside the page (horizontalMargin), not
             // as SwiftUI padding, so the scrollbar sits at the pane's right edge.
-            HTMLView(html: translation.displayHTML(original: body.html), zoom: zoom, horizontalMargin: 24)
+            HTMLView(html: translation.displayHTML(original: body.html), finder: finder, zoom: zoom, horizontalMargin: 24)
         } else if vm.isLoadingBody {
             VStack { Spacer(); ProgressView(); Spacer() }.frame(maxWidth: .infinity)
         } else {
@@ -156,8 +196,14 @@ struct MessagePreviewView: View {
 
     /// Zero-size hidden buttons that register the zoom keyboard shortcuts. Both
     /// "+" (⌘⇧=) and "=" map to zoom-in so the unshifted key works too.
+    /// ⇧⌘F toggles the in-message find bar.
     private var zoomShortcuts: some View {
         Group {
+            Button("") {
+                showFind.toggle()
+                if showFind { findFocused = true }
+            }
+            .keyboardShortcut("f", modifiers: [.command, .shift])
             Button("") { zoom = min(Self.zoomRange.upperBound, zoom + 0.1) }
                 .keyboardShortcut("+", modifiers: .command)
             Button("") { zoom = min(Self.zoomRange.upperBound, zoom + 0.1) }
