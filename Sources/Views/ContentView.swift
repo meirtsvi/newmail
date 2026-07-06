@@ -133,9 +133,11 @@ private struct ToolbarSearchField: View {
                     Task { await vm.clearSearch() }
                     return .handled
                 }
-                // 580 (was 620) makes room for the Newsletters + Digest + dark-mode
-                // toolbar buttons; any wider and the search field falls into the » menu.
-                .frame(minWidth: 580)
+                // NSToolbar sizes the item at its ideal width and moves it to the
+                // » overflow menu when that doesn't fit — it never compresses. A
+                // small ideal keeps the field visible on a 13"/14" MacBook Pro
+                // display; maxWidth lets it stretch when the window is wider.
+                .frame(minWidth: 160, idealWidth: 300, maxWidth: 640)
             if !vm.searchText.isEmpty {
                 Button { Task { await vm.clearSearch() } } label: {
                     Image(systemName: "xmark.circle.fill")
