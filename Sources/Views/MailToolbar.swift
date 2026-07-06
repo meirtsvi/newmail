@@ -117,7 +117,13 @@ struct MailToolbar: ToolbarContent {
             }
             .disabled(vm.isGeneratingDigest)
             .help("Generate a Hebrew digest of new newsletter items")
+        }
 
+        // Flexible space pushes the appearance toggle to the toolbar's right
+        // edge, apart from the action buttons.
+        ToolbarItem { Spacer() }
+
+        ToolbarItem {
             Button {
                 darkModeEnabled.toggle()
                 AppAppearance.apply(darkMode: darkModeEnabled)
