@@ -2,6 +2,8 @@ import SwiftUI
 import SwiftData
 import AppKit
 import UserNotifications
+import Combine
+import Sparkle
 
 /// App-wide light/dark override driven by the toolbar toggle. Set on `NSApp`
 /// (not per-window) so the compose / message / notification windows follow too.
@@ -15,6 +17,11 @@ enum AppAppearance {
 struct NewmailApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var vm = MailboxViewModel()
+    /// Sparkle auto-updater: checks the appcast (SUFeedURL in Info.plist) on a
+    /// schedule and via the "Check for Updates…" menu item below.
+    private let updaterController = SPUStandardUpdaterController(
+        startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil
+    )
 
     var body: some Scene {
         // A single `Window` (not a `WindowGroup`): the app has one main window,
@@ -33,12 +40,45 @@ struct NewmailApp: App {
         .modelContainer(Persistence.container)
         .windowToolbarStyle(.unified)
         .defaultSize(width: 1280, height: 800)
+        .commands {
+            // "Check for Updates…" in the app menu, right under "About newmail".
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesButton(updater: updaterController.updater)
+            }
+        }
 
         // The macOS Settings (⌘,) window: manage RSS/Atom feed subscriptions.
         Settings {
             FeedSettingsView()
                 .environment(vm)
         }
+    }
+}
+
+/// The app-menu "Check for Updates…" item, disabled while Sparkle can't check
+/// (mid-update, or another check already running).
+private struct CheckForUpdatesButton: View {
+    @ObservedObject private var model: CheckForUpdatesModel
+    private let updater: SPUUpdater
+
+    init(updater: SPUUpdater) {
+        self.updater = updater
+        self.model = CheckForUpdatesModel(updater: updater)
+    }
+
+    var body: some View {
+        Button("Check for Updates…") { updater.checkForUpdates() }
+            .disabled(!model.canCheckForUpdates)
+    }
+}
+
+/// Bridges Sparkle's KVO `canCheckForUpdates` into SwiftUI.
+private final class CheckForUpdatesModel: ObservableObject {
+    @Published var canCheckForUpdates = false
+
+    init(updater: SPUUpdater) {
+        updater.publisher(for: \.canCheckForUpdates)
+            .assign(to: &$canCheckForUpdates)
     }
 }
 

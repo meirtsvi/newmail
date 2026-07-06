@@ -87,5 +87,11 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string></string>
+	<key>SUEnableInstallerLauncherService</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://raw.githubusercontent.com/meirtsvi/newmail/main/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>JlUB5hGBBL2J+Gwi8+ujcggOuhL2RKT0CBk0fdNuKP0=</string>
 </dict>
 </plist>

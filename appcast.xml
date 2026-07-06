@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Sparkle update feed. The app reads this from
+     https://raw.githubusercontent.com/meirtsvi/newmail/main/appcast.xml
+     (SUFeedURL). Tools/release.sh appends an <item> per release; the DMGs
+     themselves are attached to GitHub Releases. -->
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>newmail</title>
+    <link>https://github.com/meirtsvi/newmail</link>
+    <description>newmail updates</description>
+    <language>en</language>
+  </channel>
+</rss>
