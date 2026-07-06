@@ -21,6 +21,8 @@ struct MessageListView: View {
     /// arrow keys do nothing. Setting this on every click restores focus.
     @FocusState private var tableFocused: Bool
     @State private var columnCustomization = TableColumnCustomization<MessageHeader>()
+    /// Finds the backing NSTableView for palette scroll-to-row (see `scrollToMessage`).
+    @State private var tableLocator = TableLocator()
 
     private static let columnsKey = "messageColumnCustomization"
 
@@ -192,6 +194,29 @@ struct MessageListView: View {
             isMessageList: { $0.numberOfRows == vm.displayedMessages.count && !vm.displayedMessages.isEmpty },
             perform: { move, table in performListMove(move, in: table) }
         ))
+        // Anchors the table locator in this view's window so the ⌘K palette's
+        // pick can be scrolled into view (Table has no SwiftUI scroll-to API).
+        .background(TableLocatorView(locator: tableLocator))
+        .onChange(of: vm.scrollToMessageId) { _, id in scrollToMessage(id) }
+    }
+
+    /// Scrolls the row of `id` (the ⌘K palette's pick) into view.
+    private func scrollToMessage(_ id: String?) {
+        guard let id else { return }
+        vm.scrollToMessageId = nil
+        let msgs = vm.displayedMessages
+        guard let index = msgs.firstIndex(where: { $0.id == id }) else { return }
+        // Next tick: runs after SwiftUI applies the selection change from the
+        // palette (same reasoning as `performListMove`).
+        DispatchQueue.main.async {
+            guard let table = tableLocator.messageTable(rowCount: msgs.count),
+                  index < table.numberOfRows else { return }
+            let headerHeight = table.headerView?.bounds.height ?? 0
+            var rect = table.rect(ofRow: index)
+            rect.origin.y -= headerHeight
+            rect.size.height += headerHeight
+            table.scrollToVisible(rect)
+        }
     }
 
     /// Moves the single selection to the top/bottom/one page away and scrolls the
@@ -603,6 +628,50 @@ private struct ListKeyNavigator: NSViewRepresentable {
         }
 
         deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+    }
+}
+
+/// Finds the message list's backing NSTableView from a hidden anchor view in the
+/// same window. Same row-count heuristic as `ListKeyNavigator` (the sidebar is
+/// also an NSTableView, but its row count is the folder tree's, not the list's).
+@MainActor
+final class TableLocator {
+    weak var anchor: NSView?
+
+    func messageTable(rowCount: Int) -> NSTableView? {
+        guard rowCount > 0 else { return nil }
+        // Climb from the anchor and search each enclosing subtree, so the
+        // nearest matching table (the message list, a sibling of the anchor)
+        // wins before the walk ever widens to the sidebar's.
+        var root = anchor?.superview
+        while let current = root {
+            if let t = firstTable(in: current, rowCount: rowCount) { return t }
+            root = current.superview
+        }
+        return nil
+    }
+
+    private func firstTable(in view: NSView, rowCount: Int) -> NSTableView? {
+        if let t = view as? NSTableView, t.numberOfRows == rowCount { return t }
+        for sub in view.subviews {
+            if let t = firstTable(in: sub, rowCount: rowCount) { return t }
+        }
+        return nil
+    }
+}
+
+/// Invisible view that gives `TableLocator` a foothold in the window's hierarchy.
+private struct TableLocatorView: NSViewRepresentable {
+    let locator: TableLocator
+
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView()
+        locator.anchor = v
+        return v
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        locator.anchor = nsView
     }
 }
 

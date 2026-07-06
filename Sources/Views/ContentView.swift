@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Root 3-pane layout: Sidebar | Message list | Preview, with the toolbar,
 /// search field, and error alert. (Compose opens in its own window.)
@@ -54,6 +55,20 @@ struct ContentView: View {
             guard press.modifiers.contains(.command) else { return .ignored }
             vm.focusSearchRequested.toggle()
             return .handled
+        }
+        // ⌘T (search) and ⌘K (palette) ride hidden buttons: a window-level key
+        // equivalent fires even when nothing has keyboard focus, which onKeyPress
+        // (used for ⌘F above) doesn't — e.g. right after launch.
+        .background {
+            Button("") { vm.focusSearchRequested.toggle() }
+                .keyboardShortcut("t", modifiers: .command)
+                .hidden()
+            Button("") { vm.showMessagePalette = true }
+                .keyboardShortcut("k", modifiers: .command)
+                .hidden()
+        }
+        .sheet(isPresented: $vm.showMessagePalette) {
+            MessagePaletteView()
         }
         // The custom-snooze picker is the only remaining sheet (the message
         // detail view now opens in its own resizable window).
@@ -152,8 +167,35 @@ private struct ToolbarSearchField: View {
         .onChange(of: vm.searchScope) { _, _ in
             if !vm.searchText.isEmpty { Task { await vm.runSearch() } }
         }
-        // ⌘F (handled in ContentView) toggles this to pull focus here.
-        .onChange(of: vm.focusSearchRequested) { _, _ in focused = true }
+        // ⌘F / ⌘T (handled in ContentView) toggle this to pull focus here.
+        .onChange(of: vm.focusSearchRequested) { _, _ in
+            focused = true
+            // FocusState alone can't pull keyboard focus into a toolbar-hosted
+            // TextField when nothing in the window has focus yet (e.g. right
+            // after launch) — walk to the backing NSTextField and make it the
+            // first responder directly.
+            DispatchQueue.main.async { Self.focusToolbarSearchField() }
+        }
+    }
+
+    /// Finds the toolbar search field's backing NSTextField (the toolbar lives in
+    /// the titlebar, outside `contentView`, so the walk starts at the window's
+    /// root frame view) and gives it keyboard focus.
+    private static func focusToolbarSearchField() {
+        guard let window = NSApp.keyWindow ?? NSApp.mainWindow,
+              let root = window.contentView?.superview else { return }
+        if let field = searchField(in: root) {
+            window.makeFirstResponder(field)
+        }
+    }
+
+    private static func searchField(in view: NSView) -> NSTextField? {
+        if let tf = view as? NSTextField, tf.isEditable,
+           tf.placeholderString?.hasPrefix("Search mail") == true { return tf }
+        for sub in view.subviews {
+            if let found = searchField(in: sub) { return found }
+        }
+        return nil
     }
 }
 
@@ -161,6 +203,8 @@ private struct ToolbarSearchField: View {
 /// load errors land here (orange) instead of interrupting with an alert.
 struct StatusBar: View {
     @Environment(MailboxViewModel.self) private var vm
+    /// Shows the full (untruncated) status message in a popover on click.
+    @State private var showStatusDetail = false
 
     var body: some View {
         HStack(spacing: 6) {
@@ -196,13 +240,32 @@ struct StatusBar: View {
     @ViewBuilder
     private var statusContent: some View {
         if let status = vm.statusMessage {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-            Text(status)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .help(status)
+            // The bar truncates long errors to one line; clicking opens the
+            // full, selectable message in a popover.
+            Button {
+                showStatusDetail = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(status)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            .buttonStyle(.plain)
+            .help("Click to see the full message")
+            .popover(isPresented: $showStatusDetail, arrowEdge: .top) {
+                ScrollView {
+                    Text(status)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                }
+                .frame(width: 440)
+                .frame(maxHeight: 300)
+            }
         } else if vm.isCleaningUp {
             ProgressView().controlSize(.small)
             Text(vm.cleanupProgress ?? "Cleaning up conversation…").foregroundStyle(.secondary)
