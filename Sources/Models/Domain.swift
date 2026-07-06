@@ -206,6 +206,41 @@ struct MessageBody {
     var cc: [MailAddress] = []
     /// A calendar invitation parsed from a `text/calendar` part, if present.
     var calendar: CalendarInvite? = nil
+    /// Mailing-list unsubscribe targets, when the message advertises them.
+    /// Not persisted in the body cache; repopulated on each fresh fetch.
+    var unsubscribe: UnsubscribeInfo? = nil
+}
+
+// MARK: - Unsubscribe
+
+/// Parsed `List-Unsubscribe` / `List-Unsubscribe-Post` headers (RFC 2369/8058),
+/// powering a Gmail-style Unsubscribe button.
+struct UnsubscribeInfo: Hashable {
+    /// `mailto:` target — unsubscribe by sending a message.
+    var mailto: URL?
+    /// Web (https) target — unsubscribe via the sender's page.
+    var web: URL?
+    /// RFC 8058 one-click: POSTing `List-Unsubscribe=One-Click` to `web`
+    /// unsubscribes without a browser visit.
+    var oneClick = false
+
+    /// Parses the raw header values; nil when there's no usable target.
+    static func parse(listUnsubscribe: String?, listUnsubscribePost: String?) -> UnsubscribeInfo? {
+        guard let raw = listUnsubscribe else { return nil }
+        var info = UnsubscribeInfo()
+        // The header is a comma-separated list of <uri> entries, e.g.
+        // "<mailto:leave@list.example.com>, <https://example.com/unsub?u=1>".
+        for entry in raw.split(separator: ",") {
+            let uri = entry.trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\n<>"))
+            guard let url = URL(string: uri), let scheme = url.scheme?.lowercased() else { continue }
+            if scheme == "mailto", info.mailto == nil { info.mailto = url }
+            if scheme == "https" || scheme == "http", info.web == nil { info.web = url }
+        }
+        guard info.mailto != nil || info.web != nil else { return nil }
+        info.oneClick = info.web != nil
+            && listUnsubscribePost?.range(of: "One-Click", options: .caseInsensitive) != nil
+        return info
+    }
 }
 
 // MARK: - Search

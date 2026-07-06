@@ -62,6 +62,9 @@ struct MessagePreviewView: View {
             HStack(spacing: 10) {
                 Avatar(address: header.from)
                 FromField(address: header.from)
+                if let info = unsubscribeFor(header) {
+                    UnsubscribeButton(header: header, info: info)
+                }
                 Spacer()
                 if let body = vm.currentBody, body.headerId == header.id {
                     TranslateControls(model: translation, messageId: body.headerId,
@@ -109,6 +112,12 @@ struct MessagePreviewView: View {
     private func ccFor(_ header: MessageHeader) -> [MailAddress] {
         guard let body = vm.currentBody, body.headerId == header.id else { return [] }
         return body.cc
+    }
+
+    /// Unsubscribe targets for this message, available once its body has loaded.
+    private func unsubscribeFor(_ header: MessageHeader) -> UnsubscribeInfo? {
+        guard let body = vm.currentBody, body.headerId == header.id else { return nil }
+        return body.unsubscribe
     }
 
     private var replyControls: some View {
@@ -223,6 +232,43 @@ private struct RecipientRow: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
+    }
+}
+
+/// Gmail-style Unsubscribe chip next to the sender. Silent unsubscribes
+/// (one-click POST or a mailto message) ask for confirmation first; a web-only
+/// target just opens the sender's unsubscribe page.
+private struct UnsubscribeButton: View {
+    @Environment(MailboxViewModel.self) private var vm
+    let header: MessageHeader
+    let info: UnsubscribeInfo
+    @State private var confirming = false
+
+    var body: some View {
+        Button {
+            if info.oneClick || info.mailto != nil {
+                confirming = true
+            } else {
+                Task { await vm.unsubscribe(from: header, info: info) }
+            }
+        } label: {
+            Text("Unsubscribe")
+                .font(.caption)
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(.quaternary, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help("Unsubscribe from this mailing list")
+        .confirmationDialog("Unsubscribe from \(header.from.display)?",
+                            isPresented: $confirming) {
+            Button("Unsubscribe") {
+                Task { await vm.unsubscribe(from: header, info: info) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You’ll stop receiving messages from this mailing list.")
+        }
     }
 }
 

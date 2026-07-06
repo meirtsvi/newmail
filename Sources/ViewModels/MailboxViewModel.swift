@@ -2584,6 +2584,63 @@ final class MailboxViewModel {
         return "<html><head><meta charset=\"utf-8\"></head><body><p>\(typed)</p><br>\(quoted)</body></html>"
     }
 
+    // MARK: - Unsubscribe
+
+    /// Unsubscribes from the mailing list that sent `header`, Gmail-style:
+    /// a one-click POST when the list advertises it (RFC 8058), else an
+    /// unsubscribe email to the `mailto:` target, else the web page in the
+    /// browser. Results land in the status bar.
+    func unsubscribe(from header: MessageHeader, info: UnsubscribeInfo) async {
+        do {
+            if info.oneClick, let url = info.web {
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+                request.httpBody = Data("List-Unsubscribe=One-Click".utf8)
+                let (_, response) = try await URLSession.shared.data(for: request)
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    throw MailError.api(http.statusCode, "The list rejected the unsubscribe request.")
+                }
+            } else if let mailto = info.mailto {
+                try await sendUnsubscribeMail(to: mailto, accountId: header.accountId)
+            } else if let url = info.web {
+                NSWorkspace.shared.open(url)
+                return
+            } else {
+                return
+            }
+            setCleanupResult("Unsubscribed from \(header.from.display).")
+        } catch {
+            // The silent paths failed — fall back to the sender's page so the
+            // user can still get off the list by hand.
+            if let url = info.web { NSWorkspace.shared.open(url) }
+            errorMessage = "Couldn’t unsubscribe: \(error.localizedDescription)"
+        }
+    }
+
+    /// Sends the RFC 2369 unsubscribe message: To/Subject/Body come from the
+    /// `mailto:` URL's target and query parameters, via the account that
+    /// received the newsletter.
+    private func sendUnsubscribeMail(to mailto: URL, accountId: String) async throws {
+        guard let session = sessions.first(where: { $0.account.id == accountId }) ?? sessions.first,
+              let components = URLComponents(url: mailto, resolvingAgainstBaseURL: false),
+              !components.path.isEmpty else {
+            throw MailError.other("The unsubscribe address is invalid.")
+        }
+        func param(_ name: String) -> String? {
+            components.queryItems?.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }?.value
+        }
+        let subject = param("subject") ?? "Unsubscribe"
+        let bodyText = param("body") ?? "Please unsubscribe me from this mailing list."
+        let mime = MIMEBuilder.buildHTML(
+            from: session.account.email, to: components.path, cc: "",
+            subject: subject,
+            html: "<html><body><p>\(escape(bodyText))</p></body></html>",
+            attachments: []
+        )
+        try await session.provider.send(rawMIME: mime)
+    }
+
     private func syncNotificationPanel() {
         if notifications.isEmpty && eventReminders.isEmpty { notificationPanel?.hide() }
         else { notificationPanel?.show() }

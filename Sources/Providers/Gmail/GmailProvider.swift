@@ -367,11 +367,17 @@ final class GmailProvider: MailProvider {
         if invite?.method == .counter {
             invite?.eventURL = Self.googleEventURL(inHTML: html)
         }
-        let ccRaw = msg.payload?.headers?
-            .first { $0.name.caseInsensitiveCompare("cc") == .orderedSame }?.value ?? ""
+        func topHeader(_ name: String) -> String? {
+            msg.payload?.headers?
+                .first { $0.name.caseInsensitiveCompare(name) == .orderedSame }?.value
+        }
+        let ccRaw = topHeader("cc") ?? ""
         return MessageBody(headerId: id, html: assembled.html, plainText: text,
                            attachments: attachments + assembled.imageAttachments,
-                           cc: MailAddress.parseList(ccRaw), calendar: invite)
+                           cc: MailAddress.parseList(ccRaw), calendar: invite,
+                           unsubscribe: UnsubscribeInfo.parse(
+                               listUnsubscribe: topHeader("List-Unsubscribe"),
+                               listUnsubscribePost: topHeader("List-Unsubscribe-Post")))
     }
 
     /// Downloads and decodes a single attachment's bytes (used to read an

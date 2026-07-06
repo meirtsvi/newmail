@@ -46,6 +46,11 @@ enum GraphAPI {
         var content: String?
     }
 
+    struct InternetMessageHeader: Codable {
+        var name: String?
+        var value: String?
+    }
+
     struct Message: Codable {
         var id: String
         var conversationId: String?
@@ -61,6 +66,7 @@ enum GraphAPI {
         var flag: FollowupFlag?
         var parentFolderId: String?
         var body: ItemBody?
+        var internetMessageHeaders: [InternetMessageHeader]?
     }
 
     struct MessageList: Codable {
