@@ -25,7 +25,14 @@ struct FeedSettingsView: View {
         }
         .frame(width: 760, height: 440)
         // Escape closes the Settings window (not the default for a Settings scene).
-        .onExitCommand { NSApp.keyWindow?.close() }
+        // A hidden cancel-action button catches Escape no matter which tab or
+        // control has focus; .onExitCommand on the TabView only fired when the
+        // tab content itself didn't swallow the key.
+        .background(
+            Button("") { NSApp.keyWindow?.close() }
+                .keyboardShortcut(.cancelAction)
+                .hidden()
+        )
     }
 }
 
@@ -108,7 +115,7 @@ private struct NotificationSettingsTab: View {
         Form {
             Section("New mail") {
                 Toggle("Show popups", isOn: $mailPopups)
-                    .help("Show a card in the top-right corner when new mail arrives")
+                    .help("Show a card in the bottom-right corner when new mail arrives")
                 Toggle("Play sound", isOn: $mailSound)
                     .help("Play an alert sound when a new mail card appears")
                 CustomSoundRow(storageKey: NotificationPrefs.mailSoundFileKey, folder: "mail")
@@ -122,7 +129,7 @@ private struct NotificationSettingsTab: View {
             } header: {
                 Text("Calendar reminders")
             } footer: {
-                Text("Popups appear in the top-right corner of the screen. Turning one off only stops new cards; anything already on screen stays until dismissed.")
+                Text("Popups appear in the bottom-right corner of the screen. Turning one off only stops new cards; anything already on screen stays until dismissed.")
             }
         }
         .formStyle(.grouped)
