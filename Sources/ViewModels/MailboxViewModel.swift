@@ -140,8 +140,12 @@ final class MailboxViewModel {
     private var activeSearchQuery: String?
     // The in-flight search, cancelled when a newer query supersedes it.
     private var searchTask: Task<Void, Never>?
-    // Toggled by ⌘F to pull keyboard focus into the search field.
+    // Toggled by ⌘F / ⌘T to pull keyboard focus into the search field.
     var focusSearchRequested = false
+    // ⌘K quick-open palette over the loaded message list.
+    var showMessagePalette = false
+    // Set by the palette on Enter; the message list scrolls this row into view.
+    var scrollToMessageId: String?
 
     // Status
     var isLoading = false
@@ -1482,12 +1486,41 @@ final class MailboxViewModel {
             } else {
                 authMessage = "Signed in, but write scopes were not granted. Your organization may restrict modify/send for this app."
             }
-            if let session = sessions.first(where: { $0.account.id == currentAccountId }) {
-                try? await loadFolders(for: session)
-            }
-            await reloadCurrentFolder()
+            await reconcileGmailSessions()
         } catch {
             errorMessage = "Sign-in failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Whether any Google account has actually connected (its profile loaded at
+    /// least once). Drives the sidebar's "Add Google Account" offer and the
+    /// Settings wording ("Sign in…" vs "Sign in again…").
+    var hasConnectedGoogleAccount: Bool {
+        gmailSessions.contains { !$0.account.email.isEmpty }
+    }
+
+    /// Re-runs the Gmail side of `bootstrap` after an interactive sign-in: loads
+    /// each session's profile and folders and clears the stale connection error
+    /// from the failed attempt — so the fix takes effect without relaunching.
+    private func reconcileGmailSessions() async {
+        statusMessage = nil
+        for session in gmailSessions {
+            do {
+                try await session.provider.loadProfile()
+                updateAccountEmail(session.account.id, email: session.provider.accountEmail)
+                try await loadFolders(for: session)
+                startSnooze(for: session)
+            } catch {
+                statusMessage = "Couldn’t connect \(connectLabel(session)): \(error.localizedDescription)"
+            }
+        }
+        // First successful connect: no folder was ever opened — open the inbox.
+        if currentFolder == nil, let first = gmailSessions.first,
+           let inbox = foldersByAccount[first.account.id]?.first(where: { $0.kind == .inbox }) {
+            sidebarSelection = "acct:\(inbox.compositeId)"
+            await selectFolder(inbox)
+        } else {
+            await reloadCurrentFolder()
         }
     }
 

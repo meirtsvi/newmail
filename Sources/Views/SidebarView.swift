@@ -59,6 +59,18 @@ struct SidebarView: View {
             }
 
             Section {
+                // The app supports a single Google identity (one stored token),
+                // so the connect offer disappears once it's signed in — re-auth
+                // lives in Settings → Account.
+                if !vm.hasConnectedGoogleAccount {
+                    Button {
+                        Task { await vm.signInForWriteAccess() }
+                    } label: {
+                        Label(vm.isSigningIn ? "Adding…" : "Add Google Account", systemImage: "plus.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(vm.isSigningIn)
+                }
                 Button {
                     Task { await vm.addMicrosoftAccount() }
                 } label: {

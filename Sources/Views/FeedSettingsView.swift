@@ -44,7 +44,9 @@ private struct AccountSettingsTab: View {
             Section("Google account") {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(vm.gmailSessions.first.map { $0.account.email.isEmpty ? $0.account.displayName : $0.account.email } ?? "Google")
+                        Text(vm.hasConnectedGoogleAccount
+                             ? vm.gmailSessions.first.map { $0.account.email.isEmpty ? $0.account.displayName : $0.account.email } ?? "Google"
+                             : "Not connected")
                         if let message = vm.authMessage {
                             Text(message)
                                 .font(.caption)
@@ -61,11 +63,13 @@ private struct AccountSettingsTab: View {
                                 Text("Signing in…")
                             }
                         } else {
-                            Text("Sign in again…")
+                            Text(vm.hasConnectedGoogleAccount ? "Sign in again…" : "Sign in…")
                         }
                     }
                     .disabled(vm.isSigningIn)
-                    .help("Re-run the Google sign-in in your browser to fix authorization errors")
+                    .help(vm.hasConnectedGoogleAccount
+                          ? "Re-run the Google sign-in in your browser to fix authorization errors"
+                          : "Sign in with Google in your browser to connect your Gmail account")
                 }
             }
         }
