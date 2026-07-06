@@ -67,19 +67,23 @@ struct MessagePaletteView: View {
     }
 
     private var resultsList: some View {
+        // Row identity must stay the message id (matching the ForEach id) — an
+        // extra positional .id(index) overrode it and left stale row content
+        // behind when typing shrank the result set.
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(Array(matches.enumerated()), id: \.element.id) { index, header in
                         row(header, isHighlighted: index == highlighted)
-                            .id(index)
                             .onTapGesture { choose(at: index) }
                             .onHover { if $0 { highlighted = index } }
                     }
                 }
             }
             .frame(maxHeight: 360)
-            .onChange(of: highlighted) { _, index in proxy.scrollTo(index) }
+            .onChange(of: highlighted) { _, index in
+                if matches.indices.contains(index) { proxy.scrollTo(matches[index].id) }
+            }
         }
     }
 
