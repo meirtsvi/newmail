@@ -70,6 +70,11 @@ struct ContentView: View {
         .sheet(isPresented: $vm.showMessagePalette) {
             MessagePaletteView()
         }
+        // First launch on this Mac: import the Google OAuth credentials JSON
+        // (kept in the Keychain; the bundle no longer ships credentials).
+        .sheet(isPresented: $vm.needsGoogleSetup) {
+            GoogleSetupView()
+        }
         // The custom-snooze picker is the only remaining sheet (the message
         // detail view now opens in its own resizable window).
         .sheet(item: $vm.activeSheet) { sheet in

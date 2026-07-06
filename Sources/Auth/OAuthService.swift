@@ -4,9 +4,9 @@ import CryptoKit
 import AppKit
 
 /// Interactive Google OAuth 2.0 with PKCE over a loopback redirect — the desktop
-/// "installed app" flow. Reuses the bundled client_id/secret so the consent
-/// screen reflects this app, which lets you check whether the organization
-/// permits it and whether write scopes (gmail.modify + gmail.send) are granted.
+/// "installed app" flow. Uses the client_id/secret imported during setup (kept
+/// in the Keychain, see `GoogleCredentialStore`), so the consent screen reflects
+/// whichever Google Cloud project the user's credentials belong to.
 actor OAuthService {
     static let shared = OAuthService()
 
@@ -196,12 +196,10 @@ actor OAuthService {
     // MARK: - Helpers
 
     private func loadClient() throws -> (String, String) {
-        guard let url = Bundle.main.url(forResource: "token", withExtension: "json"),
-              let data = try? Data(contentsOf: url),
-              let tok = try? JSONDecoder().decode(GoogleAuth.StoredToken.self, from: data) else {
-            throw MailError.auth("Bundled client credentials not found")
+        guard let client = GoogleCredentialStore.loadClient() else {
+            throw MailError.auth("Google client credentials not found — import your credentials JSON in setup first.")
         }
-        return (tok.client_id, tok.client_secret)
+        return (client.clientId, client.clientSecret)
     }
 
     private static func randomString(_ count: Int) -> String {

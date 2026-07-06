@@ -156,6 +156,10 @@ final class MailboxViewModel {
     var authMessage: String?
     var isSigningIn = false
     var hasWriteScope = true
+    // Initial Google setup: no client credentials in the Keychain yet, so the
+    // setup sheet asks for the credentials JSON (see GoogleCredentialStore).
+    var needsGoogleSetup = false
+    var googleSetupError: String?
     // Conversation-cleanup progress and its transient result line in the status bar.
     var isCleaningUp = false
     // The live phase message shown while cleanup runs (started → comparing → …).
@@ -283,6 +287,7 @@ final class MailboxViewModel {
     // MARK: - Bootstrap & accounts
 
     func bootstrap() async {
+        needsGoogleSetup = !GoogleCredentialStore.hasClient
         let accounts = ensureSeedAccounts()
         buildSessions(for: accounts)
 
@@ -363,8 +368,8 @@ final class MailboxViewModel {
         reminderService = service
     }
 
-    /// Loads persisted accounts, seeding a Gmail account on first launch (the app
-    /// ships with a bundled Gmail token).
+    /// Loads persisted accounts, seeding a Gmail account on first launch (its
+    /// credentials arrive through the Google setup sheet).
     private func ensureSeedAccounts() -> [MailAccount] {
         var accounts = accountStore.load()
         if accounts.isEmpty {
@@ -1490,6 +1495,41 @@ final class MailboxViewModel {
         } catch {
             errorMessage = "Sign-in failed: \(error.localizedDescription)"
         }
+    }
+
+    /// Imports the Google OAuth credentials JSON picked in the setup sheet and
+    /// stores it in the Keychain. A token.json connects immediately; a
+    /// credentials.json continues into the interactive browser sign-in.
+    func importGoogleCredentials(from url: URL) async {
+        do {
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+            let data = try Data(contentsOf: url)
+            let hadToken = try GoogleCredentialStore.importCredentials(data)
+            await GoogleAuth.shared.invalidateCache()
+            Self.removeLegacyTokenFile()
+            googleSetupError = nil
+            needsGoogleSetup = false
+            if hadToken {
+                gmailWriteScope = (try? await GoogleAuth.shared.hasWriteScope) ?? false
+                hasWriteScope = currentAccountCanWrite
+                await reconcileGmailSessions()
+            } else {
+                await signInForWriteAccess()
+            }
+        } catch {
+            googleSetupError = error.localizedDescription
+        }
+    }
+
+    /// Deletes the plaintext token.json older builds kept in Application
+    /// Support — superseded by the Keychain, and a credential leak on disk.
+    private static func removeLegacyTokenFile() {
+        let url = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("newmail", isDirectory: true)
+            .appendingPathComponent("token.json")
+        try? FileManager.default.removeItem(at: url)
     }
 
     /// Whether any Google account has actually connected (its profile loaded at

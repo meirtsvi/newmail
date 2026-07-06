@@ -1,9 +1,9 @@
 import Foundation
 
-/// Loads the Google OAuth refresh token from `token.json` (seeded from the app
-/// bundle into Application Support on first launch) and exchanges it for fresh
-/// access tokens. No interactive browser login is required — the refresh token
-/// produced by the existing Python flow is reused directly.
+/// Loads the Google OAuth refresh token from the Keychain (imported during
+/// initial setup — see `GoogleCredentialStore`) and exchanges it for fresh
+/// access tokens. Refreshed tokens are written back to the Keychain; nothing
+/// is kept on disk or in the app bundle.
 actor GoogleAuth {
     static let shared = GoogleAuth()
 
@@ -28,14 +28,6 @@ actor GoogleAuth {
     private var expiryDate: Date = .distantPast
     /// Coalesces concurrent refreshes so many callers share one network call.
     private var refreshTask: Task<StoredToken, Error>?
-
-    private var fileURL: URL {
-        let dir = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("newmail", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("token.json")
-    }
 
     // MARK: Public
 
@@ -93,8 +85,16 @@ actor GoogleAuth {
         expiryDate = expiry
         refreshTask = nil
         if let data = try? JSONEncoder().encode(token) {
-            try? data.write(to: fileURL)
+            GoogleCredentialStore.saveToken(data)
         }
+    }
+
+    /// Drops the in-memory token so the next call re-reads the Keychain —
+    /// called after new credentials are imported in setup.
+    func invalidateCache() {
+        stored = nil
+        expiryDate = .distantPast
+        refreshTask = nil
     }
 
     var hasWriteScope: Bool {
@@ -126,15 +126,8 @@ actor GoogleAuth {
     @discardableResult
     private func loadIfNeeded() throws -> StoredToken {
         if let stored { return stored }
-        let url = fileURL
-        let data: Data
-        if FileManager.default.fileExists(atPath: url.path) {
-            data = try Data(contentsOf: url)
-        } else if let bundled = Bundle.main.url(forResource: "token", withExtension: "json") {
-            data = try Data(contentsOf: bundled)
-            try? data.write(to: url)
-        } else {
-            throw MailError.auth("token.json not found in Application Support or app bundle")
+        guard let data = GoogleCredentialStore.loadToken() else {
+            throw MailError.auth("Google access isn't set up — import your credentials JSON and sign in.")
         }
         let tok = try JSONDecoder().decode(StoredToken.self, from: data)
         stored = tok
@@ -183,7 +176,7 @@ actor GoogleAuth {
         stored = updated
 
         if let out = try? JSONEncoder().encode(updated) {
-            try? out.write(to: fileURL)
+            GoogleCredentialStore.saveToken(out)
         }
         return updated
     }
