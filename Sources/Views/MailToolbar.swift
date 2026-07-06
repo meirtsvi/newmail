@@ -1,10 +1,12 @@
 import SwiftUI
+import AppKit
 
 /// The window toolbar mirroring the reference UI's quick-action row. All actions
 /// operate on the current selection and route through the shared view model.
 /// Every control has a `.help` tooltip shown on hover.
 struct MailToolbar: ToolbarContent {
     @Bindable var vm: MailboxViewModel
+    @AppStorage("darkModeEnabled") private var darkModeEnabled = false
 
     private var ids: [String] { Array(vm.selection) }
     private var hasSelection: Bool { !vm.selection.isEmpty }
@@ -115,6 +117,15 @@ struct MailToolbar: ToolbarContent {
             }
             .disabled(vm.isGeneratingDigest)
             .help("Generate a Hebrew digest of new newsletter items")
+
+            Button {
+                darkModeEnabled.toggle()
+                AppAppearance.apply(darkMode: darkModeEnabled)
+            } label: {
+                Label(darkModeEnabled ? "Light Mode" : "Dark Mode",
+                      systemImage: darkModeEnabled ? "sun.max" : "moon")
+            }
+            .help(darkModeEnabled ? "Switch to light mode" : "Switch to dark mode")
         }
     }
 

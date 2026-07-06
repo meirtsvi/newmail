@@ -3,6 +3,14 @@ import SwiftData
 import AppKit
 import UserNotifications
 
+/// App-wide light/dark override driven by the toolbar toggle. Set on `NSApp`
+/// (not per-window) so the compose / message / notification windows follow too.
+enum AppAppearance {
+    static func apply(darkMode: Bool) {
+        NSApp.appearance = NSAppearance(named: darkMode ? .darkAqua : .aqua)
+    }
+}
+
 @main
 struct NewmailApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -78,6 +86,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Restore the toolbar's dark-mode toggle (defaults to light).
+        AppAppearance.apply(darkMode: UserDefaults.standard.bool(forKey: "darkModeEnabled"))
         // The Dock unread badge is delivered through the notification system, which
         // on modern macOS requires (badge) authorization — without it neither the
         // legacy `dockTile.badgeLabel` nor `setBadgeCount` renders. Ask once.
