@@ -1478,12 +1478,15 @@ final class MailboxViewModel {
     }
 
     /// Gmail-only: re-authorize the current Google account for write access.
-    func signInForWriteAccess() async {
+    /// `setupPassword` comes from the setup sheet's password box and can unlock
+    /// the legacy built-in OAuth client.
+    func signInForWriteAccess(setupPassword: String? = nil) async {
         guard !isSigningIn else { return }
         isSigningIn = true
         defer { isSigningIn = false }
         do {
-            try await OAuthService.shared.signIn()
+            let override = setupPassword.flatMap(BuiltInGoogleClient.legacyClient(forSetupPassword:))
+            try await OAuthService.shared.signIn(clientOverride: override)
             needsGoogleSetup = false
             googleSetupError = nil
             gmailWriteScope = (try? await GoogleAuth.shared.hasWriteScope) ?? false

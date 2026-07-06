@@ -8,6 +8,7 @@ import AppKit
 struct GoogleSetupView: View {
     @Environment(MailboxViewModel.self) private var vm
     @State private var isImporting = false
+    @State private var password = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -35,15 +36,17 @@ struct GoogleSetupView: View {
                 if isImporting || vm.isSigningIn {
                     ProgressView().controlSize(.small)
                 }
+                SecureField("Password", text: $password)
+                    .frame(width: 130)
                 Button("Sign in with Google") {
-                    Task { await vm.signInForWriteAccess() }
+                    Task { await vm.signInForWriteAccess(setupPassword: password) }
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(isImporting || vm.isSigningIn)
             }
         }
         .padding(24)
-        .frame(width: 480)
+        .frame(width: 560)
         // Setup is required — no swipe/escape dismissal; only the buttons.
         .interactiveDismissDisabled()
     }

@@ -26,8 +26,8 @@ actor OAuthService {
 
     // MARK: - Flow
 
-    func signIn() async throws {
-        let client = GoogleCredentialStore.loadClient()
+    func signIn(clientOverride: GoogleCredentialStore.Client? = nil) async throws {
+        let client = clientOverride ?? GoogleCredentialStore.loadClient()
         let (clientId, clientSecret) = (client.clientId, client.clientSecret)
         let verifier = Self.randomString(64)
         let challenge = Self.codeChallenge(verifier)
