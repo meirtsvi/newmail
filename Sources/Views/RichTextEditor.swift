@@ -78,7 +78,13 @@ final class RichTextController: ObservableObject {
     func toggleUnderline() {
         guard let tv = textView, let ts = tv.textStorage else { return }
         let range = tv.selectedRange()
-        guard range.length > 0 else { return }
+        // No selection: flip the typing attribute so what's typed next is
+        // (un)underlined — "underline mode", matching every mail client's ⌘U.
+        guard range.length > 0 else {
+            let current = (tv.typingAttributes[.underlineStyle] as? Int) ?? 0
+            tv.typingAttributes[.underlineStyle] = current == 0 ? NSUnderlineStyle.single.rawValue : 0
+            return
+        }
         var allUnderlined = true
         ts.enumerateAttribute(.underlineStyle, in: range) { value, _, _ in
             if (value as? Int ?? 0) == 0 { allUnderlined = false }
@@ -176,7 +182,15 @@ final class RichTextController: ObservableObject {
         guard let tv = textView, let ts = tv.textStorage else { return }
         let range = tv.selectedRange()
         let manager = NSFontManager.shared
-        guard range.length > 0 else { return }
+        // No selection: flip the typing attribute so what's typed next carries
+        // the trait — "bold mode", matching every mail client's ⌘B.
+        guard range.length > 0 else {
+            let current = (tv.typingAttributes[.font] as? NSFont) ?? Self.defaultFont
+            tv.typingAttributes[.font] = manager.traits(of: current).contains(trait)
+                ? manager.convert(current, toNotHaveTrait: trait)
+                : manager.convert(current, toHaveTrait: trait)
+            return
+        }
         // First decide a single direction for the whole selection: only if every run
         // already has the trait do we remove it; otherwise we add it everywhere. This
         // makes the button a uniform on/off toggle instead of flipping each run

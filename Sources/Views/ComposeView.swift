@@ -288,9 +288,15 @@ struct ComposeView: View {
 
     private var formattingBar: some View {
         HStack(spacing: 12) {
-            Button { rich.toggleBold() } label: { Image(systemName: "bold") }.help("Bold")
-            Button { rich.toggleItalic() } label: { Image(systemName: "italic") }.help("Italic")
-            Button { rich.toggleUnderline() } label: { Image(systemName: "underline") }.help("Underline")
+            Button { rich.toggleBold() } label: { Image(systemName: "bold") }
+                .keyboardShortcut("b", modifiers: .command)
+                .help("Bold (⌘B)")
+            Button { rich.toggleItalic() } label: { Image(systemName: "italic") }
+                .keyboardShortcut("i", modifiers: .command)
+                .help("Italic (⌘I)")
+            Button { rich.toggleUnderline() } label: { Image(systemName: "underline") }
+                .keyboardShortcut("u", modifiers: .command)
+                .help("Underline (⌘U)")
             colorMenu
             Button { showLinkPrompt = true } label: { Image(systemName: "link") }.help("Insert link")
             Divider().frame(height: 16)
