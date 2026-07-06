@@ -95,7 +95,7 @@ private struct NotificationSettingsTab: View {
                 Toggle("Calendar reminder popups", isOn: $reminderPopups)
                     .help("Show a card when a calendar event reminder fires")
                 Toggle("Play sound", isOn: $sound)
-                    .help("Play an alert sound when a reminder card appears")
+                    .help("Play an alert sound when a new mail or reminder card appears")
             } header: {
                 Text("Notifications")
             } footer: {

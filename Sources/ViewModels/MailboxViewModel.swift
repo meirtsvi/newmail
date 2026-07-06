@@ -74,8 +74,8 @@ final class MailboxViewModel {
     // Calendar event reminder popups shown in the same floating panel.
     var eventReminders: [EventReminder] = []
     @ObservationIgnored private var reminderService: CalendarReminderService?
-    // Last time a reminder alert sound played, to debounce simultaneous pop-ups.
-    @ObservationIgnored private var lastReminderSound: Date?
+    // Last time the alert sound played, to debounce simultaneous pop-ups.
+    @ObservationIgnored private var lastAlertSound: Date?
     // Inbox message ids already seen per account, so only genuinely new mail pops.
     private var seenInboxIds: [String: Set<String>] = [:]
     @ObservationIgnored private var notificationPanel: NotificationPanelController?
@@ -2311,6 +2311,7 @@ final class MailboxViewModel {
             notifications.removeLast(notifications.count - Self.maxNotifications)
         }
         syncNotificationPanel()
+        playAlertSound()
         // Auto-dismiss the card after a few seconds (unless the user starts a reply).
         scheduleAutoDismiss(header.id)
         enqueuePretranslation(note)
@@ -2516,17 +2517,17 @@ final class MailboxViewModel {
             didAdd = true
         }
         syncNotificationPanel()
-        if didAdd { playReminderSound() }
+        if didAdd { playAlertSound() }
     }
 
-    /// Plays a single alert sound when reminder cards appear. Debounced so a batch
-    /// of reminders firing together (or back-to-back ticks) makes one sound, not one
-    /// per card.
-    private func playReminderSound() {
+    /// Plays a single alert sound when popup cards (new mail or reminders) appear.
+    /// Debounced so a batch firing together (or back-to-back ticks) makes one
+    /// sound, not one per card.
+    private func playAlertSound() {
         guard NotificationPrefs.soundEnabled else { return }
         let now = Date()
-        if let last = lastReminderSound, now.timeIntervalSince(last) < 2 { return }
-        lastReminderSound = now
+        if let last = lastAlertSound, now.timeIntervalSince(last) < 2 { return }
+        lastAlertSound = now
         (NSSound(named: "Glass") ?? NSSound(named: "Ping"))?.play()
     }
 
