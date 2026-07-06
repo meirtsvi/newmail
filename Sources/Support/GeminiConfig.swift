@@ -5,9 +5,9 @@ import Security
 /// translate/summarize features.
 ///
 /// The API key lives in the Keychain and is managed from Settings → AI.
-/// Older storage — the `geminiApiKey` UserDefaults entry, then the gitignored
-/// bundled `Resources/gemini.json` (`{ "apiKey": "…" }`) — is read once to
-/// migrate keys from previous builds.
+/// The legacy `geminiApiKey` UserDefaults entry is read once to migrate keys
+/// from previous builds. (The bundled `Resources/gemini.json` migration source
+/// was removed along with the file — the bundle carries no secrets.)
 enum GeminiConfig {
 
     /// Model used for both translation and summarization. Single place to change
@@ -49,9 +49,7 @@ enum GeminiConfig {
         // One-time migration from older storage. An empty item is written even
         // when there's nothing to migrate so the Keychain always answers from
         // here on (clearing the key in Settings sticks).
-        // A present-but-empty defaults entry means the key was cleared there —
-        // honor that rather than falling back to the file.
-        let migrated = legacyDefaultsValue ?? (hadDefaultsEntry ? "" : legacyFileKey ?? "")
+        let migrated = legacyDefaultsValue ?? ""
         keychainWrite(migrated)
         UserDefaults.standard.removeObject(forKey: legacyDefaultsKey)
         return migrated.isEmpty ? nil : migrated
@@ -85,27 +83,11 @@ enum GeminiConfig {
         }
     }
 
-    // MARK: - Legacy storage (migration sources)
-
-    private static var hadDefaultsEntry: Bool {
-        UserDefaults.standard.string(forKey: legacyDefaultsKey) != nil
-    }
+    // MARK: - Legacy storage (migration source)
 
     private static var legacyDefaultsValue: String? {
         guard let stored = UserDefaults.standard.string(forKey: legacyDefaultsKey) else { return nil }
         let key = stored.trimmingCharacters(in: .whitespacesAndNewlines)
         return key.isEmpty ? nil : key
     }
-
-    private static var legacyFileKey: String? {
-        guard let url = Bundle.main.url(forResource: "gemini", withExtension: "json"),
-              let data = try? Data(contentsOf: url),
-              let stored = try? JSONDecoder().decode(Stored.self, from: data) else {
-            return nil
-        }
-        let key = stored.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        return key.isEmpty ? nil : key
-    }
-
-    private struct Stored: Decodable { let apiKey: String }
 }
