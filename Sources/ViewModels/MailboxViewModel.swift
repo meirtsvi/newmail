@@ -287,7 +287,7 @@ final class MailboxViewModel {
     // MARK: - Bootstrap & accounts
 
     func bootstrap() async {
-        needsGoogleSetup = !GoogleCredentialStore.hasClient
+        needsGoogleSetup = GoogleCredentialStore.loadToken() == nil
         let accounts = ensureSeedAccounts()
         buildSessions(for: accounts)
 
@@ -1484,6 +1484,8 @@ final class MailboxViewModel {
         defer { isSigningIn = false }
         do {
             try await OAuthService.shared.signIn()
+            needsGoogleSetup = false
+            googleSetupError = nil
             gmailWriteScope = (try? await GoogleAuth.shared.hasWriteScope) ?? false
             hasWriteScope = currentAccountCanWrite
             if gmailWriteScope {
@@ -1494,6 +1496,8 @@ final class MailboxViewModel {
             await reconcileGmailSessions()
         } catch {
             errorMessage = "Sign-in failed: \(error.localizedDescription)"
+            // The setup sheet shows its own error label while it's up.
+            if needsGoogleSetup { googleSetupError = errorMessage }
         }
     }
 

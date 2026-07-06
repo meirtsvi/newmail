@@ -2,11 +2,11 @@ import Foundation
 import Security
 
 /// Keychain-backed storage for the Google OAuth client credentials and token.
-/// The credentials JSON is imported by the user during initial setup — either a
+/// By default the app uses the shared `BuiltInGoogleClient`, so sign-in needs
+/// no setup. Power users can still import their own client — either a
 /// `credentials.json` downloaded from Google Cloud Console (a "Desktop app"
-/// OAuth client) or a full `token.json` from the Python flow. Nothing ships in
-/// the app bundle anymore; every install imports its own file once and the
-/// Keychain answers from then on.
+/// OAuth client) or a full `token.json` from the Python flow — and an imported
+/// client takes precedence over the built-in one.
 enum GoogleCredentialStore {
 
     struct Client {
@@ -29,16 +29,18 @@ enum GoogleCredentialStore {
         var token_uri: String?
     }
 
-    /// True once setup has run (credentials were imported on this Mac).
-    static var hasClient: Bool { loadClient() != nil }
-
-    static func loadClient() -> Client? {
-        guard let data = read(clientAccount),
-              let client = try? JSONDecoder().decode(StoredClient.self, from: data),
-              !client.client_id.isEmpty, !client.client_secret.isEmpty else { return nil }
-        return Client(clientId: client.client_id,
-                      clientSecret: client.client_secret,
-                      tokenURI: client.token_uri ?? defaultTokenURI)
+    /// Falls back to the built-in shared client when nothing was imported.
+    static func loadClient() -> Client {
+        if let data = read(clientAccount),
+           let client = try? JSONDecoder().decode(StoredClient.self, from: data),
+           !client.client_id.isEmpty, !client.client_secret.isEmpty {
+            return Client(clientId: client.client_id,
+                          clientSecret: client.client_secret,
+                          tokenURI: client.token_uri ?? defaultTokenURI)
+        }
+        return Client(clientId: BuiltInGoogleClient.clientId,
+                      clientSecret: BuiltInGoogleClient.clientSecret,
+                      tokenURI: defaultTokenURI)
     }
 
     /// Imports a credentials JSON picked by the user. Accepts a Google Cloud

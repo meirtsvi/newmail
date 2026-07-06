@@ -127,7 +127,7 @@ actor GoogleAuth {
     private func loadIfNeeded() throws -> StoredToken {
         if let stored { return stored }
         guard let data = GoogleCredentialStore.loadToken() else {
-            throw MailError.auth("Google access isn't set up — import your credentials JSON and sign in.")
+            throw MailError.auth("Google access isn't set up — sign in with Google to connect Gmail.")
         }
         let tok = try JSONDecoder().decode(StoredToken.self, from: data)
         stored = tok

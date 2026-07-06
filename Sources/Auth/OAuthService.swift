@@ -4,9 +4,9 @@ import CryptoKit
 import AppKit
 
 /// Interactive Google OAuth 2.0 with PKCE over a loopback redirect — the desktop
-/// "installed app" flow. Uses the client_id/secret imported during setup (kept
-/// in the Keychain, see `GoogleCredentialStore`), so the consent screen reflects
-/// whichever Google Cloud project the user's credentials belong to.
+/// "installed app" flow. Uses the built-in shared client by default, or the
+/// client_id/secret imported via the setup sheet's advanced path (kept in the
+/// Keychain, see `GoogleCredentialStore`).
 actor OAuthService {
     static let shared = OAuthService()
 
@@ -27,7 +27,8 @@ actor OAuthService {
     // MARK: - Flow
 
     func signIn() async throws {
-        let (clientId, clientSecret) = try loadClient()
+        let client = GoogleCredentialStore.loadClient()
+        let (clientId, clientSecret) = (client.clientId, client.clientSecret)
         let verifier = Self.randomString(64)
         let challenge = Self.codeChallenge(verifier)
 
@@ -194,13 +195,6 @@ actor OAuthService {
     }
 
     // MARK: - Helpers
-
-    private func loadClient() throws -> (String, String) {
-        guard let client = GoogleCredentialStore.loadClient() else {
-            throw MailError.auth("Google client credentials not found — import your credentials JSON in setup first.")
-        }
-        return (client.clientId, client.clientSecret)
-    }
 
     private static func randomString(_ count: Int) -> String {
         let chars = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
