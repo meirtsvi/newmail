@@ -1,16 +1,32 @@
 import SwiftUI
 import AppKit
 
-/// The Settings (⌘,) window: re-run Google sign-in (fixes 401s from an expired or
-/// revoked token), manage the list of RSS/Atom feed URLs and, when more than one
-/// Gmail account is configured, choose which one receives feed items.
+/// The Settings (⌘,) window, split into tabs by area:
+///   Account — re-run Google sign-in (fixes 401s from an expired or revoked token)
+///   Feeds   — manage RSS/Atom feed URLs and, with more than one Gmail account,
+///             choose which one receives feed items
+///   Digest  — clear the digest coverage history
+///   AI      — the Gemini API key used for translation and digest summaries
 struct FeedSettingsView: View {
+    var body: some View {
+        TabView {
+            AccountSettingsTab()
+                .tabItem { Label("Account", systemImage: "person.crop.circle") }
+            FeedsSettingsTab()
+                .tabItem { Label("Feeds", systemImage: "dot.radiowaves.up.forward") }
+            DigestSettingsTab()
+                .tabItem { Label("Digest", systemImage: "newspaper") }
+            AISettingsTab()
+                .tabItem { Label("AI", systemImage: "sparkles") }
+        }
+        .frame(width: 760, height: 440)
+        // Escape closes the Settings window (not the default for a Settings scene).
+        .onExitCommand { NSApp.keyWindow?.close() }
+    }
+}
+
+private struct AccountSettingsTab: View {
     @Environment(MailboxViewModel.self) private var vm
-    @AppStorage("feedAccountId") private var feedAccountId = ""
-    @State private var newFeedURL = ""
-    /// Flips after a clear so the row confirms it (the count itself is not
-    /// observable state — it's fetched from the store on each render).
-    @State private var ledgerCleared = false
 
     var body: some View {
         Form {
@@ -41,7 +57,18 @@ struct FeedSettingsView: View {
                     .help("Re-run the Google sign-in in your browser to fix authorization errors")
                 }
             }
+        }
+        .formStyle(.grouped)
+    }
+}
 
+private struct FeedsSettingsTab: View {
+    @Environment(MailboxViewModel.self) private var vm
+    @AppStorage("feedAccountId") private var feedAccountId = ""
+    @State private var newFeedURL = ""
+
+    var body: some View {
+        Form {
             if vm.gmailSessions.count > 1 {
                 Section("Deliver to") {
                     Picker("Gmail account", selection: $feedAccountId) {
@@ -91,7 +118,35 @@ struct FeedSettingsView: View {
             } footer: {
                 Text("New items are added to your Gmail Inbox as unread messages, checked every 5 minutes.")
             }
+        }
+        .formStyle(.grouped)
+        .onAppear {
+            if feedAccountId.isEmpty { feedAccountId = vm.gmailSessions.first?.account.id ?? "" }
+            vm.reloadFeedSubscriptions()
+        }
+    }
 
+    private var isValidURL: Bool {
+        guard let url = URL(string: newFeedURL.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let scheme = url.scheme?.lowercased() else { return false }
+        return scheme == "http" || scheme == "https"
+    }
+
+    private func add() {
+        guard isValidURL else { return }
+        vm.addFeed(newFeedURL)
+        newFeedURL = ""
+    }
+}
+
+private struct DigestSettingsTab: View {
+    @Environment(MailboxViewModel.self) private var vm
+    /// Flips after a clear so the row confirms it (the count itself is not
+    /// observable state — it's fetched from the store on each render).
+    @State private var ledgerCleared = false
+
+    var body: some View {
+        Form {
             Section {
                 HStack {
                     Text(ledgerCleared
@@ -113,25 +168,68 @@ struct FeedSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 760, height: 440)
-        // Escape closes the Settings window (not the default for a Settings scene).
-        .onExitCommand { NSApp.keyWindow?.close() }
-        .onAppear {
-            if feedAccountId.isEmpty { feedAccountId = vm.gmailSessions.first?.account.id ?? "" }
-            vm.reloadFeedSubscriptions()
-            ledgerCleared = false
+        .onAppear { ledgerCleared = false }
+    }
+}
+
+private struct AISettingsTab: View {
+    @State private var storedKey = GeminiConfig.apiKey ?? ""
+    @State private var draftKey = ""
+    @State private var isReplacing = false
+
+    var body: some View {
+        Form {
+            Section {
+                if storedKey.isEmpty || isReplacing {
+                    HStack {
+                        TextField("API key", text: $draftKey, prompt: Text("Paste your Gemini API key"))
+                            .labelsHidden()
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: .infinity)
+                            .onSubmit(save)
+                        Button("Save", action: save)
+                            .disabled(trimmedDraft.isEmpty)
+                        if isReplacing {
+                            Button("Cancel") {
+                                isReplacing = false
+                                draftKey = ""
+                            }
+                        }
+                    }
+                } else {
+                    HStack {
+                        Text(maskedKey)
+                            .font(.body.monospaced())
+                            .textSelection(.disabled)
+                        Spacer()
+                        Button("Replace…") { isReplacing = true }
+                            .help("Enter a different Gemini API key")
+                    }
+                }
+            } header: {
+                Text("Gemini API key")
+            } footer: {
+                Text("Used for Hebrew translation and digest summaries. Only the first 10 characters of the stored key are shown.")
+            }
         }
+        .formStyle(.grouped)
     }
 
-    private var isValidURL: Bool {
-        guard let url = URL(string: newFeedURL.trimmingCharacters(in: .whitespacesAndNewlines)),
-              let scheme = url.scheme?.lowercased() else { return false }
-        return scheme == "http" || scheme == "https"
+    /// First 10 characters followed by a fixed run of bullets — enough to tell
+    /// keys apart without exposing the full key (or its length).
+    private var maskedKey: String {
+        String(storedKey.prefix(10)) + String(repeating: "•", count: 6)
     }
 
-    private func add() {
-        guard isValidURL else { return }
-        vm.addFeed(newFeedURL)
-        newFeedURL = ""
+    private var trimmedDraft: String {
+        draftKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func save() {
+        guard !trimmedDraft.isEmpty else { return }
+        GeminiConfig.setAPIKey(trimmedDraft)
+        storedKey = trimmedDraft
+        draftKey = ""
+        isReplacing = false
     }
 }
