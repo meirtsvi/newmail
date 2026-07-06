@@ -81,16 +81,23 @@ gh release create "v$VERSION" "$DMG" \
 
 echo "==> Adding $VERSION to appcast.xml and pushing"
 PUB_DATE="$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S +0000')"
-ITEM="    <item>
+# The item goes through a file: BSD awk rejects multiline strings passed via -v.
+ITEM_FILE="$OUT/appcast-item.xml"
+cat > "$ITEM_FILE" <<EOF
+    <item>
       <title>Version $VERSION</title>
       <pubDate>$PUB_DATE</pubDate>
       <sparkle:version>$VERSION</sparkle:version>
       <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
-      <enclosure url=\"$DOWNLOAD_URL\" $SIGNATURE_ATTRS type=\"application/octet-stream\"/>
-    </item>"
+      <enclosure url="$DOWNLOAD_URL" $SIGNATURE_ATTRS type="application/octet-stream"/>
+    </item>
+EOF
 # Insert the new item right after <language> so the newest release is first.
-awk -v item="$ITEM" '{ print; if ($0 ~ /<language>/) print item }' appcast.xml > appcast.xml.tmp
+awk -v itemfile="$ITEM_FILE" '{
+  print
+  if ($0 ~ /<language>/) { while ((getline line < itemfile) > 0) print line }
+}' appcast.xml > appcast.xml.tmp
 mv appcast.xml.tmp appcast.xml
 
 git add appcast.xml
