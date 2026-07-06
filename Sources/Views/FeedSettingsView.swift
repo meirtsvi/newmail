@@ -69,11 +69,13 @@ private struct AccountSettingsTab: View {
 /// MailboxViewModel checks the same keys before presenting cards or playing
 /// the sound; absent keys read as enabled so existing installs keep behaving.
 enum NotificationPrefs {
-    static let soundKey = "notificationSoundEnabled"
+    static let mailSoundKey = "mailSoundEnabled"
+    static let reminderSoundKey = "reminderSoundEnabled"
     static let mailPopupsKey = "mailPopupsEnabled"
     static let reminderPopupsKey = "reminderPopupsEnabled"
 
-    static var soundEnabled: Bool { isEnabled(soundKey) }
+    static var mailSoundEnabled: Bool { isEnabled(mailSoundKey) }
+    static var reminderSoundEnabled: Bool { isEnabled(reminderSoundKey) }
     static var mailPopupsEnabled: Bool { isEnabled(mailPopupsKey) }
     static var reminderPopupsEnabled: Bool { isEnabled(reminderPopupsKey) }
 
@@ -85,19 +87,24 @@ enum NotificationPrefs {
 private struct NotificationSettingsTab: View {
     @AppStorage(NotificationPrefs.mailPopupsKey) private var mailPopups = true
     @AppStorage(NotificationPrefs.reminderPopupsKey) private var reminderPopups = true
-    @AppStorage(NotificationPrefs.soundKey) private var sound = true
+    @AppStorage(NotificationPrefs.mailSoundKey) private var mailSound = true
+    @AppStorage(NotificationPrefs.reminderSoundKey) private var reminderSound = true
 
     var body: some View {
         Form {
-            Section {
-                Toggle("New mail popups", isOn: $mailPopups)
+            Section("New mail") {
+                Toggle("Show popups", isOn: $mailPopups)
                     .help("Show a card in the top-right corner when new mail arrives")
-                Toggle("Calendar reminder popups", isOn: $reminderPopups)
+                Toggle("Play sound", isOn: $mailSound)
+                    .help("Play an alert sound when a new mail card appears")
+            }
+            Section {
+                Toggle("Show popups", isOn: $reminderPopups)
                     .help("Show a card when a calendar event reminder fires")
-                Toggle("Play sound", isOn: $sound)
-                    .help("Play an alert sound when a new mail or reminder card appears")
+                Toggle("Play sound", isOn: $reminderSound)
+                    .help("Play an alert sound when a reminder card appears")
             } header: {
-                Text("Notifications")
+                Text("Calendar reminders")
             } footer: {
                 Text("Popups appear in the top-right corner of the screen. Turning one off only stops new cards; anything already on screen stays until dismissed.")
             }

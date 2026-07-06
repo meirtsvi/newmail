@@ -2311,7 +2311,7 @@ final class MailboxViewModel {
             notifications.removeLast(notifications.count - Self.maxNotifications)
         }
         syncNotificationPanel()
-        playAlertSound()
+        if NotificationPrefs.mailSoundEnabled { playAlertSound() }
         // Auto-dismiss the card after a few seconds (unless the user starts a reply).
         scheduleAutoDismiss(header.id)
         enqueuePretranslation(note)
@@ -2517,14 +2517,13 @@ final class MailboxViewModel {
             didAdd = true
         }
         syncNotificationPanel()
-        if didAdd { playAlertSound() }
+        if didAdd, NotificationPrefs.reminderSoundEnabled { playAlertSound() }
     }
 
     /// Plays a single alert sound when popup cards (new mail or reminders) appear.
-    /// Debounced so a batch firing together (or back-to-back ticks) makes one
-    /// sound, not one per card.
+    /// Callers check their own sound preference first. Debounced so a batch firing
+    /// together (or back-to-back ticks) makes one sound, not one per card.
     private func playAlertSound() {
-        guard NotificationPrefs.soundEnabled else { return }
         let now = Date()
         if let last = lastAlertSound, now.timeIntervalSince(last) < 2 { return }
         lastAlertSound = now
