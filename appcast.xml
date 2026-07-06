@@ -9,6 +9,14 @@
     <link>https://github.com/meirtsvi/newmail</link>
     <description>newmail updates</description>
     <language>en</language>
+    <item>
+      <title>Version 0.3.0</title>
+      <pubDate>Mon, 06 Jul 2026 15:58:20 +0000</pubDate>
+      <sparkle:version>0.3.0</sparkle:version>
+      <sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/meirtsvi/newmail/releases/download/v0.3.0/newmail-0.3.0.dmg" sparkle:edSignature="jUu6/5XpW12wxPkDpg5s6GQovruSr855oPFjpy6Vnw/B1p2oOXoeCEZOSU3dNME0ENuSi0t9RYaEPpO4HAcGCQ==" length="7765876" type="application/octet-stream"/>
+    </item>
     <!-- 0.2.0 was pulled: its DMG bundled Google OAuth credentials. The next
          Tools/release.sh run appends the first clean release here. -->
   </channel>
