@@ -119,45 +119,52 @@ private struct FeedsSettingsTab: View {
     @State private var newFeedURL = ""
 
     var body: some View {
-        Form {
-            if vm.gmailSessions.count > 1 {
-                Section("Deliver to") {
-                    Picker("Gmail account", selection: $feedAccountId) {
-                        ForEach(vm.gmailSessions) { session in
-                            Text(session.account.email.isEmpty ? session.account.displayName : session.account.email)
-                                .tag(session.account.id)
+        // The form (account picker + feed list) scrolls; the add-feed row sits
+        // below it in a fixed bar so it stays visible however long the list gets.
+        VStack(spacing: 0) {
+            Form {
+                if vm.gmailSessions.count > 1 {
+                    Section("Deliver to") {
+                        Picker("Gmail account", selection: $feedAccountId) {
+                            ForEach(vm.gmailSessions) { session in
+                                Text(session.account.email.isEmpty ? session.account.displayName : session.account.email)
+                                    .tag(session.account.id)
+                            }
                         }
-                    }
-                    .onChange(of: feedAccountId) { _, _ in vm.startFeeds() }
-                }
-            }
-
-            Section("Feeds") {
-                if vm.feedSubscriptions.isEmpty {
-                    Text("No feeds yet. Add an RSS or Atom feed URL below.")
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(vm.feedSubscriptions) { sub in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(sub.title.isEmpty ? sub.url : sub.title)
-                            Text(sub.url)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-                        Spacer()
-                        Button(role: .destructive) { vm.removeFeed(sub) } label: {
-                            Image(systemName: "trash")
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Remove feed")
+                        .onChange(of: feedAccountId) { _, _ in vm.startFeeds() }
                     }
                 }
-            }
 
-            Section {
+                Section("Feeds") {
+                    if vm.feedSubscriptions.isEmpty {
+                        Text("No feeds yet. Add an RSS or Atom feed URL below.")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(vm.feedSubscriptions) { sub in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(sub.title.isEmpty ? sub.url : sub.title)
+                                Text(sub.url)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                            Spacer()
+                            Button(role: .destructive) { vm.removeFeed(sub) } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Remove feed")
+                        }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     TextField("Feed URL", text: $newFeedURL, prompt: Text("https://example.com/feed.xml"))
                         .labelsHidden()
@@ -166,11 +173,12 @@ private struct FeedsSettingsTab: View {
                         .onSubmit(add)
                     Button("Add", action: add).disabled(!isValidURL)
                 }
-            } footer: {
                 Text("New items are added to your Gmail Inbox as unread messages, checked every 5 minutes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
+            .padding(12)
         }
-        .formStyle(.grouped)
         .onAppear {
             if feedAccountId.isEmpty { feedAccountId = vm.gmailSessions.first?.account.id ?? "" }
             vm.reloadFeedSubscriptions()
