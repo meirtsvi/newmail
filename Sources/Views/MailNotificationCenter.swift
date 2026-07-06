@@ -382,6 +382,12 @@ private struct MailNotificationCard: View {
             if invite.method != .counter, let organizer = invite.organizer {
                 inviteDetail("person.crop.circle", "Organized by \(organizer.display)")
             }
+            if !invite.attendees.isEmpty {
+                inviteDetail("person.2", invite.attendees.map(\.display).joined(separator: ", "))
+                    .lineLimit(4)
+                    // Hovering shows every invitee with their address.
+                    .help(invite.attendees.map(\.nameAndEmail).joined(separator: "\n"))
+            }
 
             switch invite.method {
             case .cancel:  inviteCanceledControls
