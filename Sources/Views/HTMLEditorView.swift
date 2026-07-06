@@ -72,7 +72,11 @@ struct HTMLEditorView: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             // Turn on whole-document editing and add an editor-only stylesheet (kept
-            // out of the saved HTML by exportHTML) so images don't overflow the pane.
+            // out of the saved HTML by exportHTML) so images don't overflow the pane
+            // and the text shows in the same system font the reading pane applies
+            // (HTMLView.wrap) — without it WebKit falls back to Times for messages
+            // that don't set their own font. The saved HTML stays bare either way;
+            // the viewer re-applies the same defaults at display time.
             // The capturing keydown listener routes Shift-Tab back to native (via the
             // shiftTab message handler) instead of letting designMode swallow it, so
             // focus returns to the Subject field.
@@ -81,7 +85,10 @@ struct HTMLEditorView: NSViewRepresentable {
             if (!document.getElementById('nm-editor-only')) {
               var s = document.createElement('style');
               s.id = 'nm-editor-only';
-              s.textContent = 'img{max-width:100%;height:auto;} body{margin:8px;}';
+              s.textContent = 'img{max-width:100%;height:auto;} body{margin:8px;' +
+                'font:-apple-system-body;' +
+                'font-family:-apple-system,"SF Pro Text",Helvetica,Arial,sans-serif;' +
+                'line-height:1.5;word-wrap:break-word;}';
               (document.head || document.documentElement).appendChild(s);
             }
             document.addEventListener('keydown', function (e) {
