@@ -949,7 +949,12 @@ final class MailboxViewModel {
     }
 
     func selectFolder(_ folder: MailFolder) async {
-        guard currentFolder?.compositeId != folder.compositeId else { return }
+        // Clicking the folder that's already open: normally a no-op, but while
+        // showing search results it means "back to the folder listing".
+        guard currentFolder?.compositeId != folder.compositeId else {
+            if isSearching || !searchText.isEmpty { await clearSearch() }
+            return
+        }
         currentAccountId = folder.accountId
         currentFolder = folder
         accountEmail = sessions.first { $0.account.id == folder.accountId }?.account.email ?? ""
@@ -1603,6 +1608,9 @@ final class MailboxViewModel {
         nlProposedQuery = nil
         if let folder = currentFolder {
             messages = store.cachedHeaders(folderId: folder.id, accountId: folder.accountId)
+            // Re-highlight the folder deselected when the search started. Setting
+            // the same-folder selection re-enters selectFolder, which no-ops.
+            if sidebarSelection == nil { sidebarSelection = "acct:\(folder.compositeId)" }
         }
         await loadMessages()
     }
@@ -1654,6 +1662,10 @@ final class MailboxViewModel {
     private func performSearch(_ text: String) async {
         guard let provider = currentProvider else { return }
         isSearching = true
+        // Deselect the folder row while showing results: search is its own mode,
+        // and only a selection *change* re-fires the sidebar's onChange — so this
+        // is what lets clicking the current folder exit search mode.
+        sidebarSelection = nil
         isSearchInProgress = true
         searchResultSummary = nil
         let scope = searchScope

@@ -138,13 +138,17 @@ private struct ToolbarSearchField: View {
                 // small ideal keeps the field visible on a 13"/14" MacBook Pro
                 // display; maxWidth lets it stretch when the window is wider.
                 .frame(minWidth: 160, idealWidth: 300, maxWidth: 640)
-            if !vm.searchText.isEmpty {
-                Button { Task { await vm.clearSearch() } } label: {
-                    Image(systemName: "xmark.circle.fill")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+            // Always laid out (just invisible while empty) so the toolbar item's
+            // measured width includes it — on a narrow display NSToolbar won't
+            // grant the extra width when it appears later, clipping it entirely.
+            Button { Task { await vm.clearSearch() } } label: {
+                Image(systemName: "xmark.circle.fill")
             }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .opacity(vm.searchText.isEmpty ? 0 : 1)
+            .disabled(vm.searchText.isEmpty)
+            .help("Clear search (Esc)")
             // Natural-language search: sparkles asks Gemini to rewrite the typed
             // text into search operators; the proposal opens in the popover below.
             if vm.isRewritingSearch {
