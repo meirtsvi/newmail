@@ -31,6 +31,12 @@ struct ComposeView: View {
     /// move between them in order; the body editor is reached via `rich`.
     @FocusState private var focus: ComposeField?
 
+    /// Replies open with the recipients and subject already filled in, so keyboard
+    /// focus starts in the body instead of the To field.
+    private var startsInBody: Bool {
+        request.kind == .reply || request.kind == .replyAll
+    }
+
     var body: some View {
         GeometryReader { geo in
             VStack(spacing: 0) {
@@ -101,6 +107,11 @@ struct ComposeView: View {
                 }
             } else {
                 seedDraftBaseline()
+            }
+            // Deferred a runloop so the body grabs focus after the freshly opened
+            // window has become key (same reason the To field defers its focus).
+            if startsInBody {
+                DispatchQueue.main.async { rich.focus() }
             }
         }
         // A draft save changes the underlying message (Gmail re-versions it, Graph
@@ -243,7 +254,7 @@ struct ComposeView: View {
             // shown for context but kept as-is.
             RecipientField(title: "To", text: $request.to,
                            suggest: vm.contactSuggestions, focus: $focus,
-                           field: .to, next: .cc, focusOnAppear: true)
+                           field: .to, next: .cc, focusOnAppear: !startsInBody)
                 .disabled(request.kind == .edit)
             RecipientField(title: "Cc", text: $request.cc,
                            suggest: vm.contactSuggestions, focus: $focus,
