@@ -152,7 +152,7 @@ struct MessageDetailView: View {
     @ViewBuilder
     private var bodyBlock: some View {
         if let body = vm.modalBody {
-            HTMLView(html: translation.displayHTML(original: body.html), finder: finder, zoom: zoom)
+            HTMLView(html: translation.displayHTML(original: body.html), finder: finder, zoom: zoom, horizontalMargin: 24)
         } else {
             VStack { Spacer(); ProgressView(); Spacer() }.frame(maxWidth: .infinity)
         }

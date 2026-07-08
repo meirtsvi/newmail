@@ -28,6 +28,8 @@ struct HTMLView: NSViewRepresentable {
     var zoom: Double = 1.0
     /// Horizontal page margin in CSS px. Kept inside the page (rather than
     /// SwiftUI padding around the web view) so the scrollbar hugs the pane edge.
+    /// Applied as inline padding on a wrapper div, not on `body`: many emails
+    /// ship a `body { margin: 0 }` reset that would override a body margin.
     var horizontalMargin: Int = 16
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -99,13 +101,13 @@ struct HTMLView: NSViewRepresentable {
           body {
             font: -apple-system-body;
             font-family: -apple-system, "SF Pro Text", Helvetica, Arial, sans-serif;
-            margin: 16px \(horizontalMargin)px; line-height: 1.5; word-wrap: break-word;
+            margin: 0; line-height: 1.5; word-wrap: break-word;
           }
           img { max-width: 100%; height: auto; }
           table { max-width: 100%; }
           a { color: #0a66c2; }
           pre { white-space: pre-wrap; }
-        </style></head><body>\(body)</body></html>
+        </style></head><body><div style="padding: 16px \(horizontalMargin)px;">\(body)</div></body></html>
         """
     }
 }
