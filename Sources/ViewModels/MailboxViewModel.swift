@@ -1791,7 +1791,8 @@ final class MailboxViewModel {
             setCleanupResult("Cleanup: couldn’t load the selected message.")
             return
         }
-        guard canonicalContent(selectedBody).count >= 8 else {
+        let forms = canonicalForms(selectedBody)
+        guard max(forms.plain.count, forms.html.count) >= 8 else {
             setCleanupResult("Cleanup: nothing to compare."); return
         }
 
@@ -1846,24 +1847,44 @@ final class MailboxViewModel {
                                    excluding excluded: Set<String> = [],
                                    progress: (Int, Int) -> Void = { _, _ in }) async -> [String] {
         guard let selectedBody = await ensureBody(for: selected) else { return [] }
-        let target = canonicalContent(selectedBody)
-        guard target.count >= 8 else { return [] }
+        let target = canonicalForms(selectedBody)
+        guard max(target.plain.count, target.html.count) >= 8 else { return [] }
 
-        // Only messages in the same conversation can be quoted by this one; an older
-        // message that's a substring of the selected one is redundant.
+        // An older message quoted in full by this one is redundant. Same thread, or —
+        // for conversations the server split (ticket systems often break threading) —
+        // the same subject once Re:/Fwd: prefixes are dropped.
+        let subject = Self.normalizedSubject(selected.subject)
         let candidates = messages.filter {
             $0.id != selected.id && !excluded.contains($0.id)
-                && $0.threadId == selected.threadId && $0.date <= selected.date
+                && ($0.threadId == selected.threadId
+                    || (!subject.isEmpty && Self.normalizedSubject($0.subject) == subject))
+                && $0.date <= selected.date
         }
         var toDelete: [String] = []
         for (index, cand) in candidates.enumerated() {
             progress(index + 1, candidates.count)
             guard let body = await ensureBody(for: cand) else { continue }
-            let content = canonicalContent(body)
-            guard content.count >= 8, content.count <= target.count else { continue }
-            if target.contains(content) { toDelete.append(cand.id) }
+            let content = canonicalForms(body)
+            // The plain-text and HTML parts of a message are rendered independently by
+            // senders and drift apart (e.g. Zendesk bolds with ** in one and <b> in the
+            // other), so containment in either representation counts.
+            let plainHit = content.plain.count >= 8 && content.plain.count <= target.plain.count
+                && target.plain.contains(content.plain)
+            let htmlHit = content.html.count >= 8 && content.html.count <= target.html.count
+                && target.html.contains(content.html)
+            if plainHit || htmlHit { toDelete.append(cand.id) }
         }
         return toDelete
+    }
+
+    /// Subject with leading Re:/Fwd:/Fw: prefixes dropped and lowercased, so replies in
+    /// a server-split conversation still compare as the same one.
+    private static func normalizedSubject(_ subject: String) -> String {
+        var s = subject.trimmingCharacters(in: .whitespaces)
+        while let prefix = ["re:", "fwd:", "fw:"].first(where: { s.lowercased().hasPrefix($0) }) {
+            s = String(s.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+        }
+        return s.lowercased()
     }
 
     /// Shows a cleanup result in the status bar, auto-clearing after a few seconds.
@@ -1875,16 +1896,28 @@ final class MailboxViewModel {
         }
     }
 
-    /// Normalizes a body to a comparable token stream: strips quote markers, collapses
-    /// whitespace, and lowercases — so a quoted copy matches the original regardless of
-    /// re-wrapping. Prefers the plain-text part, falling back to crudely stripped HTML.
-    private func canonicalContent(_ body: MessageBody) -> String {
-        let text = body.plainText.isEmpty ? Self.stripHTML(body.html) : body.plainText
-        return text
+    /// The plain-text and HTML parts of a body, each normalized for containment checks.
+    private func canonicalForms(_ body: MessageBody) -> (plain: String, html: String) {
+        (canonicalContent(body.plainText), canonicalContent(Self.stripHTML(body.html)))
+    }
+
+    /// Normalizes text to a comparable token stream: strips quote markers, markdown
+    /// emphasis (* and #), separator runs of dashes and URLs, collapses whitespace, and
+    /// lowercases — so a quoted copy matches the original regardless of re-wrapping or
+    /// the sender re-rendering emphasis and links.
+    private func canonicalContent(_ text: String) -> String {
+        text
             .replacingOccurrences(of: ">", with: " ")
+            .replacingOccurrences(of: "*", with: "")
+            .replacingOccurrences(of: "#", with: "")
             .lowercased()
             .components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }
+            .filter { token in
+                guard !token.isEmpty, !token.allSatisfy({ $0 == "-" }) else { return false }
+                let bare = token.hasPrefix("<") ? String(token.dropFirst()) : token
+                return !bare.hasPrefix("http://") && !bare.hasPrefix("https://")
+                    && !bare.hasPrefix("www.")
+            }
             .joined(separator: " ")
     }
 
