@@ -32,27 +32,33 @@ struct ComposeView: View {
     @FocusState private var focus: ComposeField?
 
     var body: some View {
-        VStack(spacing: 0) {
-            titleBar
-            Divider()
-            fields
-            Divider()
-            if request.kind == .edit {
-                // Edit in place on the real HTML so the message keeps its formatting.
-                HTMLEditorView(html: request.bodyHTML, controller: htmlEditor)
-                    .frame(minHeight: 240)
-            } else {
-                formattingBar
-                RichTextEditor(controller: rich)
-                    .frame(minHeight: 160)
-            }
-            if !attachments.isEmpty || !rich.inlineImages.isEmpty || loadingAttachments {
+        GeometryReader { geo in
+            VStack(spacing: 0) {
+                titleBar
                 Divider()
-                attachmentBar
-            }
-            if !request.quotedHTML.isEmpty {
+                fields
                 Divider()
-                quotedPreview
+                if request.kind == .edit {
+                    // Edit in place on the real HTML so the message keeps its formatting.
+                    HTMLEditorView(html: request.bodyHTML, controller: htmlEditor)
+                        .frame(minHeight: 240)
+                } else {
+                    formattingBar
+                    RichTextEditor(controller: rich)
+                        .frame(minHeight: 100)
+                }
+                if !attachments.isEmpty || !rich.inlineImages.isEmpty || loadingAttachments {
+                    Divider()
+                    attachmentBar
+                }
+                if !request.quotedHTML.isEmpty {
+                    Divider()
+                    // The quoted original gets two thirds of the window, capped so
+                    // the title bar, fields, toolbar and editor stay usable when the
+                    // window is short.
+                    quotedPreview
+                        .frame(height: min(geo.size.height * 2 / 3, geo.size.height - 300))
+                }
             }
         }
         .frame(minWidth: 480, idealWidth: 640, minHeight: 380,
@@ -440,7 +446,7 @@ struct ComposeView: View {
                 .font(.caption).foregroundStyle(.secondary)
                 .padding(.horizontal, 12).padding(.top, 6)
             HTMLView(html: request.quotedHTML)
-                .frame(height: 180)
+                .frame(maxHeight: .infinity)
         }
     }
 
