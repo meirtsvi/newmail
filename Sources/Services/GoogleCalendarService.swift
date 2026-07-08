@@ -142,7 +142,7 @@ actor GoogleCalendarService {
                     id: event.id,
                     eventId: event.id, title: event.title,
                     start: event.start, isAllDay: false, fireDate: fireDate,
-                    joinURL: event.joinURL, location: item.location, htmlLink: htmlLink
+                    joinURL: event.joinURL, location: Self.displayLocation(from: item), htmlLink: htmlLink
                 ))
             } else if event.end > now {
                 // Event already in progress: surface a single "overdue" reminder that
@@ -156,7 +156,7 @@ actor GoogleCalendarService {
                     id: event.id,
                     eventId: event.id, title: event.title,
                     start: event.start, isAllDay: false, fireDate: now,
-                    joinURL: event.joinURL, location: item.location, htmlLink: htmlLink
+                    joinURL: event.joinURL, location: Self.displayLocation(from: item), htmlLink: htmlLink
                 ))
             }
             // Events already ended (event.end <= now) are skipped entirely.
@@ -288,6 +288,29 @@ actor GoogleCalendarService {
                             isAllDay: true, joinURL: join)
         }
         return nil
+    }
+
+    /// Human-readable location for an event's reminder card. Strips URLs out of
+    /// the location text (Zoom-scheduled events often carry the join link there,
+    /// which would otherwise hide the room name appended after it), and falls
+    /// back to booked room resources when the field is empty or link-only.
+    private static func displayLocation(from item: Item) -> String? {
+        if let raw = item.location {
+            var text = raw
+            if let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) {
+                let matches = detector.matches(in: text, range: NSRange(text.startIndex..., in: text))
+                for match in matches.reversed() {
+                    if let r = Range(match.range, in: text) { text.removeSubrange(r) }
+                }
+            }
+            let cleaned = text.trimmingCharacters(in: CharacterSet(charactersIn: " \t\n,;·•-–—"))
+            if !cleaned.isEmpty { return cleaned }
+        }
+        let rooms = (item.attendees ?? [])
+            .filter { $0.resource == true }
+            .compactMap(\.displayName)
+            .filter { !$0.isEmpty }
+        return rooms.isEmpty ? nil : rooms.joined(separator: ", ")
     }
 
     /// Best video-meeting link for an event, preferring the structured conference
