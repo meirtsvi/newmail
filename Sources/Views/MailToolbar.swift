@@ -25,7 +25,7 @@ struct MailToolbar: ToolbarContent {
                 Label("Flag", systemImage: "flag")
             }
             .disabled(!hasSelection)
-            .help("Flag")
+            .help("Flag (⌥1)")
 
             Button { vm.startReply(all: false) } label: {
                 Label("Reply", systemImage: "arrowshape.turn.up.left")
@@ -58,7 +58,7 @@ struct MailToolbar: ToolbarContent {
                 Label("Delete", systemImage: "trash")
             }
             .disabled(!hasSelection)
-            .help("Delete (⌫)")
+            .help("Delete (⌫ / ⌥4)")
 
             Menu {
                 Button { Task { await vm.cleanupConversation() } } label: {
@@ -84,7 +84,7 @@ struct MailToolbar: ToolbarContent {
                 Label("Move", systemImage: "folder")
             }
             .disabled(!hasSelection)
-            .help("Move to folder")
+            .help("Move to folder (⌥2 for quick move)")
 
             Menu {
                 SnoozeMenu(vm: vm, ids: ids)
@@ -92,7 +92,7 @@ struct MailToolbar: ToolbarContent {
                 Label("Snooze", systemImage: "clock")
             }
             .disabled(!hasSelection)
-            .help("Snooze")
+            .help("Snooze (⌥3)")
 
             Button { Task { await vm.markRead(ids, read: !allSelectedRead) } } label: {
                 Label(allSelectedRead ? "Mark Unread" : "Mark Read",

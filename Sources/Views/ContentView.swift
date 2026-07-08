@@ -56,6 +56,11 @@ struct ContentView: View {
             vm.focusSearchRequested.toggle()
             return .handled
         }
+        // ⌥1–⌥4 quick actions when focus is outside the message list (e.g. the
+        // sidebar — whose own built-in key handling must not see the chord either).
+        .onKeyPress(phases: .down) { press in
+            QuickActions.keyPress(press, vm: vm)
+        }
         // ⌘T (search) and ⌘K (palette) ride hidden buttons: a window-level key
         // equivalent fires even when nothing has keyboard focus, which onKeyPress
         // (used for ⌘F above) doesn't — e.g. right after launch.
@@ -66,6 +71,10 @@ struct ContentView: View {
             Button("") { vm.showMessagePalette = true }
                 .keyboardShortcut("k", modifiers: .command)
                 .hidden()
+            // ⌥1–⌥4 quick actions (flag / quick move / snooze / delete). An event
+            // monitor, not key equivalents: the focused message table eats
+            // Option-digit as typed text before equivalents can match.
+            QuickActionKeyHandler(vm: vm)
         }
         .sheet(isPresented: $vm.showMessagePalette) {
             MessagePaletteView()

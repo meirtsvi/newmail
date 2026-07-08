@@ -165,8 +165,11 @@ struct MessageListView: View {
                 Task { await vm.openMessage(id) }
             }
         }
-        // ⌘A selects every message in the list; ⌘Z undoes the last delete.
+        // ⌘A selects every message in the list; ⌘Z undoes the last delete;
+        // ⌥1–⌥4 run the quick actions (handled here so the chord never reaches
+        // the table, whose built-in key handling would jump the selection).
         .onKeyPress(phases: .down) { press in
+            if QuickActions.keyPress(press, vm: vm) == .handled { return .handled }
             guard press.modifiers.contains(.command) else { return .ignored }
             switch press.key {
             case KeyEquivalent("a"):

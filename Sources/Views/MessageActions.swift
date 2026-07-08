@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Reusable action controls shared by the toolbar, row-hover overlay, and
 /// right-click context menu — a single command surface over a set of message ids.
@@ -83,6 +84,147 @@ struct MoveMenu: View {
                 Label(folder.name, systemImage: folder.kind.icon)
             }
         }
+    }
+}
+
+/// The ⌥1–⌥4 quick actions on the selected message row. Flag and delete call the
+/// same view-model methods the row's hover icons call; move and snooze open the
+/// row icons' own SwiftUI menus by synthesizing a click on them, so the popup
+/// appears exactly as (and where) it does when clicked with the mouse.
+@MainActor
+enum QuickActions {
+    /// Runs the ⌥-digit quick action on the current selection (1 flag, 2 quick
+    /// move, 3 snooze, 4 delete). Shared by both interception paths below.
+    static func perform(_ digit: Int, vm: MailboxViewModel) {
+        guard !vm.selection.isEmpty else { return }
+        let ids = Array(vm.selection)
+        switch digit {
+        case 1: Task { await vm.toggleFlag(ids) }
+        case 2: clickRowIcon(.move, vm: vm)
+        case 3: clickRowIcon(.snooze, vm: vm)
+        case 4: Task { await vm.deleteMessages(ids) }
+        default: break
+        }
+    }
+
+    /// `onKeyPress` hook for ⌥1–⌥4, attached to the message list and the window
+    /// content. Returning `.handled` is what keeps the chord away from the focused
+    /// Table/List — their built-in key handling jumps the selection, and it runs
+    /// inside SwiftUI's own event interception, which an NSEvent monitor installed
+    /// later can observe but not preempt.
+    static func keyPress(_ press: KeyPress, vm: MailboxViewModel) -> KeyPress.Result {
+        guard press.modifiers.contains(.option),
+              !press.modifiers.contains(.command), !press.modifiers.contains(.control),
+              let digit = press.key.character.wholeNumberValue, (1...4).contains(digit)
+        else { return .ignored }
+        // Leave Option-typing alone while a text field (e.g. search) is active.
+        if NSApp.keyWindow?.firstResponder is NSTextView { return .ignored }
+        perform(digit, vm: vm)
+        return .handled
+    }
+
+    /// The hover-action icons on a row, right to left: trash, clock, folder, flag
+    /// (see `HoverActions` / `dateCell` — they're shown whenever the row is
+    /// selected). Values are the icon center's distance from the date cell's
+    /// trailing edge.
+    private enum RowIcon: CGFloat {
+        case snooze = 35
+        case move = 57
+    }
+
+    /// Synthesizes a mouse click on one of the selected row's action icons — the
+    /// same code path as the mouse, so the menu opens exactly where it does when
+    /// clicked. The icons live at the trailing edge of the date column (the last
+    /// column), visible because the row is selected.
+    private static func clickRowIcon(_ icon: RowIcon, vm: MailboxViewModel) {
+        guard let window = NSApp.keyWindow, let content = window.contentView,
+              let table = messageTable(in: content, rowCount: vm.displayedMessages.count),
+              let row = vm.displayedMessages.firstIndex(where: { vm.selection.contains($0.id) }),
+              row < table.numberOfRows, table.numberOfColumns > 0 else { return }
+        table.scrollRowToVisible(row)
+        let cell = table.frameOfCell(atColumn: table.numberOfColumns - 1, row: row)
+        let point = table.convert(NSPoint(x: cell.maxX - icon.rawValue, y: cell.midY), to: nil)
+        // Queue down then up so it plays back like a real click (the menu opens
+        // on the down and keeps tracking after the up, exactly like the mouse).
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            if let event = NSEvent.mouseEvent(
+                with: type, location: point, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0
+            ) {
+                NSApp.postEvent(event, atStart: false)
+            }
+        }
+    }
+
+    /// The message list's backing NSTableView, told apart from the sidebar's by
+    /// its row count matching the displayed messages (same heuristic as
+    /// `TableLocator`).
+    private static func messageTable(in view: NSView, rowCount: Int) -> NSTableView? {
+        guard rowCount > 0 else { return nil }
+        if let table = view as? NSTableView, table.numberOfRows == rowCount { return table }
+        for sub in view.subviews {
+            if let found = messageTable(in: sub, rowCount: rowCount) { return found }
+        }
+        return nil
+    }
+}
+
+/// Fallback for the ⌥1–⌥4 quick actions when *nothing* in the window has focus
+/// (e.g. right after launch): SwiftUI's `onKeyPress` doesn't fire then, so a local
+/// key monitor steps in. It acts only while the window itself is first responder —
+/// whenever a view has focus, the `onKeyPress` path above owns the chord (and no
+/// focused list can jump, since the monitor only runs when none is focused).
+struct QuickActionKeyHandler: NSViewRepresentable {
+    let vm: MailboxViewModel
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        context.coordinator.anchor = view
+        context.coordinator.vm = vm
+        context.coordinator.install()
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.vm = vm
+    }
+
+    final class Coordinator {
+        weak var anchor: NSView?
+        var vm: MailboxViewModel?
+        private var monitor: Any?
+
+        func install() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
+                self?.handle(event) ?? event
+            }
+        }
+
+        /// Physical key codes for the 1–4 keys (layout-independent).
+        private static let actionKeyCodes: Set<UInt16> = [18, 19, 20, 21]
+
+        private func handle(_ event: NSEvent) -> NSEvent? {
+            guard Self.actionKeyCodes.contains(event.keyCode),
+                  event.modifierFlags.contains(.option),
+                  event.modifierFlags.intersection([.command, .control]).isEmpty,
+                  let window = event.window, window === anchor?.window,
+                  window.firstResponder === window else { return event }
+            if event.type == .keyDown, !event.isARepeat {
+                MainActor.assumeIsolated {
+                    if let vm {
+                        QuickActions.perform(Int(event.keyCode) - 17, vm: vm)  // 18…21 → 1…4
+                    }
+                }
+            }
+            return nil
+        }
+
+        deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
     }
 }
 
