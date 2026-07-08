@@ -22,12 +22,27 @@ final class RichTextController: ObservableObject {
     /// text storage so it stays in sync when an image is deleted in the editor.
     @Published private(set) var inlineImages: [ComposeInlineImage] = []
 
+    /// On-screen height of the laid-out body text (insets and display zoom
+    /// included), so compose can grow the editor and shrink the quoted original
+    /// as the reply gets longer.
+    @Published private(set) var contentHeight: CGFloat = 0
+
+    /// Recomputes `contentHeight` from the current layout. Called after every
+    /// edit, after loading initial content, and when the zoom or width changes.
+    func refreshContentHeight() {
+        guard let tv = textView, let lm = tv.layoutManager, let tc = tv.textContainer else { return }
+        lm.ensureLayout(for: tc)
+        let height = (lm.usedRect(for: tc).height + tv.textContainerInset.height * 2) * zoom
+        if abs(height - contentHeight) > 0.5 { contentHeight = height }
+    }
+
     /// Prefix for a pasted image's token; the full token doubles as its Content-ID
     /// and MIME filename.
     private static let inlineTokenPrefix = "nm-inline-"
 
     func setInitial(_ attributed: NSAttributedString) {
         textView?.textStorage?.setAttributedString(attributed)
+        refreshContentHeight()
     }
 
     /// Loads existing HTML (e.g. a saved draft) into the editor as editable rich
@@ -48,6 +63,7 @@ final class RichTextController: ObservableObject {
         // Carry the body font so text typed after a loaded draft keeps the default look.
         textView?.typingAttributes[.font] = Self.defaultFont
         refreshInlineImages()
+        refreshContentHeight()
     }
 
     /// Moves keyboard focus into the body editor (used to jump straight from the
@@ -70,6 +86,7 @@ final class RichTextController: ObservableObject {
     func setZoom(_ value: CGFloat) {
         zoom = min(Self.zoomRange.upperBound, max(Self.zoomRange.lowerBound, value))
         scrollView?.magnification = zoom
+        refreshContentHeight()
     }
 
     func toggleBold() { toggleTrait(.boldFontMask) }
@@ -532,6 +549,7 @@ struct RichTextEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             controller.refreshInlineImages()
+            controller.refreshContentHeight()
         }
     }
 }

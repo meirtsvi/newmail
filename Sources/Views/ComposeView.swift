@@ -30,6 +30,17 @@ struct ComposeView: View {
     /// Shared keyboard focus across the To/Cc/Subject fields so Tab and Shift-Tab
     /// move between them in order; the body editor is reached via `rich`.
     @FocusState private var focus: ComposeField?
+    /// Measured size of the body editor, used to decide how much of the quoted
+    /// original's space the reply text needs.
+    @State private var editorSize: CGSize = .zero
+    /// Current height of the quoted-original pane; nil means "the base height".
+    /// Shrinks as the reply outgrows the editor, so the divider moves down.
+    @State private var quotedHeight: CGFloat?
+
+    /// The editor never gives up its last rows even when the quote is at full height.
+    private static let minEditorHeight: CGFloat = 100
+    /// The quoted original stays at least this tall (it scrolls within itself).
+    private static let minQuotedHeight: CGFloat = 120
 
     /// Replies open with the recipients and subject already filled in, so keyboard
     /// focus starts in the body instead of the To field.
@@ -51,7 +62,14 @@ struct ComposeView: View {
                 } else {
                     formattingBar
                     RichTextEditor(controller: rich)
-                        .frame(minHeight: 100)
+                        .frame(minHeight: Self.minEditorHeight)
+                        // Measure the editor so the quoted pane below can yield
+                        // space once the reply text no longer fits.
+                        .background(GeometryReader { editor in
+                            Color.clear
+                                .onAppear { editorSize = editor.size }
+                                .onChange(of: editor.size) { _, size in editorSize = size }
+                        })
                 }
                 if !attachments.isEmpty || !rich.inlineImages.isEmpty || loadingAttachments {
                     Divider()
@@ -59,12 +77,24 @@ struct ComposeView: View {
                 }
                 if !request.quotedHTML.isEmpty {
                     Divider()
-                    // The quoted original gets two thirds of the window, capped so
-                    // the title bar, fields, toolbar and editor stay usable when the
-                    // window is short.
+                    // The quoted original gets up to two thirds of the window,
+                    // capped so the title bar, fields, toolbar and editor stay
+                    // usable when the window is short — and it yields space to
+                    // the editor as the reply grows past what fits above it.
                     quotedPreview
-                        .frame(height: min(geo.size.height * 2 / 3, geo.size.height - 300))
+                        .frame(height: min(quotedHeight ?? quotedBase(geo), quotedBase(geo)))
                 }
+            }
+            // Re-balance editor vs. quote when the reply text grows or shrinks,
+            // and when the editor is resized (window resize, attachment bar).
+            // The editor's size change also re-wraps the text, so its content
+            // height is refreshed first.
+            .onChange(of: editorSize) { _, _ in
+                rich.refreshContentHeight()
+                updateQuotedHeight(base: quotedBase(geo))
+            }
+            .onChange(of: rich.contentHeight) { _, _ in
+                updateQuotedHeight(base: quotedBase(geo))
             }
         }
         .frame(minWidth: 480, idealWidth: 640, minHeight: 380,
@@ -290,6 +320,26 @@ struct ComposeView: View {
         .padding(.vertical, 8)
         // Keep the autocomplete dropdown above the formatting bar and editor.
         .zIndex(1)
+    }
+
+    /// Full height of the quoted-original pane: two thirds of the window, capped
+    /// so the title bar, fields, toolbar and editor keep at least 300pt.
+    private func quotedBase(_ geo: GeometryProxy) -> CGFloat {
+        min(geo.size.height * 2 / 3, geo.size.height - 300)
+    }
+
+    /// Re-balances the editor and the quoted pane. Whatever the reply text needs
+    /// beyond the editor's current height is taken from the quote (down to its
+    /// minimum); space freed by deleting text goes back to the quote (up to its
+    /// base height). The editor is the only flexible view in the stack, so height
+    /// given up by the quote lands in the editor and vice versa — which keeps
+    /// `editor + quote` constant and the computation stable across passes.
+    private func updateQuotedHeight(base: CGFloat) {
+        guard !request.quotedHTML.isEmpty, request.kind != .edit, editorSize.height > 0 else { return }
+        let needed = max(Self.minEditorHeight, rich.contentHeight)
+        let current = min(quotedHeight ?? base, base)
+        let target = min(base, max(Self.minQuotedHeight, current + (editorSize.height - needed)))
+        if abs(target - current) > 0.5 { quotedHeight = target }
     }
 
     /// Moves keyboard focus from a compose field into the body editor. The SwiftUI
