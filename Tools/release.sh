@@ -75,10 +75,13 @@ SIGNATURE_ATTRS="$("$SPARKLE_BIN/sign_update" "$DMG")"
 
 echo "==> Creating GitHub release v$VERSION"
 # Release notes are the commit subjects since the previous release tag.
+# gh creates tags only on the remote, so fetch them or describe finds nothing.
+git fetch --tags --quiet origin
 NOTES_FILE="$OUT/release-notes.md"
 PREV_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
 if [[ -n "$PREV_TAG" ]]; then
-  git log "$PREV_TAG..HEAD" --no-merges --pretty='- %s' > "$NOTES_FILE"
+  git log "$PREV_TAG..HEAD" --no-merges --grep='^Release [0-9]' --invert-grep \
+    --pretty='- %s' > "$NOTES_FILE"
 else
   echo "newmail $VERSION" > "$NOTES_FILE"
 fi
