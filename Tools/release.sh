@@ -74,10 +74,18 @@ echo "==> Signing the update (Sparkle EdDSA)"
 SIGNATURE_ATTRS="$("$SPARKLE_BIN/sign_update" "$DMG")"
 
 echo "==> Creating GitHub release v$VERSION"
+# Release notes are the commit subjects since the previous release tag.
+NOTES_FILE="$OUT/release-notes.md"
+PREV_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+if [[ -n "$PREV_TAG" ]]; then
+  git log "$PREV_TAG..HEAD" --no-merges --pretty='- %s' > "$NOTES_FILE"
+else
+  echo "newmail $VERSION" > "$NOTES_FILE"
+fi
 gh release create "v$VERSION" "$DMG" \
   --repo "$REPO" \
   --title "newmail $VERSION" \
-  --notes "newmail $VERSION"
+  --notes-file "$NOTES_FILE"
 
 echo "==> Adding $VERSION to appcast.xml and pushing"
 PUB_DATE="$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S +0000')"

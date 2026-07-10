@@ -74,6 +74,8 @@ struct MessageDetailView: View {
                 .help("Reply All")
             Button { forward(header) } label: { Image(systemName: "arrowshape.turn.up.right") }
                 .help("Forward")
+            Button { vm.editMessage(header.id) } label: { Image(systemName: "pencil") }
+                .help("Edit message")
             Button { deleteAndClose(header) } label: { Image(systemName: "trash") }
                 .help("Delete")
             Divider().frame(height: 16)
