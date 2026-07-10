@@ -124,6 +124,155 @@ final class RichTextController: ObservableObject {
     /// Sets the base writing direction of the selected paragraphs to right-to-left.
     func makeRightToLeft() { textView?.makeBaseWritingDirectionRightToLeft(nil) }
 
+    /// List layout mirroring TextEdit's: the marker sits at the first tab stop and
+    /// the item text (including wrapped lines, via headIndent) at the second.
+    private static let listMarkerTab: CGFloat = 11
+    private static let listTextIndent: CGFloat = 36
+
+    /// Toggles a bulleted list on the selected paragraphs (or the one being typed).
+    func toggleBulletList() { toggleList(markerFormat: .disc) }
+
+    /// Toggles a numbered list on the selected paragraphs. The trailing period in
+    /// the format string renders items as "1." rather than a bare "1".
+    func toggleNumberedList() { toggleList(markerFormat: NSTextList.MarkerFormat("{decimal}.")) }
+
+    /// The literal tab-wrapped marker at the start of a list paragraph. The visible
+    /// bullet/number is plain text; the paragraph style's NSTextList is what drives
+    /// Return-key list continuation and the <ul>/<ol> HTML export (which strips the
+    /// literal marker on the way out).
+    private static let listMarkerPattern = try! NSRegularExpression(pattern: "^\\t[^\\t\\n]*\\t")
+
+    /// A hand-typed list prefix at the start of a paragraph — "1. " or "- " — that
+    /// Return upgrades to a real list item.
+    private static let typedListPrefixPattern = try! NSRegularExpression(pattern: "^(1\\.|-)[ \u{00A0}]+")
+
+    /// A copy of `style` turned into this list's paragraph style.
+    private static func listStyle(basedOn style: NSParagraphStyle, list: NSTextList) -> NSMutableParagraphStyle {
+        let result = style.mutableCopy() as! NSMutableParagraphStyle
+        result.textLists = [list]
+        result.firstLineHeadIndent = 0
+        result.headIndent = listTextIndent
+        result.tabStops = [
+            NSTextTab(textAlignment: .natural, location: listMarkerTab),
+            NSTextTab(textAlignment: .natural, location: listTextIndent),
+        ]
+        return result
+    }
+
+    /// Called when Return is pressed: if the paragraph being typed reads like the
+    /// start of a hand-typed list — "1. text" or "- text" with the caret at the end
+    /// — it becomes a real numbered/bulleted list item, so the newline that follows
+    /// continues the list with the next marker.
+    func upgradeTypedListPrefix() {
+        guard let tv = textView, let ts = tv.textStorage else { return }
+        let sel = tv.selectedRange()
+        guard sel.length == 0 else { return }
+        let string = ts.string as NSString
+        var start = 0, end = 0, contentsEnd = 0
+        string.getParagraphStart(&start, end: &end, contentsEnd: &contentsEnd, for: sel)
+        guard sel.location == contentsEnd, contentsEnd > start else { return }
+        let paragraph = NSRange(location: start, length: end - start)
+        let style = (ts.attribute(.paragraphStyle, at: start, effectiveRange: nil) as? NSParagraphStyle) ?? .default
+        guard style.textLists.isEmpty else { return }
+        let text = string.substring(with: paragraph)
+        guard let match = Self.typedListPrefixPattern.firstMatch(
+            in: text, range: NSRange(location: 0, length: (text as NSString).length)),
+            // Only with text after the prefix — a bare "1." or "-" stays literal.
+            NSMaxRange(match.range) < contentsEnd - start
+        else { return }
+
+        let format: NSTextList.MarkerFormat = (text as NSString).hasPrefix("-")
+            ? .disc : NSTextList.MarkerFormat("{decimal}.")
+        let list = NSTextList(markerFormat: format, options: 0)
+        let item = NSMutableAttributedString(attributedString: ts.attributedSubstring(from: paragraph))
+        // The plain-string replace keeps the typed prefix's attributes on the marker.
+        item.replaceCharacters(in: match.range, with: "\t\(list.marker(forItemNumber: 1))\t")
+        let newStyle = Self.listStyle(basedOn: style, list: list)
+        item.addAttribute(.paragraphStyle, value: newStyle, range: NSRange(location: 0, length: item.length))
+
+        guard tv.shouldChangeText(in: paragraph, replacementString: item.string) else { return }
+        ts.replaceCharacters(in: paragraph, with: item)
+        tv.didChangeText()
+        tv.setSelectedRange(NSRange(location: sel.location + item.length - paragraph.length, length: 0))
+        tv.typingAttributes[.paragraphStyle] = newStyle
+        refreshContentHeight()
+    }
+
+    /// Applies or removes a list across every paragraph touched by the selection.
+    /// A uniform toggle: only if all paragraphs are already in this exact format is
+    /// the list removed; otherwise it's (re)applied, converting other formats.
+    private func toggleList(markerFormat: NSTextList.MarkerFormat) {
+        guard let tv = textView, let ts = tv.textStorage else { return }
+        let selection = tv.selectedRange()
+        let fullRange = (ts.string as NSString).paragraphRange(for: selection)
+        let base = ts.attributedSubstring(from: fullRange)
+
+        // The selected paragraphs, as ranges within `base`.
+        let baseString = base.string as NSString
+        var paragraphs: [NSRange] = []
+        var location = 0
+        repeat {
+            let r = baseString.paragraphRange(for: NSRange(location: location, length: 0))
+            paragraphs.append(r)
+            location = NSMaxRange(r)
+        } while location < baseString.length
+
+        let typingStyle = (tv.typingAttributes[.paragraphStyle] as? NSParagraphStyle) ?? .default
+        let styleOf: (NSRange) -> NSParagraphStyle = { r in
+            r.length > 0
+                ? (base.attribute(.paragraphStyle, at: r.location, effectiveRange: nil) as? NSParagraphStyle) ?? .default
+                : typingStyle
+        }
+        let turningOff = paragraphs.allSatisfy { styleOf($0).textLists.first?.markerFormat == markerFormat }
+
+        // One shared NSTextList so AppKit treats the paragraphs as a single list.
+        let list = NSTextList(markerFormat: markerFormat, options: 0)
+        let result = NSMutableAttributedString()
+        var lastStyle = typingStyle
+        for (item, range) in paragraphs.enumerated() {
+            let paragraph = NSMutableAttributedString(attributedString: base.attributedSubstring(from: range))
+            var style = styleOf(range).mutableCopy() as! NSMutableParagraphStyle
+            // Strip the old literal marker when leaving a list or switching formats.
+            if !style.textLists.isEmpty,
+               let m = Self.listMarkerPattern.firstMatch(in: paragraph.string, range: NSRange(location: 0, length: paragraph.length)) {
+                paragraph.deleteCharacters(in: m.range)
+            }
+            if turningOff {
+                style.textLists = []
+                style.headIndent = 0
+                style.firstLineHeadIndent = 0
+                style.tabStops = NSParagraphStyle.default.tabStops
+            } else {
+                style = Self.listStyle(basedOn: style, list: list)
+                let font = paragraph.length > 0
+                    ? (paragraph.attribute(.font, at: 0, effectiveRange: nil) as? NSFont) ?? Self.defaultFont
+                    : (tv.typingAttributes[.font] as? NSFont) ?? Self.defaultFont
+                paragraph.insert(NSAttributedString(
+                    string: "\t\(list.marker(forItemNumber: item + 1))\t",
+                    attributes: [.font: font]), at: 0)
+            }
+            paragraph.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: paragraph.length))
+            lastStyle = style
+            result.append(paragraph)
+        }
+
+        guard tv.shouldChangeText(in: fullRange, replacementString: result.string) else { return }
+        ts.replaceCharacters(in: fullRange, with: result)
+        tv.didChangeText()
+
+        let delta = result.length - fullRange.length
+        if selection.length == 0 {
+            let caret = min(max(selection.location + delta, fullRange.location), fullRange.location + result.length)
+            tv.setSelectedRange(NSRange(location: caret, length: 0))
+        } else {
+            tv.setSelectedRange(NSRange(location: fullRange.location, length: result.length))
+        }
+        // After the selection change so it isn't recomputed away: keep typing in the
+        // affected paragraph on (or off) the list.
+        tv.typingAttributes[.paragraphStyle] = lastStyle
+        refreshContentHeight()
+    }
+
     /// The label used for the default UI/system font in the family picker; it has no
     /// real family name, so it's special-cased when applied.
     static let systemFamily = "System"
@@ -543,6 +692,11 @@ struct RichTextEditor: NSViewRepresentable {
             if commandSelector == #selector(NSResponder.insertBacktab(_:)), let onShiftTab = controller.onShiftTab {
                 onShiftTab()
                 return true
+            }
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                // "1. text" / "- text" becomes a real list item before the newline
+                // goes in, so the default insertNewline continues the list.
+                controller.upgradeTypedListPrefix()
             }
             return false
         }

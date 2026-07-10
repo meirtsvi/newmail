@@ -353,8 +353,10 @@ struct ComposeView: View {
         }
     }
 
+    // Spacing 8 keeps the bar's fixed content within the window's 640pt ideal
+    // width now that the list buttons are in it.
     private var formattingBar: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 8) {
             Button { rich.toggleBold() } label: { Image(systemName: "bold") }
                 .keyboardShortcut("b", modifiers: .command)
                 .help("Bold (⌘B)")
@@ -371,6 +373,9 @@ struct ComposeView: View {
             Button { rich.alignRight() } label: { Image(systemName: "text.alignright") }.help("Align right")
             Button { rich.makeLeftToRight() } label: { Image(systemName: "arrow.right") }.help("Left-to-right")
             Button { rich.makeRightToLeft() } label: { Image(systemName: "arrow.left") }.help("Right-to-left")
+            Divider().frame(height: 16)
+            Button { rich.toggleBulletList() } label: { Image(systemName: "list.bullet") }.help("Bulleted list")
+            Button { rich.toggleNumberedList() } label: { Image(systemName: "list.number") }.help("Numbered list")
             Divider().frame(height: 16)
             fontPickers
             Divider().frame(height: 16)
