@@ -1175,6 +1175,9 @@ final class MailboxViewModel {
             guard currentFolder?.id == folder.id, !isSearching else { return }
             let fresh = withoutTombstoned(result.headers, folderId: folder.id)
             mergeFresh(fresh)
+            // Also drop rows the server no longer lists (e.g. mail deleted from
+            // another device) — merging alone never removes anything.
+            pruneStale(within: fresh)
             store.saveHeaders(fresh)
             recordContacts(from: fresh, folder: folder)
             hydrateCalendarIds()
