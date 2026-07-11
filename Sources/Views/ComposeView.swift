@@ -155,8 +155,12 @@ struct ComposeView: View {
         }
         .sheet(isPresented: $showLinkPrompt) { linkPrompt }
         .background {
-            // ⌘S saves the draft immediately; the hidden button just carries the shortcut.
-            Button("") { Task { await autosaveDraft() } }
+            // ⌘S saves the draft immediately (or, when editing, saves the edited
+            // message and closes); the hidden button just carries the shortcut.
+            Button("") {
+                if request.kind == .edit { saveEditAndClose() }
+                else { Task { await autosaveDraft() } }
+            }
                 .keyboardShortcut("s", modifiers: .command)
                 .hidden()
             // Escape closes the window, saving whatever's been typed as a draft
@@ -259,23 +263,30 @@ struct ComposeView: View {
     /// immutable on the server), so the primary action is Save, not Send.
     private var saveButton: some View {
         Button {
-            sending = true
-            Task {
-                // Pull the edited document straight from the WebView, then re-embed
-                // its inline images as related parts so the stored copy is a normal
-                // email rather than one carrying giant data: URIs.
-                let rawHTML = await htmlEditor.exportHTML()
-                let (html, inlineImages) = MIMEBuilder.extractDataURIImages(from: rawHTML)
-                await vm.saveEditedMessage(request, html: html, attachments: attachments, inlineImages: inlineImages)
-                sending = false
-                onClose()
-            }
+            saveEditAndClose()
         } label: {
             if sending { ProgressView().controlSize(.small) }
             else { Label("Save", systemImage: "checkmark") }
         }
         .keyboardShortcut(.return, modifiers: .command)
         .disabled(sending || loadingAttachments)
+    }
+
+    /// Save action for edit mode: replaces the original message with the edited
+    /// copy and closes the window. Shared by the Save button and ⌘S.
+    private func saveEditAndClose() {
+        guard !sending, !loadingAttachments else { return }
+        sending = true
+        Task {
+            // Pull the edited document straight from the WebView, then re-embed
+            // its inline images as related parts so the stored copy is a normal
+            // email rather than one carrying giant data: URIs.
+            let rawHTML = await htmlEditor.exportHTML()
+            let (html, inlineImages) = MIMEBuilder.extractDataURIImages(from: rawHTML)
+            await vm.saveEditedMessage(request, html: html, attachments: attachments, inlineImages: inlineImages)
+            sending = false
+            onClose()
+        }
     }
 
     private var fields: some View {
