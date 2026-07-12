@@ -663,6 +663,11 @@ struct RichTextEditor: NSViewRepresentable {
         textView.textContainerInset = NSSize(width: 8, height: 8)
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
+        // Red-underline misspellings as you type; the language (English, Hebrew, …)
+        // is auto-detected per word, and right-click offers corrections and
+        // "Learn Spelling" to add a word to the user dictionary.
+        textView.isContinuousSpellCheckingEnabled = true
+        NSSpellChecker.shared.automaticallyIdentifiesLanguages = true
         textView.delegate = context.coordinator
         textView.onImage = { [weak controller] data in
             // paste/drag are delivered on the main thread.
