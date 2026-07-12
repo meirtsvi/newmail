@@ -27,6 +27,11 @@ struct ComposeView: View {
     /// Snapshot of the fields at the last successful draft save, so the 10-second
     /// autosave skips when nothing has changed.
     @State private var lastSavedSnapshot = ""
+    /// In-flight server draft save. Send awaits it before deleting the draft, so
+    /// it deletes the id the save actually leaves behind — a save can mint a fresh
+    /// draft id (always on Graph, and on the first save everywhere), and deleting
+    /// the stale id would orphan the new draft.
+    @State private var draftSave: Task<Void, Never>?
     /// Shared keyboard focus across the To/Cc/Subject fields so Tab and Shift-Tab
     /// move between them in order; the body editor is reached via `rich`.
     @FocusState private var focus: ComposeField?
@@ -212,12 +217,15 @@ struct ComposeView: View {
         let (html, inlineImages) = composedBody()
         let snapshot = draftSnapshot(html: html)
         guard snapshot != lastSavedSnapshot else { return }
-        let id = await vm.saveDraft(
-            to: request.to, cc: request.cc, subject: request.subject,
-            html: html, attachments: attachments, inlineImages: inlineImages, draftId: request.draftId
-        )
-        request.draftId = id
-        lastSavedSnapshot = snapshot
+        let save = Task {
+            request.draftId = await vm.saveDraft(
+                to: request.to, cc: request.cc, subject: request.subject,
+                html: html, attachments: attachments, inlineImages: inlineImages, draftId: request.draftId
+            )
+            lastSavedSnapshot = snapshot
+        }
+        draftSave = save
+        await save.value
     }
 
     /// Escape handler: persist whatever's been typed as a draft (if anything),
@@ -244,6 +252,9 @@ struct ComposeView: View {
             sending = true
             let (html, inlineImages) = composedBody()
             Task {
+                // Wait out any in-flight autosave so request.draftId below is the
+                // draft that actually exists on the server when we delete it.
+                await draftSave?.value
                 await vm.sendComposed(
                     to: request.to, cc: request.cc, subject: request.subject,
                     html: html, attachments: attachments, inlineImages: inlineImages, draftId: request.draftId
