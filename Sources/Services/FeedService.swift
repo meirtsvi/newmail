@@ -13,7 +13,7 @@ final class FeedService {
     /// Poll cadence.
     private static let interval: TimeInterval = 300
     /// Sender address of every materialized feed message; also how other code
-    /// (e.g. the popup pre-translation) recognizes a message as a feed item.
+    /// (e.g. the Newsletter category rules) recognizes a message as a feed item.
     static let fromAddress = "feeds@rss.local"
     /// Low-specificity default so inline SVG icons (sized only by the site's CSS
     /// classes) don't balloon to full width if that stylesheet fails to load; the
@@ -23,14 +23,8 @@ final class FeedService {
     private let provider: MailProvider
     private let accountId: String
     private let context: ModelContext
-    private let store: MailStore
     private var timer: Timer?
     private var inFlight = false
-
-    /// Imported message ids waiting for their Hebrew translation + summary to be
-    /// pre-computed, drained one at a time by a single background worker.
-    private var translationQueue: [String] = []
-    private var translationWorkerRunning = false
 
     /// Notifies the UI (e.g. to refresh the current folder) after new items land.
     var onNewItems: (() -> Void)?
@@ -40,7 +34,6 @@ final class FeedService {
         self.provider = provider
         self.accountId = accountId
         self.context = ctx
-        self.store = MailStore(context: ctx)
     }
 
     // MARK: Timer
@@ -52,12 +45,7 @@ final class FeedService {
             Task { await self.refreshAll() }
         }
         self.timer = timer
-        Task {
-            await refreshAll()
-            // Catch up on feed items imported before pre-translation existed (or
-            // whose pass was interrupted), so their toggles are instant too.
-            enqueueBacklogTranslations()
-        }
+        Task { await refreshAll() }
     }
 
     func stop() {
@@ -122,11 +110,6 @@ final class FeedService {
                     }
                     recordSeen(entry.key, into: &seenKeys)
                     importedAny = true
-                    translationQueue.append(messageId)
-                    // Start translating right away rather than after the whole
-                    // pass, so the first item is likely ready by the time its
-                    // popup appears (a no-op if the worker is already running).
-                    startTranslationWorker()
                 } catch {
                     // Leave it unrecorded so the next pass retries it.
                     continue
@@ -139,76 +122,6 @@ final class FeedService {
 
         try? context.save()
         if importedAny { onNewItems?() }
-        startTranslationWorker()
-    }
-
-    // MARK: Pre-translation
-
-    /// Pre-computes and caches the Hebrew translation + summary for imported feed
-    /// items (including full-article bodies), one at a time in the background, so
-    /// the viewer's toggles show instantly. Also warms the body cache on the way.
-    private func startTranslationWorker() {
-        guard !translationWorkerRunning, !translationQueue.isEmpty,
-              GeminiConfig.apiKey != nil else { return }
-        translationWorkerRunning = true
-        Task { [weak self] in
-            while let id = self?.dequeueTranslation() {
-                await self?.pretranslate(id)
-            }
-            self?.translationWorkerRunning = false
-        }
-    }
-
-    private func dequeueTranslation() -> String? {
-        translationQueue.isEmpty ? nil : translationQueue.removeFirst()
-    }
-
-    private func pretranslate(_ id: String) async {
-        // The body: from the cache, else fetched (with one retry — a just-imported
-        // message can take a moment to become fetchable) and cached for the viewer.
-        var body = store.cachedBody(id: id)
-        if body == nil {
-            for attempt in 0..<2 {
-                if attempt > 0 { try? await Task.sleep(for: .seconds(3)) }
-                if let fetched = try? await provider.fetchBody(id: id) {
-                    store.saveBody(fetched)
-                    body = fetched
-                    break
-                }
-            }
-        }
-        guard let body else { return }
-        let existing = store.cachedTranslation(id: id)
-        if existing.translated == nil,
-           let translated = try? await TranslationService.shared.translateHTMLToHebrew(body.html) {
-            store.saveTranslation(id: id, translated: translated)
-        }
-        if existing.summary == nil,
-           let summary = try? await TranslationService.shared.summarizeInHebrew(
-               plainText: body.plainText, html: body.html) {
-            store.saveTranslation(id: id, summary: summary)
-        }
-    }
-
-    /// Recent feed messages already in the cache that still lack a translation or
-    /// summary — imported before pre-translation existed, or interrupted mid-pass.
-    private func enqueueBacklogTranslations() {
-        guard GeminiConfig.apiKey != nil else { return }
-        let sender = Self.fromAddress
-        var descriptor = FetchDescriptor<CachedMessage>(
-            predicate: #Predicate { $0.fromEmail == sender },
-            sortBy: [SortDescriptor(\.date, order: .reverse)]
-        )
-        descriptor.fetchLimit = 30
-        let rows = (try? context.fetch(descriptor)) ?? []
-        let missing = rows.map(\.id).filter { id in
-            guard !translationQueue.contains(id) else { return false }
-            let cached = store.cachedTranslation(id: id)
-            return cached.translated == nil || cached.summary == nil
-        }
-        guard !missing.isEmpty else { return }
-        translationQueue.append(contentsOf: missing)
-        startTranslationWorker()
     }
 
     /// Id of the feed account's "Newsletter" label, resolved once per service.

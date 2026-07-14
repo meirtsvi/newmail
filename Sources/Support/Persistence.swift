@@ -168,7 +168,7 @@ final class CachedBody {
 
 /// Cached Hebrew translation and summary of a message body, keyed by message id.
 /// Written when a translation/summary is produced — on demand from the viewers'
-/// toggle buttons, or ahead of time for imported RSS feed items — so showing
+/// toggle buttons, or ahead of time for newsletter messages — so showing
 /// either again (including across launches) is instant. Empty string = not yet
 /// produced for that variant.
 @Model

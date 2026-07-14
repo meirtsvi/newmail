@@ -83,7 +83,7 @@ final class MailboxViewModel {
     @ObservationIgnored private var notificationPanel: NotificationPanelController?
     // Per-popup auto-dismiss timers (cancelled if the user starts a reply).
     @ObservationIgnored private var dismissTasks: [String: Task<Void, Never>] = [:]
-    // Popups queued for Hebrew pre-translation, worked one at a time.
+    // Newsletter messages queued for Hebrew pre-translation, worked one at a time.
     @ObservationIgnored private var pretranslateQueue: [MailNotification] = []
     @ObservationIgnored private var pretranslateWorkerRunning = false
     private static let maxNotifications = 5
@@ -587,6 +587,19 @@ final class MailboxViewModel {
         return header.labelIds.contains(labelId)
     }
 
+    /// Whether the header matches a newsletter rule — by sender address, or for an
+    /// RSS item, by its feed being in the Newsletter category. Rule-based (unlike
+    /// `isNewsletterMessage`) so it works before the label has been applied.
+    private func matchesNewsletterRule(_ header: MessageHeader) -> Bool {
+        let rules = newsletterRules()
+        guard !rules.isEmpty else { return false }
+        if header.from.email == FeedService.fromAddress {
+            let feedURLs = Set(rules.filter { $0.kindRaw == "feed" }.map(\.key))
+            return feedSubscriptions.contains { feedURLs.contains($0.url) && $0.title == header.from.name }
+        }
+        return rules.contains { $0.kindRaw == "sender" && $0.key == header.from.email.lowercased() }
+    }
+
     /// The context-menu entry for this message: add or remove, with the exact
     /// title (feed items name the feed — the rule covers the whole feed URL).
     /// Nil when the category doesn't apply (Graph account, unresolvable feed).
@@ -677,6 +690,9 @@ final class MailboxViewModel {
             _ = await newsletterLabelId(accountId: session.account.id)
         }
         applyCategoryFlags()
+        // The first inbox poll ran before the label ids were known; catch up on
+        // newsletter mail that arrived while the app was closed.
+        enqueueNewsletterTranslationBacklog()
     }
 
     /// Labels freshly-synced headers that match a newsletter rule but don't carry
@@ -2476,6 +2492,9 @@ final class MailboxViewModel {
                 presentNotification(header, accountId: session.account.id)
             }
         }
+        // Pick up newsletter mail whose headers just landed in the cache (new
+        // arrivals with popups off, RSS items imported mid-session, …).
+        enqueueNewsletterTranslationBacklog()
     }
 
     private func presentNotification(_ header: MessageHeader, accountId: String) {
@@ -2496,15 +2515,45 @@ final class MailboxViewModel {
     }
 
     /// Pre-computes and caches the Hebrew translation + summary for a just-popped
-    /// RSS feed item in the background (warming the body cache on the way), so the
-    /// expanded card's Translate/Summary toggles show instantly instead of waiting
-    /// on Gemini at click time. Only feed items are pre-translated; this jumps a
-    /// popped item ahead of FeedService's oldest-first import-time queue. Regular
-    /// mail still translates on demand (and caches the result).
+    /// newsletter message in the background (warming the body cache on the way), so
+    /// the Translate/Summary toggles — on the expanded card and in the viewer —
+    /// show instantly instead of waiting on Gemini at click time. Only newsletter
+    /// messages (per the Newsletter category rules) are pre-translated; other mail
+    /// still translates on demand (and caches the result).
     private func enqueuePretranslation(_ note: MailNotification) {
-        guard note.header.from.email == FeedService.fromAddress,
-              GeminiConfig.apiKey != nil else { return }
-        pretranslateQueue.append(note)
+        guard matchesNewsletterRule(note.header) else { return }
+        enqueuePretranslations([note])
+    }
+
+    /// How many recent newsletter messages the catch-up sweep considers, so a
+    /// fresh rule doesn't send a sender's whole history to Gemini.
+    private static let pretranslateBacklogLimit = 30
+
+    /// Queues the most recent Inbox newsletter messages that still lack a cached
+    /// translation or summary — mail that arrived while the app was closed, or
+    /// whose pre-translation was interrupted. Runs at launch and after each
+    /// inbox poll; already-translated and already-queued messages are skipped,
+    /// so repeat sweeps are cheap.
+    private func enqueueNewsletterTranslationBacklog() {
+        for (accountId, labelId) in newsletterLabelIds {
+            let recent = store.headers(withLabel: labelId, accountId: accountId, since: .distantPast)
+                .suffix(Self.pretranslateBacklogLimit)
+            enqueuePretranslations(recent.map { MailNotification(header: $0, accountId: accountId) })
+        }
+    }
+
+    /// Appends messages missing a translation or summary to the pre-translation
+    /// queue and starts the single background worker draining it.
+    private func enqueuePretranslations(_ notes: [MailNotification]) {
+        guard GeminiConfig.apiKey != nil else { return }
+        let queued = Set(pretranslateQueue.map(\.id))
+        let missing = notes.filter { note in
+            guard !queued.contains(note.id) else { return false }
+            let cached = store.cachedTranslation(id: note.id)
+            return cached.translated == nil || cached.summary == nil
+        }
+        guard !missing.isEmpty else { return }
+        pretranslateQueue.append(contentsOf: missing)
         guard !pretranslateWorkerRunning else { return }
         pretranslateWorkerRunning = true
         Task { [weak self] in
