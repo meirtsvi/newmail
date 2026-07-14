@@ -6,8 +6,12 @@ import Observation
 /// displayed message changes so cached results don't leak across messages.
 ///
 /// Results are also persisted per message id (see `CachedTranslation`), so a
-/// translation produced once — here or pre-computed for an RSS feed item —
+/// translation produced once — here or pre-computed for a newsletter message —
 /// shows instantly on every later toggle, in any viewer, across launches.
+/// The Gemini call itself runs in a task shared across viewers (`sharedWork`)
+/// that `reset()` doesn't cancel: switching messages mid-translation lets the
+/// work finish and land in the store, so coming back shows it instantly, and
+/// toggling again while it's still running joins the same call.
 @MainActor
 @Observable
 final class BodyTranslationModel {
@@ -22,6 +26,25 @@ final class BodyTranslationModel {
     private var task: Task<Void, Never>?
     @ObservationIgnored private lazy var store = MailStore()
 
+    /// In-flight Gemini work keyed by message id + kind, shared by every model
+    /// instance so a message never pays for the same translation twice.
+    private static var inflight: [String: Task<String, Error>] = [:]
+
+    /// Returns the running task for `key`, or starts `work` as a new one. The
+    /// task saves its result to the store itself, so it is useful even if every
+    /// viewer that awaited it has moved on to another message.
+    private static func sharedWork(
+        key: String, _ work: @escaping @MainActor () async throws -> String
+    ) -> Task<String, Error> {
+        if let running = inflight[key] { return running }
+        let task = Task { @MainActor in
+            defer { inflight[key] = nil }
+            return try await work()
+        }
+        inflight[key] = task
+        return task
+    }
+
     /// The HTML to render for the current mode; falls back to the original while a
     /// result isn't ready yet.
     func displayHTML(original: String) -> String {
@@ -32,8 +55,9 @@ final class BodyTranslationModel {
         }
     }
 
-    /// Clears cached results and cancels any in-flight work. Call when the
-    /// displayed message changes.
+    /// Clears this viewer's state when the displayed message changes. Only the
+    /// observing task is cancelled — the shared Gemini work keeps running and
+    /// caches its result for when the message is shown again.
     func reset() {
         task?.cancel()
         task = nil
@@ -53,9 +77,11 @@ final class BodyTranslationModel {
             return
         }
         run(assign: \.translatedHTML, showAs: .translated) { [store] in
-            let result = try await TranslationService.shared.translateHTMLToHebrew(html)
-            store.saveTranslation(id: messageId, translated: result)
-            return result
+            try await Self.sharedWork(key: messageId + ":translate") {
+                let result = try await TranslationService.shared.translateHTMLToHebrew(html)
+                store.saveTranslation(id: messageId, translated: result)
+                return result
+            }.value
         }
     }
 
@@ -68,9 +94,11 @@ final class BodyTranslationModel {
             return
         }
         run(assign: \.summaryHTML, showAs: .summary) { [store] in
-            let result = try await TranslationService.shared.summarizeInHebrew(plainText: plainText, html: html)
-            store.saveTranslation(id: messageId, summary: result)
-            return result
+            try await Self.sharedWork(key: messageId + ":summary") {
+                let result = try await TranslationService.shared.summarizeInHebrew(plainText: plainText, html: html)
+                store.saveTranslation(id: messageId, summary: result)
+                return result
+            }.value
         }
     }
 
