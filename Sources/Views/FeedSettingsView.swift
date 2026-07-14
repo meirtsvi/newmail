@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
 ///             choose which one receives feed items
 ///   Digest  — clear the digest coverage history
 ///   AI      — the Gemini API key used for translation and digest summaries
+///   Translation — words the Hebrew translation/summary keeps in English
 ///   Notifications — popup and sound toggles for new mail and calendar reminders
 struct FeedSettingsView: View {
     var body: some View {
@@ -23,6 +24,8 @@ struct FeedSettingsView: View {
                 .tabItem { Label("Digest", systemImage: "newspaper") }
             AISettingsTab()
                 .tabItem { Label("AI", systemImage: "sparkles") }
+            TranslationSettingsTab()
+                .tabItem { Label("Translation", systemImage: "character.bubble") }
         }
         .frame(width: 760, height: 440)
         // Escape closes the Settings window (not the default for a Settings scene).
@@ -421,5 +424,39 @@ private struct AISettingsTab: View {
         storedKey = trimmedDraft
         draftKey = ""
         isReplacing = false
+    }
+}
+
+private struct TranslationSettingsTab: View {
+    @State private var words = TranslationPrefs.skipWords
+    @State private var saved = false
+
+    var body: some View {
+        Form {
+            Section {
+                TextField("Words to keep in English", text: $words, axis: .vertical)
+                    .labelsHidden()
+                    .lineLimit(4...8)
+                HStack {
+                    if saved {
+                        Text("Saved.")
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Save", action: save)
+                        .disabled(words == TranslationPrefs.skipWords)
+                }
+            } header: {
+                Text("Words to keep in English")
+            } footer: {
+                Text("Comma-separated words or phrases (e.g. “pull request”) that translating a mail to Hebrew — and the Hebrew summary — will leave in English.")
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func save() {
+        UserDefaults.standard.set(words, forKey: TranslationPrefs.skipWordsKey)
+        saved = true
     }
 }

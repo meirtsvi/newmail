@@ -186,24 +186,69 @@ final class TranslationService {
 
     // MARK: - Prompts
 
-    /// Verbatim from the Python reference (`TRANSLATION_SYSTEM_INSTRUCTION`).
-    private static let translationSystem = """
-    You translate short English strings from an email into natural, fluent Hebrew. Rules:
-    1. Keep these in English, untranslated: product names, model names, company names, library/framework/tool names, code snippets, CLI commands, URLs, file paths, API identifiers, technical acronyms (e.g., Claude Code, NVIDIA, NIM, GPT-5, API, SDK, LLM, RAG, MCP, ChatGPT, Gemini, Anthropic, OpenAI, Cursor, npm, pip, Python). ALWAYS keep these exact words in English, never translate them: sandbox, sandboxes, alignment, self verification, spec, routine, dashboard, orchestrate, frontier.
-    2. Translate the surrounding prose into idiomatic Hebrew — do not transliterate.
-    3. Preserve emoji, punctuation, leading/trailing whitespace, and line breaks exactly.
-    4. If a string is only punctuation, whitespace, a URL, a number, or a bare technical identifier, return it unchanged.
-    5. Return a JSON array of strings with the SAME LENGTH and ORDER as the input.
-    """
+    /// Built-in do-not-translate words, always in effect. The user's own list
+    /// (Settings → Translation) is appended on top of these.
+    private static let builtInSkipWords = [
+        "sandbox", "sandboxes", "alignment", "self verification", "spec",
+        "routine", "dashboard", "orchestrate",
+    ]
 
-    private static let summarySystem = """
-    You summarize an email into exactly 5 well-structured paragraphs of natural, fluent Hebrew.
-    Rules:
-    - Separate the paragraphs with a single blank line.
-    - Keep product names, company names, model names, code, CLI commands, and URLs in English.
-    - Write idiomatic Hebrew prose — do not transliterate.
-    - Output only the Hebrew summary, with no preamble, headings, or numbering.
-    """
+    /// Comma-joined skip list for the prompts: built-ins plus the user's words,
+    /// deduplicated case-insensitively.
+    private static var skipWordsClause: String {
+        var seen = Set<String>()
+        var words: [String] = []
+        for word in builtInSkipWords + TranslationPrefs.skipWordList {
+            if seen.insert(word.lowercased()).inserted { words.append(word) }
+        }
+        return words.joined(separator: ", ")
+    }
+
+    /// From the Python reference (`TRANSLATION_SYSTEM_INSTRUCTION`), with the
+    /// do-not-translate word list injected.
+    private static var translationSystem: String {
+        """
+        You translate short English strings from an email into natural, fluent Hebrew. Rules:
+        1. Keep these in English, untranslated: product names, model names, company names, library/framework/tool names, code snippets, CLI commands, URLs, file paths, API identifiers, technical acronyms (e.g., Claude Code, NVIDIA, NIM, GPT-5, API, SDK, LLM, RAG, MCP, ChatGPT, Gemini, Anthropic, OpenAI, Cursor, npm, pip, Python). ALWAYS keep these exact words in English, never translate them: \(skipWordsClause).
+        2. Translate the surrounding prose into idiomatic Hebrew — do not transliterate.
+        3. Preserve emoji, punctuation, leading/trailing whitespace, and line breaks exactly.
+        4. If a string is only punctuation, whitespace, a URL, a number, or a bare technical identifier, return it unchanged.
+        5. Return a JSON array of strings with the SAME LENGTH and ORDER as the input.
+        """
+    }
+
+    private static var summarySystem: String {
+        """
+        You summarize an email into exactly 5 well-structured paragraphs of natural, fluent Hebrew.
+        Rules:
+        - Separate the paragraphs with a single blank line.
+        - Keep product names, company names, model names, code, CLI commands, and URLs in English.
+        - ALWAYS keep these exact words in English, never translate them: \(skipWordsClause).
+        - Write idiomatic Hebrew prose — do not transliterate.
+        - Output only the Hebrew summary, with no preamble, headings, or numbering.
+        """
+    }
+}
+
+/// UserDefaults-backed do-not-translate word list, edited in Settings →
+/// Translation. Stored as one comma-separated string; an absent key reads as
+/// the default list below.
+enum TranslationPrefs {
+    static let skipWordsKey = "translationSkipWords"
+    static let defaultSkipWords =
+        "workflow, harness, ecosystem, taste, funnel, pull request, upstream, downstream, publishing, frontier, frontend"
+
+    static var skipWords: String {
+        UserDefaults.standard.string(forKey: skipWordsKey) ?? defaultSkipWords
+    }
+
+    /// The stored string split on commas, trimmed, with empties dropped.
+    static var skipWordList: [String] {
+        skipWords
+            .components(separatedBy: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
 }
 
 // MARK: - Offscreen WebKit session
