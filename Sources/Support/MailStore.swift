@@ -140,16 +140,19 @@ final class MailStore {
             )
         )) ?? []
         var changed = false
+        var dropped: [String] = []
         for row in rows where !keep.contains(row.id) {
             var labels = row.labelIdsRaw.split(separator: ",").map(String.init)
             labels.removeAll { $0 == folderId }
             if labels.isEmpty {
+                dropped.append(row.id)
                 context.delete(row)
             } else {
                 row.labelIdsRaw = "," + labels.joined(separator: ",") + ","
             }
             changed = true
         }
+        deleteBodiesAndTranslations(ids: dropped)
         if changed { try? context.save() }
     }
 
@@ -159,7 +162,22 @@ final class MailStore {
             FetchDescriptor<CachedMessage>(predicate: #Predicate { ids.contains($0.id) })
         )) ?? []
         for row in rows { context.delete(row) }
+        deleteBodiesAndTranslations(ids: ids)
         try? context.save()
+    }
+
+    /// Drops the cached bodies and translations/summaries of deleted messages, so
+    /// they don't pile up as orphans behind message rows that no longer exist.
+    private func deleteBodiesAndTranslations(ids: [String]) {
+        guard !ids.isEmpty else { return }
+        let bodies = (try? context.fetch(
+            FetchDescriptor<CachedBody>(predicate: #Predicate { ids.contains($0.id) })
+        )) ?? []
+        for row in bodies { context.delete(row) }
+        let translations = (try? context.fetch(
+            FetchDescriptor<CachedTranslation>(predicate: #Predicate { ids.contains($0.id) })
+        )) ?? []
+        for row in translations { context.delete(row) }
     }
 
     func updateRead(ids: [String], read: Bool) {
