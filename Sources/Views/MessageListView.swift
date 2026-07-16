@@ -162,6 +162,11 @@ struct MessageListView: View {
         }
         .onChange(of: vm.selection) { _, sel in
             if sel.count == 1, let id = sel.first {
+                // Keep the ⇧-click anchor in sync no matter how the row was
+                // selected — native table click (row gaps the cell gestures
+                // don't cover), arrow keys, Home/End, or the ⌘K palette —
+                // otherwise a later ⇧-click extends from a stale/nil anchor.
+                selectionAnchor = id
                 Task { await vm.openMessage(id) }
             }
         }
