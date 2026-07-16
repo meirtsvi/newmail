@@ -507,14 +507,18 @@ final class GmailProvider: MailProvider {
 
     // MARK: - Sending
 
-    func send(rawMIME: Data) async throws {
+    func send(rawMIME: Data, flagged: Bool) async throws {
         struct Body: Codable { var raw: String }
+        struct SendResponse: Codable { var id: String }
         let raw = rawMIME.base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
         let body = try JSONEncoder().encode(Body(raw: raw))
-        _ = try await request("messages/send", method: "POST", jsonBody: body)
+        let data = try await request("messages/send", method: "POST", jsonBody: body)
+        if flagged, let sent = try? JSONDecoder().decode(SendResponse.self, from: data) {
+            try await setFlagged(ids: [sent.id], flagged: true)
+        }
     }
 
     // MARK: - Drafts

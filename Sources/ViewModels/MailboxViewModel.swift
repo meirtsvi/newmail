@@ -2420,7 +2420,7 @@ final class MailboxViewModel {
         return nil
     }
 
-    func sendComposed(to: String, cc: String, subject: String, html: String, attachments: [URL], inlineImages: [ComposeInlineImage] = [], draftId: String? = nil) async {
+    func sendComposed(to: String, cc: String, subject: String, html: String, attachments: [URL], inlineImages: [ComposeInlineImage] = [], draftId: String? = nil, flagged: Bool = false) async {
         // Remember who we send to so they autocomplete next time.
         contactStore.record(MailAddress.parseList(to) + MailAddress.parseList(cc))
         guard let provider = currentProvider else {
@@ -2434,7 +2434,7 @@ final class MailboxViewModel {
             attachments: attachments, inlineImages: inlineImages
         )
         do {
-            try await provider.send(rawMIME: mime)
+            try await provider.send(rawMIME: mime, flagged: flagged)
             // Only drop the saved draft once the send actually succeeds.
             if let draftId {
                 try? await provider.deleteDraft(id: draftId)

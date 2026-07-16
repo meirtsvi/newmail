@@ -19,6 +19,8 @@ struct ComposeView: View {
     @State private var attachments: [URL] = []
     @State private var loadingAttachments = false
     @State private var sending = false
+    /// When on, the sent message is marked flagged (⌘W or the flag toolbar button).
+    @State private var flagged = false
     @State private var showImporter = false
     @State private var showLinkPrompt = false
     @State private var linkURL = ""
@@ -257,7 +259,8 @@ struct ComposeView: View {
                 await draftSave?.value
                 await vm.sendComposed(
                     to: request.to, cc: request.cc, subject: request.subject,
-                    html: html, attachments: attachments, inlineImages: inlineImages, draftId: request.draftId
+                    html: html, attachments: attachments, inlineImages: inlineImages, draftId: request.draftId,
+                    flagged: flagged
                 )
                 sending = false
                 onClose()
@@ -402,6 +405,14 @@ struct ComposeView: View {
             fontPickers
             Divider().frame(height: 16)
             Button { showImporter = true } label: { Image(systemName: "paperclip") }.help("Attach file")
+            Button {
+                flagged.toggle()
+            } label: {
+                Image(systemName: flagged ? "flag.fill" : "flag")
+                    .foregroundStyle(flagged ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
+            }
+                .keyboardShortcut("w", modifiers: .command)
+                .help(flagged ? "Send unflagged (⌘W)" : "Send flagged (⌘W)")
             Divider().frame(height: 16)
             ZoomControls(zoom: Binding(
                 get: { Double(rich.zoom) },

@@ -453,11 +453,14 @@ final class GraphProvider: MailProvider {
 
     // MARK: - Sending
 
-    func send(rawMIME: Data) async throws {
+    func send(rawMIME: Data, flagged: Bool) async throws {
         // Create a draft from the MIME, then send it (reuses the shared MIMEBuilder).
         let base64 = rawMIME.base64EncodedData()
         let created = try await request("messages", method: "POST", rawBody: base64, contentType: "text/plain")
         let msg = try JSONDecoder().decode(GraphAPI.Message.self, from: created)
+        // Graph's send returns nothing to flag afterwards, but a follow-up flag
+        // set on the draft carries over to the sent copy.
+        if flagged { try await setFlagged(ids: [msg.id], flagged: true) }
         try await request("messages/\(msg.id)/send", method: "POST")
     }
 

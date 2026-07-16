@@ -43,7 +43,8 @@ protocol MailProvider: AnyObject {
     /// descendants (sub-folders).
     func deleteFolder(id: String) async throws
 
-    func send(rawMIME: Data) async throws
+    /// Sends the message; `flagged` marks the sent copy as flagged/starred.
+    func send(rawMIME: Data, flagged: Bool) async throws
 
     /// Saves a draft from the message MIME, returning the draft's id. Pass `id: nil`
     /// to create a new draft, or an existing id to replace it in place; the returned
@@ -81,6 +82,9 @@ protocol MailProvider: AnyObject {
 // supports. A cross-account move only exports/deletes from the source and imports
 // into the destination, so the unused half stays absent and these throw clearly.
 extension MailProvider {
+    func send(rawMIME: Data) async throws {
+        try await send(rawMIME: rawMIME, flagged: false)
+    }
     func exportRawMessage(id: String) async throws -> Data {
         throw MailError.other("Exporting messages isn't supported for this account.")
     }
