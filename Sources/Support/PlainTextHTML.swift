@@ -139,7 +139,8 @@ enum PlainTextHTML {
     /// from the destination, so the href is what matters) and falls back to
     /// detecting bare URLs in the plain-text part when there's no HTML. Results are
     /// http/https only (so `mailto:`/`tel:`/`cid:` are skipped), skip opt-out and
-    /// boilerplate links (matched on URL *and* link text), and de-duplicated in order.
+    /// boilerplate links (matched on URL *and* link text) as well as links titled
+    /// "comments" (matched on link text only), and de-duplicated in order.
     static func extractLinks(html: String, plainText: String) -> [URL] {
         var seen = Set<String>()
         var urls: [URL] = []
@@ -150,6 +151,10 @@ enum PlainTextHTML {
                   scheme == "http" || scheme == "https" else { return }
             let haystack = (url.absoluteString + " " + text).lowercased()
             if skipMarkers.contains(where: haystack.contains) { return }
+            // Aggregator digests pair each story link with a "Comments" /
+            // "123 comments" link; skip those by title only, since the URL of
+            // a story itself may legitimately contain "comment".
+            if text.lowercased().contains("comment") { return }
             if seen.insert(url.absoluteString).inserted { urls.append(url) }
         }
         if !html.isEmpty,
