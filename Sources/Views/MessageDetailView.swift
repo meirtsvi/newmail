@@ -46,6 +46,7 @@ struct MessageDetailView: View {
             bodyBlock
         }
         .frame(minWidth: 480, minHeight: 360)
+        .background(ZoomShortcuts(zoom: $zoom, range: Self.zoomRange))
         .onChange(of: header.id) { _, _ in translation.reset() }
     }
 

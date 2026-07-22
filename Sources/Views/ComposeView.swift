@@ -106,6 +106,10 @@ struct ComposeView: View {
         }
         .frame(minWidth: 480, idealWidth: 640, minHeight: 380,
                idealHeight: request.quotedHTML.isEmpty ? 560 : 680)
+        .background(ZoomShortcuts(zoom: Binding(
+            get: { Double(rich.zoom) },
+            set: { rich.setZoom(CGFloat($0)) }
+        )))
         .onAppear {
             // Shift-Tab out of the body editor returns to the Subject field. Both the
             // rich-text body (new/reply/forward) and the WebView body (edit) route it.

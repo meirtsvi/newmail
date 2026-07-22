@@ -52,6 +52,36 @@ struct ZoomControls: View {
     }
 }
 
+/// Zero-size hidden buttons that register the zoom keyboard shortcuts for a
+/// window. Both "+" (⌘⇧=) and "=" map to zoom-in so the unshifted key works
+/// too; ⌘0 resets. Attach via `.background(...)` anywhere in the window.
+struct ZoomShortcuts: View {
+    @Binding var zoom: Double
+    var range: ClosedRange<Double> = 0.5...3.0
+
+    var body: some View {
+        Group {
+            Button("") { step(+0.1) }
+                .keyboardShortcut("+", modifiers: .command)
+            Button("") { step(+0.1) }
+                .keyboardShortcut("=", modifiers: .command)
+            Button("") { step(-0.1) }
+                .keyboardShortcut("-", modifiers: .command)
+            Button("") { zoom = 1.0 }
+                .keyboardShortcut("0", modifiers: .command)
+        }
+        .opacity(0)
+        .frame(width: 0, height: 0)
+        .accessibilityHidden(true)
+    }
+
+    /// Same ±0.1 step with one-decimal snapping as `ZoomControls`.
+    private func step(_ delta: Double) {
+        let next = ((zoom + delta) * 10).rounded() / 10
+        zoom = min(range.upperBound, max(range.lowerBound, next))
+    }
+}
+
 struct TranslateControls: View {
     let model: BodyTranslationModel
     /// Message id — keys the persistent translation/summary cache.
