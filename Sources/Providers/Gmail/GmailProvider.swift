@@ -566,6 +566,36 @@ final class GmailProvider: MailProvider {
         return nil
     }
 
+    // MARK: - Cross-account move (source side)
+
+    /// The message's original RFC822 bytes (`format=raw`), used to re-create it
+    /// verbatim in another account.
+    func exportRawMessage(id: String) async throws -> Data {
+        struct RawMessage: Decodable { var raw: String }
+        let data = try await request("messages/\(id)", query: [
+            URLQueryItem(name: "format", value: "raw")
+        ])
+        let encoded = try JSONDecoder().decode(RawMessage.self, from: data).raw
+        guard let bytes = Self.decodeBase64URL(encoded) else {
+            throw MailError.other("Gmail returned an unreadable copy of the message.")
+        }
+        return bytes
+    }
+
+    /// Deletes messages outright — skipping Trash, so no copy is left behind
+    /// after a successful cross-account move. Unlike every other mutation this
+    /// needs the full `https://mail.google.com/` scope; `gmail.modify` can only
+    /// trash. A 404 means it's already gone, which is the intended end state.
+    func permanentlyDelete(ids: [String]) async throws {
+        for id in ids {
+            do {
+                _ = try await request("messages/\(id)", method: "DELETE")
+            } catch MailError.api(404, _) {
+                continue
+            }
+        }
+    }
+
     // MARK: - Cross-account move (destination side)
 
     /// Imports a message into this mailbox via `messages.insert` (IMAP-APPEND-style):

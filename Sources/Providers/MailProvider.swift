@@ -78,9 +78,9 @@ protocol MailProvider: AnyObject {
     func permanentlyDelete(ids: [String]) async throws
 }
 
-// Default implementations so each provider only implements the directions it
-// supports. A cross-account move only exports/deletes from the source and imports
-// into the destination, so the unused half stays absent and these throw clearly.
+// Default implementations so a provider that can't take part in a cross-account
+// move (a future backend without a raw-MIME or hard-delete path) fails with a
+// clear message instead of not compiling. Gmail and Graph implement all three.
 extension MailProvider {
     func send(rawMIME: Data) async throws {
         try await send(rawMIME: rawMIME, flagged: false)

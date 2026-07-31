@@ -34,6 +34,12 @@ enum AppConfig {
     /// and `profile` are added automatically by MSAL.
     static let microsoftScopes = ["Mail.ReadWrite", "Mail.Send", "User.Read"]
 
+    /// Scope for the Outlook IMAP endpoint, requested separately (it belongs to
+    /// the `outlook.office.com` resource, which can't share a token with Graph).
+    /// Used only to `APPEND` messages moved in from another account — Graph has
+    /// no equivalent that lands a real, non-draft message.
+    static let microsoftIMAPScopes = ["https://outlook.office.com/IMAP.AccessAsUser.All"]
+
     /// True once a real client ID has been filled in.
     static var isMicrosoftConfigured: Bool {
         !microsoftClientID.isEmpty && !microsoftClientID.hasPrefix("PASTE-")

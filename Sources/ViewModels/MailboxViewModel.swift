@@ -48,6 +48,9 @@ final class MailboxViewModel {
     private var snoozeServices: [String: SnoozeService] = [:]
     // Cached Gmail write-scope status (Graph accounts can always write).
     private var gmailWriteScope = true
+    // Cached full-mailbox scope status, needed only to delete the source copy of
+    // a message moved out to another account.
+    private var gmailFullScope = true
 
     // RSS feeds: a single service polls the chosen Gmail account and inserts new
     // feed items into its Inbox. `feedSubscriptions` backs the Settings editor.
@@ -329,6 +332,7 @@ final class MailboxViewModel {
         await withTaskGroup(of: Void.self) { group in
             group.addTask { @MainActor in
                 self.gmailWriteScope = (try? await GoogleAuth.shared.hasWriteScope) ?? false
+                self.gmailFullScope = (try? await GoogleAuth.shared.hasFullMailScope) ?? false
                 self.hasWriteScope = self.currentAccountCanWrite
             }
             for session in sessions {
@@ -935,14 +939,15 @@ final class MailboxViewModel {
         return folder.accountId == currentAccountId || canMoveAcross(toAccountId: folder.accountId)
     }
 
-    /// Cross-account moves are supported only Outlook → Gmail: Gmail can import a
-    /// real received message via `messages.insert`, whereas Graph would only create
-    /// a draft. The source is always the current account.
+    /// Cross-account moves run in both directions between an Outlook and a Gmail
+    /// account: Gmail imports via `messages.insert`, Outlook via IMAP `APPEND`
+    /// (Graph would only create a draft). Two accounts on the same provider are
+    /// not supported. The source is always the current account.
     private func canMoveAcross(toAccountId destId: String) -> Bool {
         guard destId != currentAccountId,
               let src = sessions.first(where: { $0.account.id == currentAccountId }),
               let dest = sessions.first(where: { $0.account.id == destId }) else { return false }
-        return src.account.providerKind == .graph && dest.account.providerKind == .gmail
+        return src.account.providerKind != dest.account.providerKind
     }
 
     /// Moves dropped/quick-moved messages, routing same-account moves through the
@@ -1531,6 +1536,7 @@ final class MailboxViewModel {
             needsGoogleSetup = false
             googleSetupError = nil
             gmailWriteScope = (try? await GoogleAuth.shared.hasWriteScope) ?? false
+            gmailFullScope = (try? await GoogleAuth.shared.hasFullMailScope) ?? false
             hasWriteScope = currentAccountCanWrite
             if gmailWriteScope {
                 authMessage = "Signed in successfully. Write access (delete, move, snooze, send) is now enabled."
@@ -1560,6 +1566,7 @@ final class MailboxViewModel {
             needsGoogleSetup = false
             if hadToken {
                 gmailWriteScope = (try? await GoogleAuth.shared.hasWriteScope) ?? false
+                gmailFullScope = (try? await GoogleAuth.shared.hasFullMailScope) ?? false
                 hasWriteScope = currentAccountCanWrite
                 await reconcileGmailSessions()
             } else {
@@ -2003,11 +2010,12 @@ final class MailboxViewModel {
         }
     }
 
-    /// Moves messages from the current (Outlook) account into a folder of another
-    /// (Gmail) account: exports each message's original MIME, re-creates it as a real
-    /// message in the destination, then permanently deletes the source copy. The
-    /// delete only runs after the import succeeds, so a failure never loses mail; on
-    /// the first failure we stop and leave already-moved messages moved.
+    /// Moves messages between an Outlook and a Gmail account (either direction):
+    /// exports each message's original MIME, re-creates it as a real message in the
+    /// destination, then removes the source copy — purged outright where the account
+    /// allows it, trashed otherwise. The removal only runs after the import succeeds,
+    /// so a failure never loses mail; on the first failure we stop and leave
+    /// already-moved messages moved.
     func moveAcrossAccounts(_ ids: [String], to folder: MailFolder) async {
         guard let source = sessions.first(where: { $0.account.id == currentAccountId }),
               let dest = sessions.first(where: { $0.account.id == folder.accountId }) else { return }
@@ -2017,6 +2025,11 @@ final class MailboxViewModel {
             await signInForWriteAccess()
             guard gmailWriteScope else { return }
         }
+        // Purging the Gmail copy needs the full-mailbox scope. Without it the move
+        // still runs — the source is trashed instead (Gmail empties it after 30
+        // days). No prompt: a Workspace org that hasn't approved this OAuth client
+        // blocks the re-consent outright, so asking would only be a dead end.
+        let purgesSource = source.account.providerKind != .gmail || gmailFullScope
         let batch = messages.filter { ids.contains($0.id) }
         // Remove from the list right away so the move feels instant, then export,
         // import, and delete each message on the server in the background. The source
@@ -2028,7 +2041,11 @@ final class MailboxViewModel {
             do {
                 let raw = try await source.provider.exportRawMessage(id: header.id)
                 _ = try await dest.provider.importRawMessage(raw, toFolderId: folder.id, markUnread: !header.isRead)
-                try await source.provider.permanentlyDelete(ids: [header.id])
+                if purgesSource {
+                    try await source.provider.permanentlyDelete(ids: [header.id])
+                } else {
+                    try await source.provider.trash(ids: [header.id])
+                }
                 addTombstones(ids: [header.id], folderId: currentFolder?.id)
                 moved += 1
             } catch {
@@ -2040,7 +2057,8 @@ final class MailboxViewModel {
         }
         if moved > 0 {
             let name = dest.account.displayName.isEmpty ? dest.account.email : dest.account.displayName
-            statusMessage = "Moved \(moved) message\(moved == 1 ? "" : "s") to \(name)."
+            let note = purgesSource ? "" : " Source copies are in Gmail’s Trash."
+            statusMessage = "Moved \(moved) message\(moved == 1 ? "" : "s") to \(name).\(note)"
         }
     }
 

@@ -56,7 +56,10 @@ final class GraphAuth {
     /// Returns a valid access token for the given account, refreshing silently
     /// and falling back to an interactive prompt only when MSAL says interaction
     /// is required.
-    func accessToken(homeAccountId: String) async throws -> String {
+    /// Pass `scopes` to get a token for a different resource than Graph (e.g. the
+    /// Outlook IMAP endpoint); a token can only cover one resource at a time.
+    func accessToken(homeAccountId: String, scopes: [String]? = nil) async throws -> String {
+        let scopes = scopes ?? self.scopes
         let account = try cachedAccount(homeAccountId)
         let silent = MSALSilentTokenParameters(scopes: scopes, account: account)
         do {

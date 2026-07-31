@@ -153,7 +153,7 @@ final class FeedService {
         // If the feed only carries a summary with a "Read full article" link, fetch
         // that page and use the full article as the body instead of the snippet.
         var html = item.html
-        var replacedWithArticle = false
+        var originalLink = item.link
         if let articleURL = fullArticleURL(in: item.html),
            let data = try? await URLSession.shared.data(from: articleURL).0,
            !data.isEmpty {
@@ -169,11 +169,14 @@ final class FeedService {
                 } else {
                     html = withBase(page, url: articleURL)
                 }
-                replacedWithArticle = true
+                if originalLink.isEmpty { originalLink = articleURL.absoluteString }
             }
         }
-        if !replacedWithArticle, !item.link.isEmpty {
-            html += "\n<hr>\n<p><a href=\"\(item.link)\">View original</a></p>"
+        // Always end with the article's own URL. Summary-only feeds (Ars Technica)
+        // have their body replaced by the fetched page, which drops the feed's link
+        // along with it, so the link has to be re-added in that case too.
+        if !originalLink.isEmpty {
+            html += "\n<hr>\n<p><a href=\"\(originalLink)\">View original</a></p>"
         }
 
         let raw = MIMEBuilder.buildHTML(

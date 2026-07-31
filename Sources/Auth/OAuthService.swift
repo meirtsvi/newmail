@@ -10,11 +10,17 @@ import AppKit
 actor OAuthService {
     static let shared = OAuthService()
 
-    /// Read + modify (move/label/read-state/trash), send, and calendar events
-    /// read/write (to show your schedule alongside meeting invitations and to
-    /// record RSVPs on the event so Google itself notifies the organizer).
+    /// Full mailbox access, send, and calendar events read/write (to show your
+    /// schedule alongside meeting invitations and to record RSVPs on the event so
+    /// Google itself notifies the organizer).
+    ///
+    /// `mail.google.com` is a superset of `gmail.modify`; it's requested because
+    /// moving a message out to another account has to delete the Gmail copy
+    /// outright rather than leave it in Trash, and `messages.delete` is the one
+    /// call `gmail.modify` doesn't cover. Tokens issued before this was added
+    /// keep working — only the cross-account move asks for a re-sign-in.
     let scopes = [
-        "https://www.googleapis.com/auth/gmail.modify",
+        "https://mail.google.com/",
         "https://www.googleapis.com/auth/gmail.send",
         "https://www.googleapis.com/auth/calendar.events",
     ]

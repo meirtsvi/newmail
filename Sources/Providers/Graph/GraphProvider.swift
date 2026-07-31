@@ -80,7 +80,11 @@ final class GraphProvider: MailProvider {
                     try await Task.sleep(nanoseconds: Self.retryDelay(http, attempt: attempt))
                     continue
                 }
-                throw MailError.api(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+                // Name the endpoint in the message: a bare "Id is malformed" gives
+                // no clue which call (or which account's id) went wrong.
+                let body = String(data: data, encoding: .utf8) ?? ""
+                let endpoint = url.path.replacingOccurrences(of: "/v1.0/me/", with: "")
+                throw MailError.api(http.statusCode, "\(method) \(endpoint) — \(body)")
             } catch let urlError as URLError where method == "GET"
                 && attempt < maxAttempts && Self.isTransient(urlError) {
                 try await Task.sleep(nanoseconds: Self.backoff(attempt))
@@ -424,6 +428,93 @@ final class GraphProvider: MailProvider {
                 _ = try await request("messages/\(id)", method: "DELETE")
             }
         }
+    }
+
+    // MARK: - Cross-account move (destination side)
+
+    /// Appends the message to `toFolderId` over IMAP, which lands it as a real
+    /// received message: original sender, headers, body, attachments, received
+    /// time (from its `Date:` header) and read state all intact.
+    ///
+    /// Graph itself can't do this — creating a message from MIME always produces
+    /// a draft stamped with the import time, and Microsoft documents no supported
+    /// way to clear that — so this one operation talks IMAP instead.
+    ///
+    /// `APPEND` reports no Graph id, so the new message is looked up afterwards by
+    /// its `Message-ID` header — callers act on the id they get back (re-flagging
+    /// an edited message, say), and a placeholder would reach Graph as a malformed
+    /// id. Empty only if the message carries no `Message-ID` or isn't indexed yet.
+    func importRawMessage(_ raw: Data, toFolderId: String, markUnread: Bool) async throws -> String {
+        let destination = try await folderPath(id: toFolderId)
+        let token = try await auth.accessToken(homeAccountId: homeAccountId,
+                                               scopes: AppConfig.microsoftIMAPScopes)
+        let imap = OutlookIMAP(email: accountEmail, accessToken: token)
+        try await imap.append(raw: raw, path: destination.path, kind: destination.kind, markUnread: markUnread)
+
+        guard let messageId = OutlookIMAP.headerValue("message-id", in: raw) else { return "" }
+        return (try? await id(forInternetMessageId: messageId)) ?? ""
+    }
+
+    /// Finds the appended message by its `Message-ID`, which Graph exposes as
+    /// `internetMessageId` (a filterable store property, so it's visible as soon
+    /// as the append lands).
+    private func id(forInternetMessageId messageId: String) async throws -> String {
+        // Single quotes terminate an OData string literal; doubling escapes them.
+        let escaped = messageId.replacingOccurrences(of: "'", with: "''")
+        let data = try await request("messages", query: [
+            URLQueryItem(name: "$filter", value: "internetMessageId eq '\(escaped)'"),
+            URLQueryItem(name: "$select", value: "id"),
+            URLQueryItem(name: "$top", value: "1"),
+        ])
+        struct MessageRef: Decodable { var id: String }
+        struct Page: Decodable { var value: [MessageRef] }
+        return try JSONDecoder().decode(Page.self, from: data).value.first?.id ?? ""
+    }
+
+    /// Folder id → its full display-name path and kind, cached so a multi-message
+    /// move resolves the destination once.
+    private var folderPaths: [String: (path: String, kind: FolderKind)] = [:]
+
+    private func folderPath(id: String) async throws -> (path: String, kind: FolderKind) {
+        if let cached = folderPaths[id] { return cached }
+        let root = try await mailboxRootId()
+        var components: [String] = []
+        var kind = FolderKind.custom
+        var current: String? = id
+        // Walk up to the mailbox root, bounded so a cycle can't spin forever.
+        for depth in 0..<16 {
+            guard let folderId = current, folderId != root else { break }
+            let data = try await request("mailFolders/\(folderId)", query: [
+                URLQueryItem(name: "$select", value: "id,displayName,parentFolderId")
+            ])
+            let folder = try JSONDecoder().decode(GraphAPI.MailFolder.self, from: data)
+            components.insert(folder.displayName, at: 0)
+            if depth == 0 { kind = Self.kind(for: folder) }
+            current = folder.parentFolderId
+        }
+        guard !components.isEmpty else {
+            throw MailError.other("Couldn’t resolve the destination folder.")
+        }
+        let resolved = (components.joined(separator: "/"), kind)
+        folderPaths[id] = resolved
+        return resolved
+    }
+
+    private var rootFolderId: String?
+
+    /// Id of `msgfolderroot`, the parent of the top-level folders — the point to
+    /// stop at when building a folder's path.
+    private func mailboxRootId() async throws -> String {
+        if let rootFolderId { return rootFolderId }
+        // Decoded into a bare id holder: the root has no `displayName`, which
+        // `GraphAPI.MailFolder` requires.
+        struct FolderRef: Decodable { var id: String }
+        let data = try await request("mailFolders/msgfolderroot", query: [
+            URLQueryItem(name: "$select", value: "id")
+        ])
+        let id = try JSONDecoder().decode(FolderRef.self, from: data).id
+        rootFolderId = id
+        return id
     }
 
     func move(ids: [String], toFolderId: String, fromFolderId: String?) async throws {

@@ -104,6 +104,15 @@ actor GoogleAuth {
         }
     }
 
+    /// Whether the token carries full mailbox access, which `messages.delete`
+    /// requires — `gmail.modify` can only trash. Older sign-ins don't have it.
+    var hasFullMailScope: Bool {
+        get throws {
+            let s = try loadIfNeeded().scopes ?? []
+            return s.contains { $0.contains("mail.google.com") }
+        }
+    }
+
     var hasCalendarScope: Bool {
         get throws {
             let s = try loadIfNeeded().scopes ?? []
