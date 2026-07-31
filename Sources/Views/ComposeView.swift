@@ -396,6 +396,9 @@ struct ComposeView: View {
                 .keyboardShortcut("u", modifiers: .command)
                 .help("Underline (⌘U)")
             colorMenu
+            Button { rich.pasteMatchingStyle() } label: { Image(systemName: "doc.on.clipboard") }
+                .keyboardShortcut("v", modifiers: [.command, .option, .shift])
+                .help("Paste and match style (⌥⇧⌘V)")
             Button { showLinkPrompt = true } label: { Image(systemName: "link") }.help("Insert link")
             Divider().frame(height: 16)
             Button { rich.alignLeft() } label: { Image(systemName: "text.alignleft") }.help("Align left")
@@ -429,9 +432,14 @@ struct ComposeView: View {
         .padding(.vertical, 6)
     }
 
-    /// A short palette of text colors offered in the compose toolbar.
+    /// A short palette of text colors offered in the compose toolbar. "Automatic"
+    /// is the editor's own text color, so on screen it follows the app's light/dark
+    /// setting — white on a dark background, black on a light one. It always leaves
+    /// the HTML exporter as black, but which one you're looking at while composing
+    /// isn't obvious, so plain "Black" is offered as the unambiguous choice.
     private static let textColors: [(name: String, color: NSColor)] = [
-        ("Automatic", .textColor), ("Gray", .systemGray), ("Red", .systemRed),
+        ("Automatic", .textColor), ("Black", .black),
+        ("Gray", .systemGray), ("Red", .systemRed),
         ("Orange", .systemOrange), ("Green", .systemGreen),
         ("Blue", .systemBlue), ("Purple", .systemPurple),
     ]

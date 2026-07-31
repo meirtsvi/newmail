@@ -142,6 +142,14 @@ private struct ToolbarSearchField: View {
                     Task { await vm.clearSearch() }
                     return .handled
                 }
+                // Emptying the field leaves search mode. Without this, deleting the
+                // query character by character left `isSearching` true with no way
+                // out (both Escape above and the X below are gated on non-empty
+                // text) — and the periodic refresh skips the message list while
+                // searching, so the inbox went stale until the app was relaunched.
+                .onChange(of: vm.searchText) { _, text in
+                    if text.isEmpty, vm.isSearching { Task { await vm.clearSearch() } }
+                }
                 // NSToolbar sizes the item at its ideal width and moves it to the
                 // » overflow menu when that doesn't fit — it never compresses. A
                 // small ideal keeps the field visible on a 13"/14" MacBook Pro

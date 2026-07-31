@@ -59,6 +59,7 @@ final class RichTextController: ObservableObject {
         else { return }
         let mutable = NSMutableAttributedString(attributedString: attributed)
         Self.adoptInlineImages(in: mutable)
+        Self.normalizeNumberedLists(in: mutable)
         textView?.textStorage?.setAttributedString(mutable)
         // Carry the body font so text typed after a loaded draft keeps the default look.
         textView?.typingAttributes[.font] = Self.defaultFont
@@ -132,19 +133,27 @@ final class RichTextController: ObservableObject {
     /// Toggles a bulleted list on the selected paragraphs (or the one being typed).
     func toggleBulletList() { toggleList(markerFormat: .disc) }
 
-    /// Toggles a numbered list on the selected paragraphs. The trailing period in
-    /// the format string renders items as "1." rather than a bare "1".
-    func toggleNumberedList() { toggleList(markerFormat: NSTextList.MarkerFormat("{decimal}.")) }
+    /// Toggles a numbered list on the selected paragraphs.
+    func toggleNumberedList() { toggleList(markerFormat: Self.numberedFormat) }
+
+    /// The numbered-list marker format. The trailing period in the format string
+    /// renders items as "1." rather than the bare "1" of the built-in `.decimal`.
+    static let numberedFormat = NSTextList.MarkerFormat("{decimal}.")
 
     /// The literal tab-wrapped marker at the start of a list paragraph. The visible
     /// bullet/number is plain text; the paragraph style's NSTextList is what drives
     /// Return-key list continuation and the <ul>/<ol> HTML export (which strips the
     /// literal marker on the way out).
-    private static let listMarkerPattern = try! NSRegularExpression(pattern: "^\\t[^\\t\\n]*\\t")
+    /// Group 1 is the visible marker itself ("1.", "•"), without the tabs.
+    private static let listMarkerPattern = try! NSRegularExpression(pattern: "^\\t([^\\t\\n]*)\\t")
 
-    /// A hand-typed list prefix at the start of a paragraph — "1. " or "- " — that
-    /// Return upgrades to a real list item.
-    private static let typedListPrefixPattern = try! NSRegularExpression(pattern: "^(1\\.|-)[ \u{00A0}]+")
+    /// A hand-typed list prefix at the start of a paragraph — "1. ", "2) ", "- ",
+    /// "* " or "• ". Return upgrades it to a real list item, and the toolbar's list
+    /// buttons strip it before stamping their own marker (so a hand-numbered
+    /// paragraph doesn't come out reading "1. 1. …"). Group 1 captures the typed
+    /// number, so a list that starts at "3." keeps counting from there.
+    private static let typedListPrefixPattern =
+        try! NSRegularExpression(pattern: "^(?:(\\d{1,3})[.)]|[-*\u{2022}])[ \u{00A0}]+")
 
     /// A copy of `style` turned into this list's paragraph style.
     private static func listStyle(basedOn style: NSParagraphStyle, list: NSTextList) -> NSMutableParagraphStyle {
@@ -157,6 +166,59 @@ final class RichTextController: ObservableObject {
             NSTextTab(textAlignment: .natural, location: listTextIndent),
         ]
         return result
+    }
+
+    /// HTML has nowhere to record a numbered list's marker suffix: `exportHTML`
+    /// writes a plain `<ol>`, and the importer hands it back as a bare `{decimal}`
+    /// list whose items read "1" instead of "1.". Re-stamp those paragraphs with the
+    /// app's format — and the matching literal marker — so a reopened draft looks,
+    /// and goes on numbering, like one that was never round-tripped.
+    private static func normalizeNumberedLists(in text: NSMutableAttributedString) {
+        // One canonical replacement per imported list, so paragraphs that shared a
+        // list still share one and AppKit keeps numbering them as a single run.
+        var canonical: [ObjectIdentifier: NSTextList] = [:]
+        text.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+            guard let style = value as? NSParagraphStyle, !style.textLists.isEmpty else { return }
+            var lists = style.textLists
+            var changed = false
+            for (index, list) in lists.enumerated() where list.markerFormat == .decimal {
+                let replacement = canonical[ObjectIdentifier(list)]
+                    ?? NSTextList(markerFormat: numberedFormat, options: 0)
+                canonical[ObjectIdentifier(list)] = replacement
+                lists[index] = replacement
+                changed = true
+            }
+            guard changed else { return }
+            let updated = style.mutableCopy() as! NSMutableParagraphStyle
+            updated.textLists = lists
+            text.addAttribute(.paragraphStyle, value: updated, range: range)
+        }
+        guard !canonical.isEmpty else { return }
+
+        // Append the period to each item's literal marker. Back to front, so the
+        // insertions don't shift the paragraph ranges still to be visited.
+        let string = text.string as NSString
+        var paragraphs: [NSRange] = []
+        var location = 0
+        while location < string.length {
+            let range = string.paragraphRange(for: NSRange(location: location, length: 0))
+            paragraphs.append(range)
+            location = NSMaxRange(range)
+        }
+        for range in paragraphs.reversed() where range.length > 0 {
+            guard let style = text.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle,
+                  style.textLists.last?.markerFormat == numberedFormat,
+                  let match = listMarkerPattern.firstMatch(
+                    in: string.substring(with: range),
+                    range: NSRange(location: 0, length: range.length))
+            else { continue }
+            let marker = match.range(at: 1)
+            let digits = string.substring(with: NSRange(location: range.location + marker.location, length: marker.length))
+            guard !digits.isEmpty, digits.allSatisfy(\.isNumber) else { continue }
+            // Inherit the marker's own attributes so the period matches its font.
+            let at = range.location + NSMaxRange(marker)
+            text.insert(NSAttributedString(string: ".", attributes: text.attributes(at: at - 1, effectiveRange: nil)), at: at)
+        }
     }
 
     /// Called when Return is pressed: if the paragraph being typed reads like the
@@ -181,12 +243,18 @@ final class RichTextController: ObservableObject {
             NSMaxRange(match.range) < contentsEnd - start
         else { return }
 
-        let format: NSTextList.MarkerFormat = (text as NSString).hasPrefix("-")
-            ? .disc : NSTextList.MarkerFormat("{decimal}.")
-        let list = NSTextList(markerFormat: format, options: 0)
+        // Group 1 is the number the user typed ("3." → 3); it's absent for a bullet.
+        let numberRange = match.range(at: 1)
+        let number = numberRange.location == NSNotFound
+            ? nil : Int((text as NSString).substring(with: numberRange))
+        let list = NSTextList(markerFormat: number == nil ? .disc : Self.numberedFormat, options: 0)
+        // Start the list where the user did, so "3. …" continues 4, 5, … rather
+        // than renumbering their first item to 1.
+        let firstItem = number ?? 1
+        list.startingItemNumber = firstItem
         let item = NSMutableAttributedString(attributedString: ts.attributedSubstring(from: paragraph))
         // The plain-string replace keeps the typed prefix's attributes on the marker.
-        item.replaceCharacters(in: match.range, with: "\t\(list.marker(forItemNumber: 1))\t")
+        item.replaceCharacters(in: match.range, with: "\t\(list.marker(forItemNumber: firstItem))\t")
         let newStyle = Self.listStyle(basedOn: style, list: list)
         item.addAttribute(.paragraphStyle, value: newStyle, range: NSRange(location: 0, length: item.length))
 
@@ -232,9 +300,17 @@ final class RichTextController: ObservableObject {
         for (item, range) in paragraphs.enumerated() {
             let paragraph = NSMutableAttributedString(attributedString: base.attributedSubstring(from: range))
             var style = styleOf(range).mutableCopy() as! NSMutableParagraphStyle
-            // Strip the old literal marker when leaving a list or switching formats.
-            if !style.textLists.isEmpty,
-               let m = Self.listMarkerPattern.firstMatch(in: paragraph.string, range: NSRange(location: 0, length: paragraph.length)) {
+            let whole = NSRange(location: 0, length: paragraph.length)
+            if !style.textLists.isEmpty {
+                // Strip the old literal marker when leaving a list or switching formats.
+                if let m = Self.listMarkerPattern.firstMatch(in: paragraph.string, range: whole) {
+                    paragraph.deleteCharacters(in: m.range)
+                }
+            } else if !turningOff,
+                      let m = Self.typedListPrefixPattern.firstMatch(in: paragraph.string, range: whole) {
+                // A hand-typed "1. " / "- " prefix is already the user's marker, so
+                // it's replaced by the real one instead of getting a second marker
+                // stamped in front of it.
                 paragraph.deleteCharacters(in: m.range)
             }
             if turningOff {
@@ -335,6 +411,11 @@ final class RichTextController: ObservableObject {
             ts.addAttribute(.font, value: transform((value as? NSFont) ?? fallback), range: subRange)
         }
     }
+
+    /// Pastes the clipboard as unstyled text, so it picks up the font, size and
+    /// color already in play at the caret instead of dragging the source page's
+    /// styling into the message.
+    func pasteMatchingStyle() { textView?.pasteAsPlainText(nil) }
 
     func applyLink(_ urlString: String) {
         guard let tv = textView, let ts = tv.textStorage,

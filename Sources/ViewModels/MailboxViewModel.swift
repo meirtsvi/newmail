@@ -306,6 +306,12 @@ final class MailboxViewModel {
         // identical folders, so `loadFolders` returns early without updating it.
         updateDockBadge()
 
+        // Arm the refresh timers before any network work: everything below is an
+        // `await`, and one stalled request (a wedged connection, a token refresh
+        // that never returns) used to leave the app running a whole session with
+        // no periodic refresh at all — new mail only showed up after a relaunch.
+        startPeriodicRefresh()
+
         // Open the first account's inbox straight from the cached folder tree, so
         // the cached message list paints before any network round-trip. The network
         // refresh inside `selectFolder` runs in the background while the account
@@ -353,7 +359,6 @@ final class MailboxViewModel {
             rootView: NotificationStackView().environment(self)
         )
         await pollInboxes()
-        startPeriodicRefresh()
         await startCalendarReminders()
         reloadFeedSubscriptions()
         startFeeds()
@@ -837,6 +842,12 @@ final class MailboxViewModel {
         inboxPollTimer?.invalidate()
         inboxPollTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { await self?.pollInboxes() }
+        }
+        // `scheduledTimer` installs in the default run-loop mode only, which is
+        // suspended while AppKit tracks an open menu, a live resize or a scroll
+        // drag. Adding the common modes keeps both polls firing throughout.
+        for timer in [refreshTimer, inboxPollTimer].compactMap({ $0 }) {
+            RunLoop.main.add(timer, forMode: .common)
         }
     }
 
