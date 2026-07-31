@@ -5,6 +5,8 @@ Resources/token.json
 Resources/gemini.json
 gemini.json
 *.token
+# Google OAuth client files, as downloaded from the Cloud console
+client_secret*.json
 
 # Xcode / build
 *.xcodeproj
