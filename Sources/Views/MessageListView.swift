@@ -38,6 +38,15 @@ struct MessageListView: View {
                 loadOlderFooter
             }
         }
+        // Opening a folder — from the sidebar tree, from Favorites, or at launch —
+        // hands keyboard focus to the message list, so ⌘A selects that folder's mail
+        // without having to click a row first. Deferred a runloop because the click
+        // that changed the selection leaves the sidebar's own table first responder,
+        // and focus set inside the same pass is overwritten by it.
+        .onChange(of: vm.currentFolder?.compositeId) { _, folder in
+            guard folder != nil else { return }
+            DispatchQueue.main.async { tableFocused = true }
+        }
     }
 
     /// Shown when a completed search returned nothing, so the pane reads as "no
