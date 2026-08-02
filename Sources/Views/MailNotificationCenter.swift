@@ -94,9 +94,11 @@ private struct EventReminderCard: View {
                     Label(provider.label, systemImage: "video.fill")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.blue)
-                .controlSize(.regular)
+                // Not .borderedProminent: the reminder panel is a non-activating
+                // panel, so a prominent button draws gray whenever the panel isn't
+                // key. Paint the blue ourselves so Connect always reads as the
+                // primary action.
+                .buttonStyle(AlwaysProminentButtonStyle())
             }
 
             HStack {
@@ -124,7 +126,8 @@ private struct EventReminderCard: View {
                     } primaryAction: {
                         vm.snoozeReminder(reminder, preset: preset)
                     }
-                    .menuStyle(.borderlessButton)
+                    .menuStyle(.button)
+                    .buttonStyle(.bordered)
                     .fixedSize()
                     .controlSize(.small)
                 }
@@ -144,6 +147,20 @@ private struct EventReminderCard: View {
         .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.black.opacity(0.08)))
         .shadow(color: .black.opacity(0.20), radius: 12, y: 5)
+    }
+}
+
+/// A filled blue button that stays blue no matter whether its window is key,
+/// unlike `.borderedProminent`.
+private struct AlwaysProminentButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.body)
+            .foregroundStyle(.white)
+            .padding(.vertical, 4)
+            .padding(.horizontal, 10)
+            .background(Color.blue.opacity(configuration.isPressed ? 0.75 : 1),
+                        in: RoundedRectangle(cornerRadius: 6))
     }
 }
 
