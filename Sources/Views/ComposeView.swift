@@ -64,6 +64,7 @@ struct ComposeView: View {
                 Divider()
                 if request.kind == .edit {
                     // Edit in place on the real HTML so the message keeps its formatting.
+                    editFormattingBar
                     HTMLEditorView(html: request.bodyHTML, controller: htmlEditor)
                         .frame(minHeight: 240)
                 } else {
@@ -432,6 +433,44 @@ struct ComposeView: View {
         .padding(.vertical, 6)
     }
 
+    /// The same bar for "Edit message", whose body is the WebView editor. It carries
+    /// the formatting controls that apply to an existing message: no Flag (that's a
+    /// send-time choice) and no Zoom (that scales the rich-text editor only).
+    private var editFormattingBar: some View {
+        HStack(spacing: 8) {
+            Button { htmlEditor.toggleBold() } label: { Image(systemName: "bold") }
+                .keyboardShortcut("b", modifiers: .command)
+                .help("Bold (⌘B)")
+            Button { htmlEditor.toggleItalic() } label: { Image(systemName: "italic") }
+                .keyboardShortcut("i", modifiers: .command)
+                .help("Italic (⌘I)")
+            Button { htmlEditor.toggleUnderline() } label: { Image(systemName: "underline") }
+                .keyboardShortcut("u", modifiers: .command)
+                .help("Underline (⌘U)")
+            colorMenu
+            Button { htmlEditor.pasteMatchingStyle() } label: { Image(systemName: "doc.on.clipboard") }
+                .keyboardShortcut("v", modifiers: [.command, .option, .shift])
+                .help("Paste and match style (⌥⇧⌘V)")
+            Button { showLinkPrompt = true } label: { Image(systemName: "link") }.help("Insert link")
+            Divider().frame(height: 16)
+            Button { htmlEditor.alignLeft() } label: { Image(systemName: "text.alignleft") }.help("Align left")
+            Button { htmlEditor.alignRight() } label: { Image(systemName: "text.alignright") }.help("Align right")
+            Button { htmlEditor.makeLeftToRight() } label: { Image(systemName: "arrow.right") }.help("Left-to-right")
+            Button { htmlEditor.makeRightToLeft() } label: { Image(systemName: "arrow.left") }.help("Right-to-left")
+            Divider().frame(height: 16)
+            Button { htmlEditor.toggleBulletList() } label: { Image(systemName: "list.bullet") }.help("Bulleted list")
+            Button { htmlEditor.toggleNumberedList() } label: { Image(systemName: "list.number") }.help("Numbered list")
+            Divider().frame(height: 16)
+            fontPickers
+            Divider().frame(height: 16)
+            Button { showImporter = true } label: { Image(systemName: "paperclip") }.help("Attach file")
+            Spacer()
+        }
+        .buttonStyle(.borderless)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
     /// A short palette of text colors offered in the compose toolbar. "Automatic"
     /// is the editor's own text color, so on screen it follows the app's light/dark
     /// setting — white on a dark background, black on a light one. It always leaves
@@ -450,7 +489,8 @@ struct ComposeView: View {
         Menu {
             ForEach(Self.textColors, id: \.name) { item in
                 Button {
-                    rich.setFontColor(item.color)
+                    if request.kind == .edit { htmlEditor.setFontColor(item.color) }
+                    else { rich.setFontColor(item.color) }
                 } label: {
                     // SwiftUI menus strip tint off symbol images, so feed a
                     // pre-colored swatch image instead of a tinted SF Symbol.
@@ -490,14 +530,20 @@ struct ComposeView: View {
             }
             .labelsHidden()
             .frame(width: 130)
-            .onChange(of: fontFamily) { _, family in rich.setFontFamily(family) }
+            .onChange(of: fontFamily) { _, family in
+                if request.kind == .edit { htmlEditor.setFontFamily(family) }
+                else { rich.setFontFamily(family) }
+            }
 
             Picker("Size", selection: $fontSize) {
                 ForEach(RichTextController.fontSizes, id: \.self) { Text("\(Int($0))").tag($0) }
             }
             .labelsHidden()
             .frame(width: 60)
-            .onChange(of: fontSize) { _, size in rich.setFontSize(size) }
+            .onChange(of: fontSize) { _, size in
+                if request.kind == .edit { htmlEditor.setFontSize(size) }
+                else { rich.setFontSize(size) }
+            }
         }
         .font(.body)
     }
@@ -583,7 +629,8 @@ struct ComposeView: View {
                 Spacer()
                 Button("Cancel") { showLinkPrompt = false; linkURL = "" }
                 Button("Add") {
-                    rich.applyLink(linkURL)
+                    if request.kind == .edit { htmlEditor.applyLink(linkURL) }
+                    else { rich.applyLink(linkURL) }
                     showLinkPrompt = false
                     linkURL = ""
                 }

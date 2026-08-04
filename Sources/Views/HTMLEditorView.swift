@@ -19,6 +19,117 @@ final class HTMLEditorController: ObservableObject {
         webView.evaluateJavaScript("if (document.body) { document.body.focus(); }")
     }
 
+    // MARK: - Formatting commands
+    //
+    // The editing surface is a `designMode` document, so the toolbar drives it with
+    // `document.execCommand` rather than the AppKit calls `RichTextController` uses.
+
+    func toggleBold() { exec("bold") }
+    func toggleItalic() { exec("italic") }
+    func toggleUnderline() { exec("underline") }
+    func toggleBulletList() { exec("insertUnorderedList") }
+    func toggleNumberedList() { exec("insertOrderedList") }
+    func alignLeft() { exec("justifyLeft") }
+    func alignRight() { exec("justifyRight") }
+    func makeLeftToRight() { setDirection("ltr") }
+    func makeRightToLeft() { setDirection("rtl") }
+
+    /// Wraps the selection in a link (nothing happens when nothing is selected,
+    /// matching the rich-text editor).
+    func applyLink(_ urlString: String) { exec("createLink", value: urlString) }
+
+    /// Inserts the clipboard's plain text, so it picks up the formatting at the
+    /// insertion point instead of carrying the source's styling.
+    func pasteMatchingStyle() {
+        guard let text = NSPasteboard.general.string(forType: .string) else { return }
+        exec("insertText", value: text)
+    }
+
+    /// Changes the color of the selected text. The color is resolved in the light
+    /// appearance, so "Automatic" (`NSColor.textColor`) is saved as black rather than
+    /// baking the dark-mode white into the message — the same choice the rich-text
+    /// HTML exporter makes.
+    func setFontColor(_ color: NSColor) {
+        var resolved = NSColor.black
+        let light = NSAppearance(named: .aqua) ?? NSAppearance.currentDrawing()
+        light.performAsCurrentDrawingAppearance {
+            resolved = color.usingColorSpace(.sRGB) ?? .black
+        }
+        let hex = String(format: "#%02X%02X%02X",
+                         Int((resolved.redComponent * 255).rounded()),
+                         Int((resolved.greenComponent * 255).rounded()),
+                         Int((resolved.blueComponent * 255).rounded()))
+        exec("foreColor", value: hex, styleWithCSS: true)
+    }
+
+    /// Changes the family of the selected text. "System" maps to the same font stack
+    /// the editor stylesheet and the message viewer use.
+    func setFontFamily(_ family: String) {
+        let css = family == RichTextController.systemFamily
+            ? "-apple-system, \"SF Pro Text\", Helvetica, Arial, sans-serif"
+            : family
+        exec("fontName", value: css, styleWithCSS: true)
+    }
+
+    /// Changes the size of the selected text. `execCommand('fontSize')` only speaks
+    /// the legacy 1–7 scale, so the selection is stamped with size 7 and those tags
+    /// are rewritten to the exact pixel size; any size-7 font tags the original
+    /// message already had are marked first so they're left alone.
+    func setFontSize(_ size: CGFloat) {
+        run("""
+        var existing = document.querySelectorAll('font[size="7"]');
+        for (var i = 0; i < existing.length; i++) existing[i].setAttribute('data-nm-keep', '');
+        document.execCommand('styleWithCSS', false, false);
+        document.execCommand('fontSize', false, '7');
+        var made = document.querySelectorAll('font[size="7"]:not([data-nm-keep])');
+        for (var j = 0; j < made.length; j++) {
+          made[j].removeAttribute('size');
+          made[j].style.fontSize = '\(Int(size))px';
+        }
+        for (var k = 0; k < existing.length; k++) existing[k].removeAttribute('data-nm-keep');
+        """)
+    }
+
+    /// Sets the writing direction of the block holding the selection. Any inline
+    /// text alignment is cleared so the new direction actually governs the layout.
+    private func setDirection(_ direction: String) {
+        run("""
+        var sel = window.getSelection();
+        if (!sel || !sel.rangeCount) return;
+        var node = sel.getRangeAt(0).commonAncestorContainer;
+        if (node.nodeType !== 1) node = node.parentElement;
+        var block = node && node.closest('p, div, li, td, th, blockquote, body');
+        if (block) {
+          block.setAttribute('dir', '\(direction)');
+          block.style.textAlign = '';
+        }
+        """)
+    }
+
+    private func exec(_ command: String, value: String? = nil, styleWithCSS: Bool = false) {
+        let argument = value.map(Self.jsString) ?? "null"
+        run("""
+        document.execCommand('styleWithCSS', false, \(styleWithCSS));
+        document.execCommand('\(command)', false, \(argument));
+        """)
+    }
+
+    /// Runs an editing script against the document. The WebView is made first
+    /// responder again first: clicking a toolbar menu or picker can take focus away
+    /// from it, and the command has to land on the selection the user left behind.
+    private func run(_ js: String) {
+        guard let webView else { return }
+        webView.window?.makeFirstResponder(webView)
+        webView.evaluateJavaScript("(function () {\n\(js)\n})()")
+    }
+
+    /// Quotes a Swift string as a JavaScript string literal.
+    private static func jsString(_ value: String) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: value, options: .fragmentsAllowed),
+              let quoted = String(data: data, encoding: .utf8) else { return "''" }
+        return quoted
+    }
+
     /// The current document HTML, faithful to what was loaded: the original DOM
     /// edited in place, so styles, fonts, image sizes, and spacing survive intact.
     /// Strips the editor-only affordances (designMode, helper stylesheet) first.
