@@ -19,6 +19,16 @@ final class HTMLEditorController: ObservableObject {
         webView.evaluateJavaScript("if (document.body) { document.body.focus(); }")
     }
 
+    /// Display-only zoom of the editor, mirroring the rich-text editor's range.
+    /// Published so the formatting bar's zoom control can show the current level.
+    static let zoomRange: ClosedRange<CGFloat> = 0.5...3.0
+    @Published private(set) var zoom: CGFloat = 1.0
+
+    func setZoom(_ value: CGFloat) {
+        zoom = min(Self.zoomRange.upperBound, max(Self.zoomRange.lowerBound, value))
+        webView?.pageZoom = zoom
+    }
+
     // MARK: - Formatting commands
     //
     // The editing surface is a `designMode` document, so the toolbar drives it with

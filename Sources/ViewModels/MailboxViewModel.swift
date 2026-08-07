@@ -1438,6 +1438,7 @@ final class MailboxViewModel {
             request.cc = (body?.cc ?? []).map(\.email).filter { !$0.isEmpty }.joined(separator: ", ")
             request.bodyHTML = body?.html ?? ""
             request.draftId = draftId
+            request.draftMessageId = header.id
             composeWindows.open(request, vm: self)
         }
     }
@@ -2449,7 +2450,7 @@ final class MailboxViewModel {
         return nil
     }
 
-    func sendComposed(to: String, cc: String, subject: String, html: String, attachments: [URL], inlineImages: [ComposeInlineImage] = [], draftId: String? = nil, flagged: Bool = false) async {
+    func sendComposed(to: String, cc: String, subject: String, html: String, attachments: [URL], inlineImages: [ComposeInlineImage] = [], draftId: String? = nil, draftMessageId: String? = nil, flagged: Bool = false) async {
         // Remember who we send to so they autocomplete next time.
         contactStore.record(MailAddress.parseList(to) + MailAddress.parseList(cc))
         guard let provider = currentProvider else {
@@ -2464,33 +2465,74 @@ final class MailboxViewModel {
         )
         do {
             try await provider.send(rawMIME: mime, flagged: flagged)
-            // Only drop the saved draft once the send actually succeeds.
-            if let draftId {
-                try? await provider.deleteDraft(id: draftId)
-                await refreshDraftsCount()
-            }
         } catch {
             errorMessage = error.localizedDescription
+            return
         }
+        // Only drop the saved draft once the send actually succeeds.
+        await discardSentDraft(id: draftId, messageId: draftMessageId, provider: provider)
+    }
+
+    /// Removes the draft a just-sent message was composed in. This runs after the
+    /// send succeeded, so failing here strands a draft rather than losing mail —
+    /// worth a retry, and worth saying so if it still doesn't take.
+    private func discardSentDraft(id: String?, messageId: String?, provider: MailProvider) async {
+        // A draft opened from the Drafts list whose draft id couldn't be resolved
+        // back then (Gmail's ids differ from message ids) would otherwise survive
+        // the send; resolve it from its message id now.
+        var draftId = id
+        if draftId == nil, let messageId, !messageId.isEmpty {
+            draftId = try? await provider.draftId(forMessageId: messageId)
+        }
+        guard let draftId else { return }
+        do {
+            try await provider.deleteDraft(id: draftId)
+        } catch {
+            // One retry: the delete lands moments after the draft was last written,
+            // and a single transient failure would strand it for good.
+            try? await Task.sleep(for: .seconds(1))
+            do {
+                try await provider.deleteDraft(id: draftId)
+            } catch {
+                errorMessage = "The message was sent, but its draft couldn’t be deleted: \(error.localizedDescription)"
+                return
+            }
+        }
+        // The draft is gone from the server, but listings are eventually consistent:
+        // without a tombstone the reload that follows the compose window closing can
+        // fetch the dead draft again and re-cache its row.
+        if let messageId, !messageId.isEmpty { forgetDraftRow(messageId: messageId) }
+        await refreshDraftsCount()
+    }
+
+    /// Drops a deleted draft's row from the list and the cache, and tombstones it so
+    /// a lagging listing can't put it back (the same guard used for delete and move).
+    private func forgetDraftRow(messageId: String) {
+        guard let accountId = currentAccountId,
+              let draftsId = foldersByAccount[accountId]?.first(where: { $0.kind == .drafts })?.id
+        else { return }
+        addTombstones(ids: [messageId], folderId: draftsId)
+        removeLocal(ids: [messageId])
     }
 
     /// Saves (or replaces) the autosaved draft for an in-progress compose, returning
-    /// the draft's id so the caller can keep updating and later delete it. Returns the
-    /// prior id unchanged on failure so a transient error doesn't orphan the draft.
+    /// the saved draft so the caller can keep updating it and later delete it.
+    /// Returns nil on failure; the caller keeps the draft it already had rather than
+    /// forgetting an id that's still live on the server.
     func saveDraft(to: String, cc: String, subject: String, html: String,
-                   attachments: [URL], inlineImages: [ComposeInlineImage] = [], draftId: String?) async -> String? {
-        guard let provider = currentProvider else { return draftId }
+                   attachments: [URL], inlineImages: [ComposeInlineImage] = [], draftId: String?) async -> SavedDraft? {
+        guard let provider = currentProvider else { return nil }
         let scoped = attachments.filter { $0.startAccessingSecurityScopedResource() }
         defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
         let mime = MIMEBuilder.buildHTML(
             from: accountEmail, to: to, cc: cc, subject: subject, html: html,
             attachments: attachments, inlineImages: inlineImages
         )
-        let newId = (try? await provider.saveDraft(id: draftId, rawMIME: mime)) ?? draftId
+        guard let saved = try? await provider.saveDraft(id: draftId, rawMIME: mime) else { return nil }
         // A brand-new draft (no prior id) changes the Drafts folder count; an
         // in-place update of an existing draft leaves the count unchanged.
-        if draftId == nil, newId != nil { await refreshDraftsCount() }
-        return newId
+        if draftId == nil { await refreshDraftsCount() }
+        return saved
     }
 
     // MARK: - New-mail notifications
@@ -3268,6 +3310,11 @@ final class ComposeRequest: Identifiable {
     var localAttachments: [URL]
     /// Server-side id of the autosaved draft for this compose, once one exists.
     var draftId: String?
+    /// Id of the *message* that draft is stored as — the row the Drafts list shows.
+    /// Seeded when an existing draft is opened and re-pointed by every save, so
+    /// sending can drop the row locally and, if `draftId` was never resolved, still
+    /// find the draft to delete.
+    var draftMessageId: String?
 
     // MARK: - Edit (kind == .edit): the original message being replaced on Save.
     /// The message this edit replaces; Save inserts an edited copy and deletes it.

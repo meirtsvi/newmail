@@ -1,5 +1,14 @@
 import Foundation
 
+/// A draft as it exists on the server after a save: the id used for later saves
+/// and for the eventual delete, plus the id of the message the draft is stored
+/// as. They differ on Gmail (where a draft wraps a message), so both are needed —
+/// the draft id to delete it, the message id to drop its row from the Drafts list.
+struct SavedDraft {
+    let id: String
+    let messageId: String
+}
+
 /// Backend-agnostic mail interface. Gmail and (future) Microsoft Graph both
 /// conform; the UI layer talks only to this protocol.
 protocol MailProvider: AnyObject {
@@ -46,11 +55,11 @@ protocol MailProvider: AnyObject {
     /// Sends the message; `flagged` marks the sent copy as flagged/starred.
     func send(rawMIME: Data, flagged: Bool) async throws
 
-    /// Saves a draft from the message MIME, returning the draft's id. Pass `id: nil`
-    /// to create a new draft, or an existing id to replace it in place; the returned
-    /// id must be used for subsequent saves and the eventual delete (it may differ
-    /// from the one passed in for providers that recreate the draft).
-    func saveDraft(id: String?, rawMIME: Data) async throws -> String
+    /// Saves a draft from the message MIME. Pass `id: nil` to create a new draft, or
+    /// an existing id to replace it in place; the returned id must be used for
+    /// subsequent saves and the eventual delete (it may differ from the one passed in
+    /// for providers that recreate the draft).
+    func saveDraft(id: String?, rawMIME: Data) async throws -> SavedDraft
 
     /// Removes a draft (used after the message is sent, or to discard it).
     func deleteDraft(id: String) async throws

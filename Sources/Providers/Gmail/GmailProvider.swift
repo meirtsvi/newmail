@@ -523,23 +523,27 @@ final class GmailProvider: MailProvider {
 
     // MARK: - Drafts
 
-    func saveDraft(id: String?, rawMIME: Data) async throws -> String {
+    func saveDraft(id: String?, rawMIME: Data) async throws -> SavedDraft {
         struct Message: Codable { var raw: String }
         struct Body: Codable { var message: Message }
-        struct DraftResponse: Codable { var id: String }
+        struct MessageRef: Decodable { var id: String }
+        struct DraftResponse: Decodable { var id: String; var message: MessageRef? }
         let raw = rawMIME.base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
         let body = try JSONEncoder().encode(Body(message: Message(raw: raw)))
         // PUT replaces an existing draft in place (same id); POST creates a new one.
+        // Either way Gmail stores the draft as a *new* message, so the returned
+        // message id is the row the Drafts list will show from now on.
         let data: Data
         if let id {
             data = try await request("drafts/\(id)", method: "PUT", jsonBody: body)
         } else {
             data = try await request("drafts", method: "POST", jsonBody: body)
         }
-        return try JSONDecoder().decode(DraftResponse.self, from: data).id
+        let draft = try JSONDecoder().decode(DraftResponse.self, from: data)
+        return SavedDraft(id: draft.id, messageId: draft.message?.id ?? "")
     }
 
     func deleteDraft(id: String) async throws {

@@ -557,14 +557,18 @@ final class GraphProvider: MailProvider {
 
     // MARK: - Drafts
 
-    func saveDraft(id: String?, rawMIME: Data) async throws -> String {
+    func saveDraft(id: String?, rawMIME: Data) async throws -> SavedDraft {
         // POSTing a MIME message creates it as a draft (isDraft = true). Graph can't
         // replace a draft's MIME in place, so an update deletes the old one and makes
-        // a fresh draft, returning the new id.
-        if let id { try? await deleteDraft(id: id) }
+        // a fresh draft, returning the new id. The new draft is created first: if the
+        // POST fails, the old draft is still there to delete on the next save or send,
+        // rather than the work being dropped and the caller left holding a dead id.
         let base64 = rawMIME.base64EncodedData()
         let created = try await request("messages", method: "POST", rawBody: base64, contentType: "text/plain")
-        return try JSONDecoder().decode(GraphAPI.Message.self, from: created).id
+        let newId = try JSONDecoder().decode(GraphAPI.Message.self, from: created).id
+        if let id { try? await deleteDraft(id: id) }
+        // A Graph draft *is* a message, so the two ids are the same.
+        return SavedDraft(id: newId, messageId: newId)
     }
 
     func deleteDraft(id: String) async throws {

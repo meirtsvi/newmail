@@ -108,8 +108,11 @@ struct ComposeView: View {
         .frame(minWidth: 480, idealWidth: 640, minHeight: 380,
                idealHeight: request.quotedHTML.isEmpty ? 560 : 680)
         .background(ZoomShortcuts(zoom: Binding(
-            get: { Double(rich.zoom) },
-            set: { rich.setZoom(CGFloat($0)) }
+            get: { Double(request.kind == .edit ? htmlEditor.zoom : rich.zoom) },
+            set: {
+                if request.kind == .edit { htmlEditor.setZoom(CGFloat($0)) }
+                else { rich.setZoom(CGFloat($0)) }
+            }
         )))
         .onAppear {
             // Shift-Tab out of the body editor returns to the Subject field. Both the
@@ -220,16 +223,30 @@ struct ComposeView: View {
     private func autosaveDraft() async {
         // Editing replaces a message on Save; it must never spawn drafts.
         guard request.kind != .edit else { return }
+        // Let any save already in flight finish first. Both `request.draftId` and
+        // `lastSavedSnapshot` are only set once a save returns, so a second save
+        // starting alongside it would repeat the same "no draft yet, save this text"
+        // decision and create a *duplicate* draft on the server — one of which
+        // nothing tracks, so sending would leave it behind. (The 10-second timer,
+        // ⌘S, and Escape/Cancel all land here and can overlap.)
+        await draftSave?.value
         guard !sending, hasDraftContent else { return }
         let (html, inlineImages) = composedBody()
         let snapshot = draftSnapshot(html: html)
         guard snapshot != lastSavedSnapshot else { return }
         let save = Task {
-            request.draftId = await vm.saveDraft(
+            if let saved = await vm.saveDraft(
                 to: request.to, cc: request.cc, subject: request.subject,
                 html: html, attachments: attachments, inlineImages: inlineImages, draftId: request.draftId
-            )
-            lastSavedSnapshot = snapshot
+            ) {
+                request.draftId = saved.id
+                // Keep the previous row id if the provider didn't name a new one,
+                // so the Drafts row still gets cleaned up after the send.
+                if !saved.messageId.isEmpty { request.draftMessageId = saved.messageId }
+                lastSavedSnapshot = snapshot
+            }
+            // A failed save keeps the previous draft id and baseline, so the next
+            // autosave replaces that draft instead of orphaning it with a new one.
         }
         draftSave = save
         await save.value
@@ -265,9 +282,12 @@ struct ComposeView: View {
                 await vm.sendComposed(
                     to: request.to, cc: request.cc, subject: request.subject,
                     html: html, attachments: attachments, inlineImages: inlineImages, draftId: request.draftId,
-                    flagged: flagged
+                    draftMessageId: request.draftMessageId, flagged: flagged
                 )
-                sending = false
+                // `sending` deliberately stays set: the window is closing, and
+                // clearing it would re-arm the 10-second autosave for the runloop
+                // or two until the view disappears — long enough for it to save a
+                // fresh draft of a message that has already been sent.
                 onClose()
             }
         } label: {
@@ -464,6 +484,21 @@ struct ComposeView: View {
             fontPickers
             Divider().frame(height: 16)
             Button { showImporter = true } label: { Image(systemName: "paperclip") }.help("Attach file")
+            // Editing re-applies the original's flag to the saved copy, so the button
+            // shows (and changes) that state rather than a send-time choice.
+            Button {
+                request.originalIsFlagged.toggle()
+            } label: {
+                Image(systemName: request.originalIsFlagged ? "flag.fill" : "flag")
+                    .foregroundStyle(request.originalIsFlagged ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
+            }
+                .keyboardShortcut("w", modifiers: .command)
+                .help(request.originalIsFlagged ? "Save unflagged (⌘W)" : "Save flagged (⌘W)")
+            Divider().frame(height: 16)
+            ZoomControls(zoom: Binding(
+                get: { Double(htmlEditor.zoom) },
+                set: { htmlEditor.setZoom(CGFloat($0)) }
+            ))
             Spacer()
         }
         .buttonStyle(.borderless)
