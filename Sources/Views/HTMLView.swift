@@ -20,6 +20,126 @@ final class WebFindController: ObservableObject {
     }
 }
 
+/// A message-body web view whose right-click menu gains "Send to <Shortcut>"
+/// items when the pointer is over a link.
+///
+/// WebKit builds the native menu synchronously in `willOpenMenu`, but finding the
+/// link under the pointer needs an async round trip into the page. So the mouse-down
+/// that opens the menu is held back: the link is resolved first, then the same event
+/// is replayed to WebKit, which now opens a menu we can extend.
+final class MessageWebView: WKWebView {
+    private var linkUnderPointer: URL?
+    /// The event currently being replayed, so the second pass falls straight through
+    /// to WebKit instead of resolving the link again and recursing forever.
+    private var replayedEvent: NSEvent?
+
+    override func rightMouseDown(with event: NSEvent) {
+        if replayedEvent === event {
+            replayedEvent = nil
+            super.rightMouseDown(with: event)
+            return
+        }
+        resolveLink(at: event) { [weak self] in
+            guard let self else { return }
+            self.replayedEvent = event
+            self.rightMouseDown(with: event)
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        // A control-click opens the context menu through the left-button path, so it
+        // needs the same resolution. A plain click only has to drop the stale link,
+        // or a later control-click over ordinary text would still offer to send it.
+        guard event.modifierFlags.contains(.control) else {
+            linkUnderPointer = nil
+            super.mouseDown(with: event)
+            return
+        }
+        if replayedEvent === event {
+            replayedEvent = nil
+            super.mouseDown(with: event)
+            return
+        }
+        resolveLink(at: event) { [weak self] in
+            guard let self else { return }
+            self.replayedEvent = event
+            self.mouseDown(with: event)
+        }
+    }
+
+    /// Looks up the link under `event` into `linkUnderPointer`, then calls `replay`.
+    private func resolveLink(at event: NSEvent, replay: @escaping () -> Void) {
+        // View points are bottom-left origin and scaled by `pageZoom`;
+        // `elementFromPoint` wants unscaled CSS pixels from the viewport's top-left.
+        let point = convert(event.locationInWindow, from: nil)
+        let x = point.x / pageZoom
+        let y = (isFlipped ? point.y : bounds.height - point.y) / pageZoom
+        let script = """
+        (function() {
+          var el = document.elementFromPoint(\(x), \(y));
+          var link = el && el.closest ? el.closest('a') : null;
+          return link && link.href ? link.href : '';
+        })()
+        """
+        // `.defaultClient` runs in the app's own content world, which is exempt from
+        // the `allowsContentJavaScript = false` that keeps the message's own scripts
+        // from running.
+        evaluateJavaScript(script, in: nil, in: .defaultClient) { [weak self] result in
+            guard let self else { return }
+            if case .success(let value) = result, let href = value as? String {
+                self.linkUnderPointer = URL(string: href)
+            } else {
+                self.linkUnderPointer = nil
+            }
+            replay()
+        }
+    }
+
+    override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
+        super.willOpenMenu(menu, with: event)
+        // Pick up shortcuts added since the last menu; this lands for the next one.
+        ShortcutsService.refresh()
+
+        guard let url = linkUnderPointer else { return }
+        let names = ShortcutsService.menuShortcuts
+        guard !names.isEmpty else { return }
+
+        menu.addItem(.separator())
+        if names.count == 1 {
+            menu.addItem(item(for: names[0], url: url, title: "Send to \(names[0])"))
+        } else {
+            let parent = NSMenuItem(title: "Send to Shortcut", action: nil, keyEquivalent: "")
+            let submenu = NSMenu()
+            for name in names {
+                submenu.addItem(item(for: name, url: url, title: name))
+            }
+            parent.submenu = submenu
+            menu.addItem(parent)
+        }
+    }
+
+    private func item(for shortcut: String, url: URL, title: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: #selector(runShortcut(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = ShortcutTarget(shortcut: shortcut, url: url)
+        return item
+    }
+
+    @objc private func runShortcut(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? ShortcutTarget else { return }
+        ShortcutsService.run(target.shortcut, on: target.url)
+    }
+
+    private final class ShortcutTarget {
+        let shortcut: String
+        let url: URL
+        init(shortcut: String, url: URL) {
+            self.shortcut = shortcut
+            self.url = url
+        }
+    }
+}
+
 /// Renders sanitized message HTML in a WKWebView. Link clicks open in the
 /// default macOS browser rather than navigating inside the preview pane.
 struct HTMLView: NSViewRepresentable {
@@ -37,11 +157,13 @@ struct HTMLView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.defaultWebpagePreferences.allowsContentJavaScript = false
-        let webView = WKWebView(frame: .zero, configuration: config)
+        let webView = MessageWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
         finder?.webView = webView
+        // Warm the shortcut list so the first right-click already has items.
+        ShortcutsService.refresh()
         return webView
     }
 

@@ -26,6 +26,8 @@ struct FeedSettingsView: View {
                 .tabItem { Label("AI", systemImage: "sparkles") }
             TranslationSettingsTab()
                 .tabItem { Label("Translation", systemImage: "character.bubble") }
+            ShortcutsSettingsTab()
+                .tabItem { Label("Shortcuts", systemImage: "app.connected.to.app.below.fill") }
         }
         .frame(width: 760, height: 440)
         // Escape closes the Settings window (not the default for a Settings scene).
@@ -458,5 +460,61 @@ private struct TranslationSettingsTab: View {
     private func save() {
         UserDefaults.standard.set(words, forKey: TranslationPrefs.skipWordsKey)
         saved = true
+    }
+}
+
+/// Picks which macOS Shortcuts appear when a link in a message is right-clicked.
+private struct ShortcutsSettingsTab: View {
+    @State private var installed: [String] = []
+    @State private var chosen = ShortcutsService.chosen
+    @State private var isLoading = true
+
+    var body: some View {
+        Form {
+            Section {
+                if isLoading {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Reading your shortcuts…")
+                    }
+                } else if installed.isEmpty {
+                    Text("No shortcuts found.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(installed, id: \.self) { name in
+                        Toggle(name, isOn: binding(for: name))
+                    }
+                }
+            } header: {
+                HStack {
+                    Text("Send to Shortcut menu")
+                    Spacer()
+                    Button("Reload", action: load)
+                        .disabled(isLoading)
+                }
+            } footer: {
+                Text("Right-clicking a link in a message offers the shortcuts ticked here. The link is put on the clipboard and passed as the shortcut's input, so shortcuts that start with “Get Clipboard” work unchanged. With nothing ticked, no shortcut item is shown.")
+            }
+        }
+        .formStyle(.grouped)
+        .task { load() }
+    }
+
+    private func binding(for name: String) -> Binding<Bool> {
+        Binding(
+            get: { chosen.contains(name) },
+            set: { isOn in
+                if isOn { chosen.insert(name) } else { chosen.remove(name) }
+                ShortcutsService.chosen = chosen
+            }
+        )
+    }
+
+    private func load() {
+        isLoading = true
+        Task {
+            installed = await ShortcutsService.load()
+            isLoading = false
+        }
     }
 }
