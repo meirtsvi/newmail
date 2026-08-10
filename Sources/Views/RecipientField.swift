@@ -113,33 +113,9 @@ struct RecipientField: View {
     }
 
     private var suggestionList: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(matches.enumerated()), id: \.element.id) { index, addr in
-                Button {
-                    accept(addr)
-                } label: {
-                    VStack(alignment: .leading, spacing: 1) {
-                        if !addr.name.isEmpty {
-                            Text(addr.name).font(.body)
-                        }
-                        Text(addr.email)
-                            .font(addr.name.isEmpty ? .body : .caption)
-                            .foregroundStyle(addr.name.isEmpty ? .primary : .secondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    .contentShape(Rectangle())
-                    .background(index == highlighted ? Color.accentColor.opacity(0.18) : .clear)
-                }
-                .buttonStyle(.plain)
-                .onHover { if $0 { highlighted = index } }
-            }
-        }
-        .padding(4)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
-        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
-        .shadow(radius: 6, y: 2)
-        .frame(width: 320)
+        AddressSuggestionList(matches: matches, highlighted: highlighted,
+                              onPick: { accept($0) },
+                              onHover: { highlighted = $0 })
     }
 
     private func recompute() {

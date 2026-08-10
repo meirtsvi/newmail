@@ -18,6 +18,14 @@ final class RichTextController: ObservableObject {
     /// them as pictures.
     var onAttachFiles: (([URL]) -> Void)?
 
+    /// Reports the `@mention` being typed at the caret (nil when there isn't one),
+    /// so compose can show the address popup beside it.
+    var onMention: ((MentionContext?) -> Void)?
+
+    /// Offers a keystroke to the mention popup while it is showing. Returns true
+    /// when the popup took it, so the text view leaves it alone.
+    var onMentionKey: ((MentionKey) -> Bool)?
+
     /// Images pasted or dropped into the body, in document order. Derived from the
     /// text storage so it stays in sync when an image is deleted in the editor.
     @Published private(set) var inlineImages: [ComposeInlineImage] = []
@@ -425,6 +433,62 @@ final class RichTextController: ObservableObject {
         ts.addAttribute(.link, value: url, range: range)
     }
 
+    // MARK: Mentions
+
+    /// Reports whether an `@mention` is being typed at the caret. Called after every
+    /// edit and selection change, so the popup follows the caret and disappears as
+    /// soon as the token does.
+    func refreshMention() {
+        guard let onMention else { return }
+        guard let tv = textView else { return onMention(nil) }
+        let selection = tv.selectedRange()
+        guard selection.length == 0,
+              let token = MentionScanner.token(in: tv.string as NSString, caret: selection.location),
+              let anchor = anchorRect(forCharacterAt: token.range.location)
+        else { return onMention(nil) }
+        onMention(MentionContext(query: token.query, anchor: anchor))
+    }
+
+    /// Replaces the `@mention` at the caret with the contact's name, linked to their
+    /// address — so the sent HTML carries `<a href="mailto:…">Name</a>`.
+    func insertMention(name: String, email: String) {
+        guard let tv = textView, let ts = tv.textStorage,
+              let token = MentionScanner.token(in: tv.string as NSString, caret: tv.selectedRange().location),
+              let url = URL(string: "mailto:\(email)")
+        else { return }
+        let label = name.isEmpty ? email : name
+        var linked = tv.typingAttributes
+        linked[.link] = url
+        let replacement = NSMutableAttributedString(string: label, attributes: linked)
+        // The trailing space is deliberately unlinked, so what's typed next isn't
+        // pulled into the anchor.
+        replacement.append(NSAttributedString(string: " ", attributes: tv.typingAttributes))
+        guard tv.shouldChangeText(in: token.range, replacementString: replacement.string) else { return }
+        ts.replaceCharacters(in: token.range, with: replacement)
+        tv.didChangeText()
+        tv.setSelectedRange(NSRange(location: token.range.location + replacement.length, length: 0))
+        tv.typingAttributes[.link] = nil
+        refreshContentHeight()
+    }
+
+    /// Where a character sits within the editor, in the SwiftUI view's coordinate
+    /// space (top-left origin). `firstRect(forCharacterRange:)` is used rather than
+    /// the layout manager's geometry because it already accounts for the scroll
+    /// view's magnification, which the body's zoom control drives.
+    private func anchorRect(forCharacterAt location: Int) -> CGRect? {
+        guard let tv = textView, let window = tv.window,
+              let container = tv.enclosingScrollView ?? tv.superview else { return nil }
+        var actual = NSRange()
+        let onScreen = tv.firstRect(forCharacterRange: NSRange(location: location, length: 1),
+                                    actualRange: &actual)
+        guard !onScreen.isEmpty else { return nil }
+        let inContainer = container.convert(window.convertFromScreen(onScreen), from: nil)
+        // SwiftUI overlays measure down from the top; an unflipped scroll view
+        // measures up from the bottom.
+        let top = container.isFlipped ? inContainer.minY : container.bounds.height - inContainer.maxY
+        return CGRect(x: inContainer.minX, y: top, width: inContainer.width, height: inContainer.height)
+    }
+
     private func toggleTrait(_ trait: NSFontTraitMask) {
         guard let tv = textView, let ts = tv.textStorage else { return }
         let range = tv.selectedRange()
@@ -774,9 +838,25 @@ struct RichTextEditor: NSViewRepresentable {
         let controller: RichTextController
         init(controller: RichTextController) { self.controller = controller }
 
+        /// Keys the mention popup claims while it's on screen, mapped from the
+        /// editing commands AppKit would otherwise run.
+        private static let mentionKeys: [Selector: MentionKey] = [
+            #selector(NSResponder.moveDown(_:)): .down,
+            #selector(NSResponder.moveUp(_:)): .up,
+            #selector(NSResponder.insertNewline(_:)): .accept,
+            #selector(NSResponder.insertTab(_:)): .accept,
+            #selector(NSResponder.cancelOperation(_:)): .dismiss,
+        ]
+
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             if commandSelector == #selector(NSResponder.insertBacktab(_:)), let onShiftTab = controller.onShiftTab {
                 onShiftTab()
+                return true
+            }
+            // Offered to the mention popup first: while it's showing, the arrows move
+            // its highlight and Return accepts, instead of moving the caret and
+            // breaking the line. It declines when it isn't showing.
+            if let key = Self.mentionKeys[commandSelector], controller.onMentionKey?(key) == true {
                 return true
             }
             if commandSelector == #selector(NSResponder.insertNewline(_:)) {
@@ -790,6 +870,13 @@ struct RichTextEditor: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             controller.refreshInlineImages()
             controller.refreshContentHeight()
+            controller.refreshMention()
+        }
+
+        /// Moving the caret (arrow keys, a click) can leave or enter an `@mention`
+        /// just as typing can, so the popup is re-evaluated here too.
+        func textViewDidChangeSelection(_ notification: Notification) {
+            controller.refreshMention()
         }
     }
 }

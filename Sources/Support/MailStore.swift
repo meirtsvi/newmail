@@ -317,6 +317,23 @@ final class MailStore {
         return Set(rows.map(\.id))
     }
 
+    // MARK: Contacts
+
+    /// Every address the message cache knows: senders and To lists from the cached
+    /// headers, plus the Cc lists kept on cached bodies. Duplicates are left in —
+    /// `ContactStore.record` turns repeats into the use count it ranks by.
+    func allCachedAddresses() -> [MailAddress] {
+        var addresses: [MailAddress] = []
+        for row in (try? context.fetch(FetchDescriptor<CachedMessage>())) ?? [] {
+            addresses.append(MailAddress(name: row.fromName, email: row.fromEmail))
+            addresses += Self.decodeAddresses(row.toRaw)
+        }
+        for row in (try? context.fetch(FetchDescriptor<CachedBody>())) ?? [] {
+            addresses += Self.decodeAddresses(row.ccRaw)
+        }
+        return addresses
+    }
+
     // MARK: Mapping
 
     /// Encodes addresses as "Name|email" entries joined by "‖" (the format used

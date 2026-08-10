@@ -243,8 +243,11 @@ final class MailboxViewModel {
     func isCalendarEvent(_ id: String) -> Bool { calendarMessageIds.contains(id) }
 
     /// Remembers a fetched body's calendar status so the column updates as soon as
-    /// a message is opened (and across launches via the cache).
-    private func noteCalendar(_ body: MessageBody) {
+    /// a message is opened (and across launches via the cache), and files its Cc
+    /// list in the address book — Cc travels with the body, so this is the only
+    /// place the compose autocomplete can learn the people you were copied with.
+    private func noteFetchedBody(_ body: MessageBody) {
+        contactStore.record(body.cc)
         if body.calendar != nil {
             calendarMessageIds.insert(body.headerId)
             applyCategoryFlags()
@@ -308,6 +311,7 @@ final class MailboxViewModel {
         // Show the unread badge straight from cache: a warm start usually fetches
         // identical folders, so `loadFolders` returns early without updating it.
         updateDockBadge()
+        backfillContacts()
 
         // Arm the refresh timers before any network work: everything below is an
         // `await`, and one stalled request (a wedged connection, a token refresh
@@ -1320,7 +1324,7 @@ final class MailboxViewModel {
         do {
             let body = try await provider.fetchBody(id: id)
             store.saveBody(body)
-            noteCalendar(body)
+            noteFetchedBody(body)
             // Ignore a late network result if the user has moved to another message.
             if selection.count == 1, selection.first == id {
                 currentBody = body
@@ -1358,7 +1362,7 @@ final class MailboxViewModel {
                 defer { prefetchingBodies.remove(nid) }
                 if let body = try? await provider.fetchBody(id: nid) {
                     store.saveBody(body)
-                    noteCalendar(body)
+                    noteFetchedBody(body)
                 }
             }
         }
@@ -1391,7 +1395,7 @@ final class MailboxViewModel {
                 let body = try await provider.fetchBody(id: id)
                 modalBody = body
                 store.saveBody(body)
-                noteCalendar(body)
+                noteFetchedBody(body)
                 await loadInviteContextIfNeeded(headerId: id, body: body)
             } catch {
                 if modalBody == nil, !Self.isCancellation(error) { errorMessage = error.localizedDescription }
@@ -2234,9 +2238,21 @@ final class MailboxViewModel {
 
     // MARK: - Compose
 
-    /// Ranked address suggestions for the compose To/Cc autocomplete.
-    func contactSuggestions(_ query: String) -> [MailAddress] {
-        contactStore.suggestions(matching: query)
+    /// Ranked address suggestions for the compose To/Cc autocomplete and the body's
+    /// `@mention` popup.
+    func contactSuggestions(_ query: String, limit: Int = 6) -> [MailAddress] {
+        contactStore.suggestions(matching: query, limit: limit)
+    }
+
+    /// Seeds the address book from everything already in the message cache, so the
+    /// autocomplete knows the people you've corresponded with rather than only those
+    /// seen since the feature landed. Runs once — recording is what counts uses, so
+    /// repeating it every launch would inflate the ranking.
+    private func backfillContacts() {
+        let key = "contactsBackfillVersion"
+        guard UserDefaults.standard.integer(forKey: key) < 1 else { return }
+        contactStore.record(store.allCachedAddresses())
+        UserDefaults.standard.set(1, forKey: key)
     }
 
     func startNewMail() {
@@ -2375,12 +2391,32 @@ final class MailboxViewModel {
         \(quotedBody(body, fallbackSnippet: header.snippet))
         </blockquote>
         """
-        composeWindows.open(ComposeRequest(
+        // Reply All answers everyone the original went to: the sender plus the other
+        // To recipients, with the original Cc list carried over as Cc. Your own
+        // addresses are dropped so you don't mail yourself a copy.
+        var to = [header.from.email]
+        var cc: [String] = []
+        if all {
+            let mine = Set(sessions.map { $0.account.email.lowercased() })
+            var seen = Set([header.from.email.lowercased()])
+            func keep(_ addresses: [MailAddress]) -> [String] {
+                addresses.map(\.email).filter { email in
+                    let key = email.lowercased()
+                    guard !key.isEmpty, !mine.contains(key), seen.insert(key).inserted else { return false }
+                    return true
+                }
+            }
+            to += keep(header.to)
+            cc = keep(body?.cc ?? [])
+        }
+        let request = ComposeRequest(
             kind: all ? .replyAll : .reply,
-            to: header.from.email,
+            to: to.filter { !$0.isEmpty }.joined(separator: ", "),
             subject: header.subject.hasPrefix("Re:") ? header.subject : "Re: \(header.subject)",
             quotedHTML: quoted
-        ), vm: self)
+        )
+        request.cc = cc.joined(separator: ", ")
+        composeWindows.open(request, vm: self)
     }
 
     private func openForwardCompose(header: MessageHeader, body: MessageBody?) {
@@ -2407,7 +2443,7 @@ final class MailboxViewModel {
         guard let provider = currentProvider else { return nil }
         if let body = try? await provider.fetchBody(id: header.id) {
             store.saveBody(body)
-            noteCalendar(body)
+            noteFetchedBody(body)
             return body
         }
         return nil
@@ -2750,6 +2786,7 @@ final class MailboxViewModel {
         guard let provider = sessions.first(where: { $0.account.id == note.accountId })?.provider,
               let fetched = try? await provider.fetchBody(id: note.id) else { return cached }
         store.saveBody(fetched)
+        noteFetchedBody(fetched)
         return fetched
     }
 

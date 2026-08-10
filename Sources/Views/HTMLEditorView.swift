@@ -10,6 +10,14 @@ final class HTMLEditorController: ObservableObject {
     /// the Subject field (mirrors `RichTextController.onShiftTab`).
     var onShiftTab: (() -> Void)?
 
+    /// Reports the `@mention` being typed at the caret (nil when there isn't one),
+    /// mirroring `RichTextController.onMention`.
+    var onMention: ((MentionContext?) -> Void)?
+
+    /// Offers a keystroke to the mention popup while it is showing; true means the
+    /// popup took it.
+    var onMentionKey: ((MentionKey) -> Bool)?
+
     /// Moves keyboard focus into the body editor (used to jump straight from the
     /// Subject field to the body). Makes the WebView first responder, then focuses
     /// the editable document body.
@@ -116,6 +124,38 @@ final class HTMLEditorController: ObservableObject {
         """)
     }
 
+    // MARK: - Mentions
+
+    /// Tells the page whether the mention popup is on screen, so its keydown hook
+    /// knows whether to hand the arrows and Return over to it. Runs without taking
+    /// first responder — the caret must stay exactly where the user left it.
+    func setMentionActive(_ active: Bool) {
+        webView?.evaluateJavaScript("window.__nmMentionActive = \(active);")
+    }
+
+    /// Replaces the `@mention` at the caret with the contact's name, linked to their
+    /// address. Done with `insertHTML` over a selection covering the token so the
+    /// change joins the document's own undo stack.
+    func insertMention(name: String, email: String) {
+        let label = name.isEmpty ? email : name
+        run("""
+        var token = window.__nmMentionToken && window.__nmMentionToken();
+        if (!token) return;
+        var range = document.createRange();
+        range.setStart(token.node, token.at);
+        range.setEnd(token.node, token.caret);
+        var selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        var link = document.createElement('a');
+        link.href = 'mailto:' + \(Self.jsString(email));
+        link.textContent = \(Self.jsString(label));
+        // The trailing space keeps the caret outside the anchor, so what's typed
+        // next isn't swallowed into the link.
+        document.execCommand('insertHTML', false, link.outerHTML + '&nbsp;');
+        """)
+    }
+
     private func exec(_ command: String, value: String? = nil, styleWithCSS: Bool = false) {
         let argument = value.map(Self.jsString) ?? "null"
         run("""
@@ -171,8 +211,10 @@ struct HTMLEditorView: NSViewRepresentable {
         // The page itself runs no scripts; we only drive editing via designMode and
         // native evaluateJavaScript. JS stays enabled so those calls take effect.
         config.defaultWebpagePreferences.allowsContentJavaScript = true
-        // Shift-Tab in the body posts back here so compose can move focus to Subject.
+        // Shift-Tab in the body posts back here so compose can move focus to Subject;
+        // "mention" carries the `@name` being typed and the keys its popup claims.
         config.userContentController.add(context.coordinator, name: "shiftTab")
+        config.userContentController.add(context.coordinator, name: "mention")
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
@@ -216,16 +258,90 @@ struct HTMLEditorView: NSViewRepresentable {
               if (e.key === 'Tab' && e.shiftKey) {
                 e.preventDefault();
                 window.webkit.messageHandlers.shiftTab.postMessage('');
+                return;
+              }
+              // While the address popup is up it owns these keys, exactly as it does
+              // in the rich-text editor; designMode never sees them.
+              if (window.__nmMentionActive &&
+                  ['ArrowDown', 'ArrowUp', 'Enter', 'Escape', 'Tab'].indexOf(e.key) >= 0) {
+                e.preventDefault();
+                window.webkit.messageHandlers.mention.postMessage({ key: e.key });
               }
             }, true);
             if (document.body) { document.body.focus(); }
             """
             webView.evaluateJavaScript(js)
+            webView.evaluateJavaScript(Self.mentionScript)
         }
+
+        /// Finds the `@name` at the caret and reports it (with the `@`'s on-screen
+        /// box) whenever it changes. `__nmMentionToken` is left on `window` so
+        /// `insertMention` can re-find the same token when the user picks someone.
+        /// The rule matches `MentionScanner`: the `@` starts a word, and nothing
+        /// after it is whitespace or a second `@`.
+        private static let mentionScript = """
+        window.__nmMentionToken = function () {
+          var selection = window.getSelection();
+          if (!selection || !selection.rangeCount || !selection.isCollapsed) return null;
+          var range = selection.getRangeAt(0);
+          var node = range.endContainer;
+          if (node.nodeType !== 3) return null;
+          var text = node.data.substring(0, range.endOffset);
+          var at = text.lastIndexOf('@');
+          if (at < 0) return null;
+          var query = text.substring(at + 1);
+          if (query.length > \(MentionScanner.maxQueryLength) || /[\\s@]/.test(query)) return null;
+          if (at > 0 && !/\\s/.test(text.charAt(at - 1))) return null;
+          return { node: node, at: at, caret: range.endOffset, query: query };
+        };
+        window.__nmMentionPost = function () {
+          var token = window.__nmMentionToken();
+          // Posting only on change keeps a dismissed popup dismissed until the
+          // query actually moves on, and spares the bridge every caret twitch.
+          var state = token ? token.query : '';
+          if (state === window.__nmMentionLast) return;
+          window.__nmMentionLast = state;
+          if (!token) {
+            window.webkit.messageHandlers.mention.postMessage({ query: null });
+            return;
+          }
+          var box = document.createRange();
+          box.setStart(token.node, token.at);
+          box.setEnd(token.node, token.at + 1);
+          var rect = box.getBoundingClientRect();
+          window.webkit.messageHandlers.mention.postMessage({
+            query: token.query, x: rect.left, y: rect.top, height: rect.height
+          });
+        };
+        document.addEventListener('input', window.__nmMentionPost, true);
+        document.addEventListener('selectionchange', window.__nmMentionPost, true);
+        """
+
+        private static let mentionKeys: [String: MentionKey] = [
+            "ArrowDown": .down, "ArrowUp": .up, "Enter": .accept, "Tab": .accept, "Escape": .dismiss,
+        ]
 
         func userContentController(_ userContentController: WKUserContentController,
                                    didReceive message: WKScriptMessage) {
             if message.name == "shiftTab" { controller.onShiftTab?() }
+            guard message.name == "mention", let body = message.body as? [String: Any] else { return }
+            if let key = body["key"] as? String {
+                if let mention = Self.mentionKeys[key] { _ = controller.onMentionKey?(mention) }
+                return
+            }
+            guard let query = body["query"] as? String else {
+                controller.onMention?(nil)
+                return
+            }
+            // The page reports CSS pixels in viewport space — the same top-left
+            // origin SwiftUI overlays use — so only the display zoom has to be
+            // undone to reach view points.
+            let scale = message.webView?.pageZoom ?? 1
+            let anchor = CGRect(x: (body["x"] as? Double ?? 0) * scale,
+                                y: (body["y"] as? Double ?? 0) * scale,
+                                width: 1,
+                                height: (body["height"] as? Double ?? 0) * scale)
+            controller.onMention?(MentionContext(query: query, anchor: anchor))
         }
     }
 }

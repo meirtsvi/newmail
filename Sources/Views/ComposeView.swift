@@ -43,6 +43,11 @@ struct ComposeView: View {
     /// Current height of the quoted-original pane; nil means "the base height".
     /// Shrinks as the reply outgrows the editor, so the divider moves down.
     @State private var quotedHeight: CGFloat?
+    /// The `@mention` being typed in the body, with the addresses it matches. Both
+    /// body editors report mentions the same way, so this drives either one.
+    @State private var mention: MentionContext?
+    @State private var mentionMatches: [MailAddress] = []
+    @State private var mentionHighlight = 0
 
     /// The editor never gives up its last rows even when the quote is at full height.
     private static let minEditorHeight: CGFloat = 100
@@ -67,10 +72,12 @@ struct ComposeView: View {
                     editFormattingBar
                     HTMLEditorView(html: request.bodyHTML, controller: htmlEditor)
                         .frame(minHeight: 240)
+                        .overlay(alignment: .topLeading) { mentionPopup }
                 } else {
                     formattingBar
                     RichTextEditor(controller: rich)
                         .frame(minHeight: Self.minEditorHeight)
+                        .overlay(alignment: .topLeading) { mentionPopup }
                         // Measure the editor so the quoted pane below can yield
                         // space once the reply text no longer fits.
                         .background(GeometryReader { editor in
@@ -119,6 +126,12 @@ struct ComposeView: View {
             // rich-text body (new/reply/forward) and the WebView body (edit) route it.
             rich.onShiftTab = { focus = .subject }
             htmlEditor.onShiftTab = { focus = .subject }
+            // "@name" in the body offers the same address book the To/Cc fields use,
+            // and inserts the contact's name linked to their address.
+            rich.onMention = { showMention($0) }
+            htmlEditor.onMention = { showMention($0) }
+            rich.onMentionKey = { handleMentionKey($0) }
+            htmlEditor.onMentionKey = { handleMentionKey($0) }
             // A non-image file pasted or dropped into the body (e.g. a PDF) is
             // added as a real attachment rather than inlined as a picture.
             rich.onAttachFiles = { urls in attachments.append(contentsOf: urls) }
@@ -333,11 +346,11 @@ struct ComposeView: View {
             // When editing a message only Subject + body change; recipients are
             // shown for context but kept as-is.
             RecipientField(title: "To", text: $request.to,
-                           suggest: vm.contactSuggestions, focus: $focus,
+                           suggest: { vm.contactSuggestions($0) }, focus: $focus,
                            field: .to, next: .cc, focusOnAppear: !startsInBody)
                 .disabled(request.kind == .edit)
             RecipientField(title: "Cc", text: $request.cc,
-                           suggest: vm.contactSuggestions, focus: $focus,
+                           suggest: { vm.contactSuggestions($0) }, focus: $focus,
                            field: .cc, next: .subject, previous: .to)
                 .disabled(request.kind == .edit)
             HStack(spacing: 8) {
@@ -401,6 +414,62 @@ struct ComposeView: View {
         DispatchQueue.main.async {
             if request.kind == .edit { htmlEditor.focus() } else { rich.focus() }
         }
+    }
+
+    // MARK: - Mentions
+
+    /// The address list for an `@mention` in progress, pinned just under the "@".
+    @ViewBuilder private var mentionPopup: some View {
+        if let mention, !mentionMatches.isEmpty {
+            GeometryReader { editor in
+                AddressSuggestionList(matches: mentionMatches, highlighted: mentionHighlight,
+                                      onPick: { acceptMention($0) },
+                                      onHover: { mentionHighlight = $0 })
+                    // Keep the list inside the editor when the caret is near the
+                    // right edge, rather than letting it run off the window.
+                    .offset(x: max(0, min(mention.anchor.minX,
+                                          editor.size.width - AddressSuggestionList.width)),
+                            y: mention.anchor.maxY + 4)
+            }
+        }
+    }
+
+    /// Shows (or hides) the popup for the mention the editor is reporting.
+    private func showMention(_ context: MentionContext?) {
+        mention = context
+        mentionMatches = context.map { vm.contactSuggestions($0.query, limit: 8) } ?? []
+        mentionHighlight = 0
+        // The WebView editor only hands over the arrows and Return once it knows
+        // the popup is up; the rich-text one asks every time.
+        if request.kind == .edit { htmlEditor.setMentionActive(!mentionMatches.isEmpty) }
+    }
+
+    /// Handles a key the body editor offered the popup. False means "not mine" and
+    /// the editor keeps its normal behavior.
+    private func handleMentionKey(_ key: MentionKey) -> Bool {
+        guard mention != nil, !mentionMatches.isEmpty else { return false }
+        switch key {
+        case .down: mentionHighlight = min(mentionHighlight + 1, mentionMatches.count - 1)
+        case .up: mentionHighlight = max(mentionHighlight - 1, 0)
+        case .accept: acceptMention(mentionMatches[mentionHighlight])
+        case .dismiss: clearMention()
+        }
+        return true
+    }
+
+    private func acceptMention(_ address: MailAddress) {
+        if request.kind == .edit {
+            htmlEditor.insertMention(name: address.name, email: address.email)
+        } else {
+            rich.insertMention(name: address.name, email: address.email)
+        }
+        clearMention()
+    }
+
+    private func clearMention() {
+        mention = nil
+        mentionMatches = []
+        if request.kind == .edit { htmlEditor.setMentionActive(false) }
     }
 
     // Spacing 8 keeps the bar's fixed content within the window's 640pt ideal
