@@ -2071,11 +2071,20 @@ final class MailboxViewModel {
         guard let accountId = currentAccountId, let service = snoozeServices[accountId] else { return }
         let headers = messages.filter { ids.contains($0.id) }
         let from = currentFolder?.id ?? "INBOX"
-        await perform {
-            try await service.snooze(ids: ids, headers: headers, until: wake, fromFolderId: from)
-        }
+        // Drop the rows first so the snooze registers instantly, then do the folder
+        // work (ensure "Snoozed", move, record wake times) in the background. A
+        // failure puts the messages back and reports the error.
         removeLocal(ids: ids)
         addTombstones(ids: ids, folderId: from)
+        Task {
+            do {
+                try await service.snooze(ids: ids, headers: headers, until: wake, fromFolderId: from)
+            } catch {
+                clearTombstones(ids: ids, folderId: from)
+                restoreLocal(headers)
+                errorMessage = "Couldn’t snooze: \(error.localizedDescription)"
+            }
+        }
     }
 
     func unsnoozeMessages(_ ids: [String]) async {
