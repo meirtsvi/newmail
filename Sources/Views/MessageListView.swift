@@ -8,7 +8,12 @@ import AppKit
 /// scalar) so the `Table` re-renders the affected cells: `Table` only re-runs its cell
 /// builders for data/selection it tracks via Observation, so a plain `@State` change is
 /// ignored by the rows — exactly how `vm.selection` reaches the cells.
-@Observable final class RowHoverModel { var id: String? }
+@Observable final class RowHoverModel {
+    var id: String?
+    /// The row whose *Date* cell the cursor is over — the quick actions live there,
+    /// so they only appear when you point at them.
+    var dateColumnId: String?
+}
 
 struct MessageListView: View {
     @Environment(MailboxViewModel.self) private var vm
@@ -148,7 +153,11 @@ struct MessageListView: View {
                     let msgs = vm.displayedMessages
                     return row >= 0 && row < msgs.count ? msgs[row].id : nil
                 },
-                setHovered: { setHovered($0) }
+                // SwiftUI names the backing NSTableColumn after the column's
+                // `customizationID`; fall back to the header title in case that
+                // ever changes.
+                isActionColumn: { $0.identifier.rawValue == "date" || $0.title == "Date" },
+                setHovered: { setHovered($0, onDateColumn: $1) }
             )
             .allowsHitTesting(false)
         )
@@ -421,9 +430,10 @@ struct MessageListView: View {
     }
 
     private func dateCell(_ msg: MessageHeader) -> some View {
-        // Quick actions sit at the right edge of the row, covering the date text when
-        // the row is hovered (via TableHoverTracker) or selected.
-        let show = hover.id == msg.id || vm.selection.contains(msg.id)
+        // Quick actions take over the date text, but only while the cursor is in
+        // this row's Date column (tracked by TableHoverTracker). Everywhere else in
+        // the row — and on the selected row — the date stays readable.
+        let show = hover.dateColumnId == msg.id
         return Text(msg.date.mailListString)
             .foregroundStyle(.secondary)
             .font(msg.isRead ? .body : .body.weight(.semibold))
@@ -439,9 +449,12 @@ struct MessageListView: View {
     }
 
     /// Set by `TableHoverTracker` to the row currently under the cursor (nil when off
-    /// any row). Guarded so redundant moves within a row don't churn @State.
-    private func setHovered(_ id: String?) {
+    /// any row), plus whether the cursor is in that row's Date column. Guarded so
+    /// redundant moves within a row don't churn the observable.
+    private func setHovered(_ id: String?, onDateColumn: Bool) {
         if hover.id != id { hover.id = id }
+        let onDate = onDateColumn ? id : nil
+        if hover.dateColumnId != onDate { hover.dateColumnId = onDate }
     }
 
     private func snoozedUntilCell(_ msg: MessageHeader) -> some View {
@@ -499,30 +512,39 @@ private struct RowInteraction: ViewModifier {
 /// Reliable row hover for the message `Table`. A single tracking view sits on the
 /// whole table (via `.background`), so — unlike a per-cell tracker — it is never torn
 /// down when revealing the icons re-renders a cell. On mouse move it asks the
-/// underlying `NSTableView` which row is under the cursor and reports that row's id.
+/// underlying `NSTableView` which row *and column* are under the cursor, and reports
+/// that row's id along with whether the cursor is in the quick-actions column.
 /// Click-through (`hitTest` → nil) so it never intercepts the row's drag or taps.
 struct TableHoverTracker: NSViewRepresentable {
     /// Maps a table row index to the message id at that row (reads displayedMessages).
     let idForRow: (Int) -> String?
-    /// Reports the hovered row id (nil when the cursor is off any row).
-    let setHovered: (String?) -> Void
+    /// True for the column whose cells reveal the quick actions (the Date column).
+    let isActionColumn: (NSTableColumn) -> Bool
+    /// Reports the hovered row id (nil when the cursor is off any row) and whether
+    /// the cursor sits in that row's action column.
+    let setHovered: (String?, Bool) -> Void
 
     func makeNSView(context: Context) -> TableHoverNSView {
         let v = TableHoverNSView()
-        v.idForRow = idForRow
-        v.setHovered = setHovered
+        apply(to: v)
         return v
     }
 
     func updateNSView(_ v: TableHoverNSView, context: Context) {
+        apply(to: v)
+    }
+
+    private func apply(to v: TableHoverNSView) {
         v.idForRow = idForRow
+        v.isActionColumn = isActionColumn
         v.setHovered = setHovered
     }
 }
 
 final class TableHoverNSView: NSView {
     var idForRow: ((Int) -> String?)?
-    var setHovered: ((String?) -> Void)?
+    var isActionColumn: ((NSTableColumn) -> Bool)?
+    var setHovered: ((String?, Bool) -> Void)?
     private var area: NSTrackingArea?
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }   // click-through
@@ -542,7 +564,7 @@ final class TableHoverNSView: NSView {
 
     override func mouseMoved(with event: NSEvent) { update(event) }
     override func mouseEntered(with event: NSEvent) { update(event) }
-    override func mouseExited(with event: NSEvent) { setHovered?(nil) }
+    override func mouseExited(with event: NSEvent) { setHovered?(nil, false) }
 
     /// The NSTableView under the given window point. The sidebar is also an
     /// NSTableView, so we pick the one whose frame actually contains the cursor —
@@ -562,9 +584,14 @@ final class TableHoverNSView: NSView {
 
     private func update(_ event: NSEvent) {
         let wp = event.locationInWindow
-        guard let table = tableView(at: wp) else { setHovered?(nil); return }
-        let row = table.row(at: table.convert(wp, from: nil))
-        setHovered?(row >= 0 ? idForRow?(row) : nil)
+        guard let table = tableView(at: wp) else { setHovered?(nil, false); return }
+        let point = table.convert(wp, from: nil)
+        let row = table.row(at: point)
+        guard row >= 0, let id = idForRow?(row) else { setHovered?(nil, false); return }
+        let column = table.column(at: point)
+        let onAction = column >= 0 && column < table.tableColumns.count
+            && isActionColumn?(table.tableColumns[column]) == true
+        setHovered?(id, onAction)
     }
 }
 
