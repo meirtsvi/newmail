@@ -65,19 +65,23 @@ struct MoveBarView: View {
                 .buttonStyle(.borderless)
                 Spacer()
             } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(folders, id: \.compositeId) { folder in
-                            chip(folder)
-                        }
+                // An even grid of same-sized cells that wraps onto as many rows as
+                // it takes, so no chip is ever clipped off the right edge — the bar
+                // grows taller instead.
+                ChipGridLayout(spacing: 6, rowSpacing: 4) {
+                    ForEach(folders, id: \.compositeId) { folder in
+                        chip(folder)
                     }
-                    .padding(.vertical, 1)
                 }
+                // Claim the row's leftover width (and no more), so the layout
+                // wraps to it instead of running past the right edge.
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             Button { showConfig = true } label: {
                 Image(systemName: "gearshape")
             }
             .buttonStyle(.borderless)
+            .layoutPriority(1)
             .help("Configure quick-move folders")
         }
         .padding(.horizontal, 12)
@@ -90,16 +94,106 @@ struct MoveBarView: View {
         Button {
             Task { await vm.moveDropped(Array(vm.selection), to: folder) }
         } label: {
-            Label(folder.name, systemImage: folder.kind.icon)
-                .font(.caption)
-                .lineLimit(1)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(.quaternary, in: Capsule())
+            HStack(spacing: 5) {
+                Image(systemName: folder.kind.icon)
+                Text(Self.wrappedName(folder.name))
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(2)
+                Spacer(minLength: 0)
+            }
+            .font(.caption)
+            // The editor's own colours: white card with black text in light mode,
+            // and the inverse in dark mode.
+            .foregroundStyle(Color(nsColor: .textColor))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            // Fill the cell the grid hands out, so every chip is the same size.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .background(Color(nsColor: .textBackgroundColor), in: Self.chipShape)
+            .overlay(Self.chipShape.stroke(.quaternary))
         }
         .buttonStyle(.plain)
         .help("Move \(vm.selection.count) selected to \(folder.name)")
         .modifier(FolderDropTarget(vm: vm, folder: folder))
+    }
+
+    private static let chipShape = RoundedRectangle(cornerRadius: 5)
+
+    /// Breaks a multi-word folder name over two lines so its chip stays narrow
+    /// enough to sit alongside the others. The split point is the word boundary
+    /// closest to the middle of the name, which keeps the two lines even.
+    static func wrappedName(_ name: String) -> String {
+        let words = name.split(separator: " ").map(String.init)
+        guard words.count > 1 else { return name }
+        let half = name.count / 2
+        var best = 1
+        var bestDistance = Int.max
+        var prefixLength = 0
+        for index in 0..<(words.count - 1) {
+            prefixLength += words[index].count + (index > 0 ? 1 : 0)
+            let distance = abs(prefixLength - half)
+            if distance < bestDistance {
+                bestDistance = distance
+                best = index + 1
+            }
+        }
+        return words[..<best].joined(separator: " ") + "\n" + words[best...].joined(separator: " ")
+    }
+}
+
+/// Lays subviews out as a grid of identically-sized cells — the cell is as big as
+/// the largest subview — fitting as many columns as the proposed width allows and
+/// wrapping onto further rows. Uniform cells keep the bar symmetric no matter how
+/// uneven the folder names are.
+struct ChipGridLayout: Layout {
+    var spacing: CGFloat = 6
+    var rowSpacing: CGFloat = 4
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard !subviews.isEmpty else { return .zero }
+        let cell = cellSize(subviews)
+        let available = proposal.width ?? .infinity
+        let columns = columnCount(width: available, cell: cell.width, count: subviews.count)
+        let rows = (subviews.count + columns - 1) / columns
+        let packed = CGFloat(columns) * cell.width + CGFloat(columns - 1) * spacing
+        return CGSize(
+            // Claim the whole row when one is offered, so `placeSubviews` gets the
+            // real width to spread the columns across.
+            width: available.isFinite ? max(available, cell.width) : packed,
+            height: CGFloat(rows) * cell.height + CGFloat(rows - 1) * rowSpacing
+        )
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard !subviews.isEmpty else { return }
+        var cell = cellSize(subviews)
+        let columns = columnCount(width: bounds.width, cell: cell.width, count: subviews.count)
+        // Share out the width left over by the last whole column, so the grid ends
+        // flush with the bar instead of trailing an uneven gap.
+        if bounds.width.isFinite, columns > 1 || bounds.width > cell.width {
+            cell.width = max(cell.width, (bounds.width - spacing * CGFloat(columns - 1)) / CGFloat(columns))
+        }
+        for index in subviews.indices {
+            let origin = CGPoint(
+                x: bounds.minX + CGFloat(index % columns) * (cell.width + spacing),
+                y: bounds.minY + CGFloat(index / columns) * (cell.height + rowSpacing)
+            )
+            subviews[index].place(at: origin, anchor: .topLeading, proposal: ProposedViewSize(cell))
+        }
+    }
+
+    /// The largest subview's size — every cell gets this one.
+    private func cellSize(_ subviews: Subviews) -> CGSize {
+        subviews.reduce(into: CGSize.zero) { size, subview in
+            let ideal = subview.sizeThatFits(.unspecified)
+            size.width = max(size.width, ideal.width)
+            size.height = max(size.height, ideal.height)
+        }
+    }
+
+    private func columnCount(width: CGFloat, cell: CGFloat, count: Int) -> Int {
+        guard cell > 0, width.isFinite else { return max(1, count) }
+        return max(1, min(count, Int((width + spacing) / (cell + spacing))))
     }
 }
 
