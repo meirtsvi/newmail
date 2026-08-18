@@ -300,10 +300,14 @@ private struct UnsubscribeButton: View {
                 Task { await vm.unsubscribe(from: header, info: info) }
             }
         } label: {
-            Text("Unsubscribe")
+            // Icon-only: the word "Unsubscribe" is long enough that the header row
+            // wrapped it onto two lines most of the time. The tooltip carries the
+            // meaning, and the confirmation sheet spells it out before anything
+            // irreversible happens.
+            Image(systemName: "bell.slash")
                 .font(.caption)
-                .padding(.horizontal, 8).padding(.vertical, 4)
-                .background(.quaternary, in: Capsule())
+                .frame(width: 20, height: 20)
+                .background(.quaternary, in: Circle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
