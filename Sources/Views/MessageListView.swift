@@ -88,8 +88,8 @@ struct MessageListView: View {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(vm.currentFolder?.name ?? "Mailbox")
                     .font(.title2.weight(.semibold))
-                if let total = vm.currentFolder?.totalCount, total > 0 {
-                    Text("(\(total))")
+                if let listed = vm.listedCount {
+                    Text("(\(listed))")
                         .font(.title3)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()

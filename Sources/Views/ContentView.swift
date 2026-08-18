@@ -315,8 +315,8 @@ struct StatusBar: View {
                     .monospacedDigit()
                 Text("·").foregroundStyle(.tertiary)
             }
-            if let folder = vm.currentFolder, folder.totalCount > 0 {
-                Text("\(folder.totalCount) messages")
+            if let listed = vm.listedCount {
+                Text("\(listed) messages")
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }

@@ -226,6 +226,16 @@ final class MailboxViewModel {
         return base.sorted(using: stableComparators)
     }
 
+    /// The count shown beside the folder title and in the status bar. With a
+    /// newsletter filter on, the folder's server total no longer describes what's
+    /// on screen, so the number of listed rows is used instead — and it follows
+    /// the filter as it cycles between all / only / no newsletters.
+    var listedCount: Int? {
+        if newsletterFilter != .all { return displayedMessages.count }
+        guard let total = currentFolder?.totalCount, total > 0 else { return nil }
+        return total
+    }
+
     /// The active sort with a unique `id` tiebreaker appended so no two rows ever
     /// compare equal. Messages that share a sort value (e.g. the same timestamp)
     /// are otherwise ambiguous to the Table, and a click can land on the wrong
