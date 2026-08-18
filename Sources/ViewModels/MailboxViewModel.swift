@@ -1509,6 +1509,12 @@ final class MailboxViewModel {
             try await provider.trash(ids: [originalId])
             removeLocal(ids: [originalId])
             await reloadCurrentFolder()
+            // Land back on the message that was just edited (it's a new message on
+            // the server, so the old selection is gone) and bring it into view.
+            if messages.contains(where: { $0.id == newId }) {
+                selection = [newId]
+                scrollToMessageId = newId
+            }
         } catch {
             errorMessage = "Couldn’t save edits: \(error.localizedDescription)"
         }
