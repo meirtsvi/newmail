@@ -9,6 +9,13 @@ struct FolderNode: Identifiable, Hashable {
     var children: [FolderNode]?
 }
 
+/// One visible line of the flattened folder tree: a node plus its nesting depth.
+private struct FlatFolderRow: Identifiable {
+    let node: FolderNode
+    let depth: Int
+    var id: String { node.id }
+}
+
 /// Left pane: Favorites section, then one section per account (each an
 /// expandable folder tree with unread badges), then an "Add account" button.
 struct SidebarView: View {
@@ -25,6 +32,8 @@ struct SidebarView: View {
     @State private var createTarget: CreateTarget?
     @State private var newFolderName = ""
     @State private var deleteTarget: MailFolder?
+    /// Ids of the tree nodes whose children are showing.
+    @State private var expandedNodes: Set<String> = []
 
     var body: some View {
         @Bindable var vm = vm
@@ -40,8 +49,11 @@ struct SidebarView: View {
 
             ForEach(vm.sessions) { session in
                 Section {
-                    OutlineGroup(folderTree(vm.foldersByAccount[session.account.id] ?? []), children: \.children) { node in
-                        nodeRow(node)
+                    // A flattened tree rather than an `OutlineGroup`: inside a
+                    // selectable List the outline rows hang on to their selected
+                    // highlight, so every sub-folder visited stays lit up.
+                    ForEach(visibleRows(vm.foldersByAccount[session.account.id] ?? [])) { entry in
+                        treeRow(entry).tag(entry.node.id)
                     }
                 } header: {
                     Text(session.account.displayName.isEmpty ? session.account.email : session.account.displayName)
@@ -121,10 +133,56 @@ struct SidebarView: View {
         }
     }
 
+    /// Flattens an account's folder tree down to the rows currently on show.
+    private func visibleRows(_ folders: [MailFolder]) -> [FlatFolderRow] {
+        var rows: [FlatFolderRow] = []
+        func walk(_ nodes: [FolderNode], depth: Int) {
+            for node in nodes {
+                rows.append(FlatFolderRow(node: node, depth: depth))
+                if let children = node.children, expandedNodes.contains(node.id) {
+                    walk(children, depth: depth + 1)
+                }
+            }
+        }
+        walk(folderTree(folders), depth: 0)
+        return rows
+    }
+
+    private func treeRow(_ entry: FlatFolderRow) -> some View {
+        HStack(spacing: 2) {
+            disclosure(entry.node)
+            nodeRow(entry.node)
+        }
+        .padding(.leading, CGFloat(entry.depth) * 14)
+    }
+
+    /// The expand/collapse chevron, or a matching blank for a leaf folder.
+    @ViewBuilder
+    private func disclosure(_ node: FolderNode) -> some View {
+        if node.children != nil {
+            Button {
+                if expandedNodes.contains(node.id) { expandedNodes.remove(node.id) }
+                else { expandedNodes.insert(node.id) }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(expandedNodes.contains(node.id) ? 90 : 0))
+                    .frame(width: 13)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } else {
+            Color.clear.frame(width: 13, height: 1)
+        }
+    }
+
     @ViewBuilder
     private func nodeRow(_ node: FolderNode) -> some View {
         if let folder = node.folder {
-            row(folder).tag("acct:\(folder.compositeId)")
+            // Tagged by the caller with the node id, which already carries the
+            // "acct:" prefix `selectRow` expects.
+            row(folder)
         } else {
             // Synthesized parent (not a real folder) — shown but not selectable.
             HStack(spacing: 8) {
@@ -227,9 +285,12 @@ struct SidebarView: View {
             let kids = builder.children.values.map(convert).sorted {
                 sortKey($0) < sortKey($1)
             }
-            // Real folders use the account-scoped composite id; synthesized
-            // parents use a distinct "path:" id so they can't collide.
-            let nodeId = builder.folder?.compositeId ?? "\(accountId)\u{1}path:\(builder.id)"
+            // The node id doubles as the List's selection value (see `nodeRow`).
+            // Real folders use the account-scoped composite id behind the "acct:"
+            // prefix `selectRow` expects; synthesized parents use a distinct
+            // "path:" id so they can't collide — and so they're ignored on click.
+            let nodeId = builder.folder.map { "acct:\($0.compositeId)" }
+                ?? "\(accountId)\u{1}path:\(builder.id)"
             return FolderNode(
                 id: nodeId, name: builder.name, folder: builder.folder,
                 children: kids.isEmpty ? nil : kids
