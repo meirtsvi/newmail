@@ -126,12 +126,15 @@ final class NotificationPanelController: NSObject, NSWindowDelegate {
         guard let screen = NSScreen.screens.first(where: { $0.frame.origin == .zero }) ?? NSScreen.main else { return }
         let visible = screen.visibleFrame
         let margin: CGFloat = 14
+        // Lifted clear of the very bottom of the screen so whatever sits in the
+        // bottom-right corner stays readable behind the stack.
+        let bottomLift: CGFloat = 50
         let size = panel.frame.size
         // Bottom-right: anchor the bottom edge (visibleFrame excludes the Dock), so the
         // stack grows upward as cards are added or the inline reply expands.
         let origin = NSPoint(
             x: (visible.maxX - size.width - margin).rounded(),
-            y: (visible.minY + margin).rounded()
+            y: (visible.minY + margin + bottomLift).rounded()
         )
         // Skip redundant frame sets — moving to the same spot would needlessly
         // re-fire the resize notification.
