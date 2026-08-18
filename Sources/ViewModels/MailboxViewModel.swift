@@ -2577,6 +2577,7 @@ final class MailboxViewModel {
     /// top-right popup for each. The first poll per account only records a
     /// baseline (so the existing inbox doesn't pop on launch).
     private func pollInboxes() async {
+        var mergedIntoCurrentFolder = false
         for session in sessions {
             guard let inbox = foldersByAccount[session.account.id]?.first(where: { $0.kind == .inbox }) else { continue }
             guard let result = try? await session.provider.listMessages(folderId: inbox.id, query: nil, pageToken: nil) else { continue }
@@ -2587,6 +2588,14 @@ final class MailboxViewModel {
             // stale one, so there's little to reconcile against the server.
             store.saveHeaders(headers)
             applyNewsletterRules(to: headers, accountId: session.account.id)
+            // When that inbox is the folder on screen, fold the poll's headers into
+            // the visible list too, so a new message appears in the list at the same
+            // moment its popup does instead of waiting for the next manual refresh.
+            if currentAccountId == session.account.id, currentFolder?.id == inbox.id, !isSearching {
+                mergeFresh(headers)
+                hydrateCalendarIds()
+                mergedIntoCurrentFolder = true
+            }
             let currentIds = Set(headers.map(\.id))
             guard let seen = seenInboxIds[session.account.id] else {
                 seenInboxIds[session.account.id] = currentIds
@@ -2599,6 +2608,7 @@ final class MailboxViewModel {
                 presentNotification(header, accountId: session.account.id)
             }
         }
+        if mergedIntoCurrentFolder { await refreshCurrentFolderCount() }
         // Pick up newsletter mail whose headers just landed in the cache (new
         // arrivals with popups off, RSS items imported mid-session, …).
         enqueueNewsletterTranslationBacklog()
