@@ -673,9 +673,17 @@ final class GmailProvider: MailProvider {
 
     // MARK: - Mapping helpers
 
+    /// System labels that aren't folders. Besides the obvious flags and
+    /// categories, this covers Gmail's "superstars": once the account enables the
+    /// extra star styles, `labels.list` returns one system label per style
+    /// (YELLOW_STAR, RED_BANG, …). They're star markers, not places mail lives, so
+    /// they'd otherwise show up in the sidebar as empty custom folders.
     private static let hiddenSystemLabels: Set<String> = [
         "UNREAD", "STARRED", "IMPORTANT", "CHAT", "CATEGORY_PERSONAL",
         "CATEGORY_SOCIAL", "CATEGORY_PROMOTIONS", "CATEGORY_UPDATES", "CATEGORY_FORUMS",
+        "YELLOW_STAR", "ORANGE_STAR", "RED_STAR", "PURPLE_STAR", "BLUE_STAR", "GREEN_STAR",
+        "ORANGE_GUILLEMET", "YELLOW_BANG", "RED_BANG", "PURPLE_QUESTION",
+        "BLUE_INFO", "GREEN_CHECK",
     ]
 
     private static func isFolderLabel(_ label: GmailAPI.Label) -> Bool {
