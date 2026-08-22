@@ -78,13 +78,8 @@ struct MailToolbar: ToolbarContent {
             .disabled(vm.isCleaningUp)
             .help("Cleanup")
 
-            Menu {
-                MoveMenu(vm: vm, ids: ids)
-            } label: {
-                Label("Move", systemImage: "folder")
-            }
-            .disabled(!hasSelection)
-            .help("Move to folder (⌥2 for quick move)")
+            MoveButton(vm: vm, ids: ids)
+                .disabled(!hasSelection)
 
             Menu {
                 SnoozeMenu(vm: vm, ids: ids)
@@ -135,10 +130,12 @@ struct MailToolbar: ToolbarContent {
         }
     }
 
-    /// Tristate filter icon: all mail / only newsletters / everything but newsletters.
+    /// Four-state filter icon: all mail / only digests / only newsletters /
+    /// everything but newsletters.
     private var newsletterFilterIcon: String {
         switch vm.newsletterFilter {
         case .all: return "newspaper"
+        case .onlyDigests: return "sparkles.rectangle.stack"
         case .onlyNewsletters: return "newspaper.fill"
         case .noNewsletters: return "newspaper.circle"
         }
@@ -146,7 +143,8 @@ struct MailToolbar: ToolbarContent {
 
     private var newsletterFilterHelp: String {
         switch vm.newsletterFilter {
-        case .all: return "Showing all mail — click to show only newsletters"
+        case .all: return "Showing all mail — click to show only digests"
+        case .onlyDigests: return "Showing only digests — click to show only newsletters"
         case .onlyNewsletters: return "Showing only newsletters — click to hide newsletters"
         case .noNewsletters: return "Hiding newsletters — click to show all mail"
         }
@@ -155,5 +153,24 @@ struct MailToolbar: ToolbarContent {
     private var allSelectedRead: Bool {
         let chosen = vm.selectedHeaders
         return !chosen.isEmpty && chosen.allSatisfy { $0.isRead }
+    }
+}
+
+/// The toolbar's Move control. A plain `View` rather than an inline `Menu` so it
+/// can own the popover's presentation state — `ToolbarContent` is rebuilt with
+/// every selection change, and the picker has to survive that.
+private struct MoveButton: View {
+    let vm: MailboxViewModel
+    let ids: [String]
+    @State private var showPicker = false
+
+    var body: some View {
+        Button { showPicker = true } label: {
+            Label("Move", systemImage: "folder")
+        }
+        .help("Move to folder (⌥2 for quick move)")
+        .popover(isPresented: $showPicker, arrowEdge: .bottom) {
+            MovePicker(vm: vm, ids: ids, isPresented: $showPicker)
+        }
     }
 }

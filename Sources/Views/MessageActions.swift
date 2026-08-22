@@ -87,6 +87,116 @@ struct MoveMenu: View {
     }
 }
 
+/// The filter terms that have actually picked a folder, most recent first.
+/// Only terms that ended in a move are kept — a search the user abandoned says
+/// nothing about where they file mail.
+enum MoveSearchHistory {
+    private static let key = "moveFolderRecentSearches"
+    static let limit = 3
+
+    static var recent: [String] {
+        UserDefaults.standard.stringArray(forKey: key) ?? []
+    }
+
+    static func record(_ term: String) {
+        let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var terms = recent.filter { $0.caseInsensitiveCompare(trimmed) != .orderedSame }
+        terms.insert(trimmed, at: 0)
+        UserDefaults.standard.set(Array(terms.prefix(limit)), forKey: key)
+    }
+}
+
+/// The toolbar's move target picker: a filter field over every folder in the
+/// account. A SwiftUI `Menu` cannot host a text field, and the folder list is
+/// long enough that typing three letters beats scrolling it — so the toolbar's
+/// Move button opens this popover instead of the plain `MoveMenu`.
+///
+/// Return moves to the first match, so the common case is type-and-enter; the
+/// list below is there for when the term matches several folders.
+struct MovePicker: View {
+    let vm: MailboxViewModel
+    let ids: [String]
+    @Binding var isPresented: Bool
+
+    @State private var query = ""
+    @FocusState private var queryFocused: Bool
+
+    /// Same eligibility rule as `MoveMenu` — never the open folder, never the
+    /// Inbox — narrowed by a case-insensitive substring of the folder name.
+    private var matches: [MailFolder] {
+        let all = vm.currentFolders.filter {
+            $0.kind != .inbox && $0.compositeId != vm.currentFolder?.compositeId
+        }
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return all }
+        let hits = all.filter { $0.name.localizedCaseInsensitiveContains(term) }
+        // Folders that *start* with the term come first: "te" otherwise puts
+        // "Candidates" above "Tech", and Return would move to the wrong one.
+        let lower = term.lowercased()
+        let starts = hits.filter { $0.name.lowercased().hasPrefix(lower) }
+        return starts + hits.filter { !$0.name.lowercased().hasPrefix(lower) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("Filter folders", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .focused($queryFocused)
+                .onSubmit { move(to: matches.first) }
+
+            let recent = MoveSearchHistory.recent
+            if !recent.isEmpty {
+                HStack(spacing: 10) {
+                    ForEach(recent, id: \.self) { term in
+                        Button(term) { query = term }
+                            .buttonStyle(.link)
+                    }
+                }
+                .font(.caption)
+            }
+
+            Divider()
+
+            if matches.isEmpty {
+                Text("No folder matches “\(query)”")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 1) {
+                        ForEach(Array(matches.enumerated()), id: \.element.compositeId) { index, folder in
+                            Button { move(to: folder) } label: {
+                                Label(folder.name, systemImage: folder.kind.icon)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.vertical, 3)
+                                    .padding(.horizontal, 6)
+                                    .background(
+                                        index == 0 && !query.isEmpty
+                                            ? Color.accentColor.opacity(0.18) : .clear,
+                                        in: RoundedRectangle(cornerRadius: 4)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(10)
+        .frame(width: 260, height: 320)
+        .onAppear { queryFocused = true }
+    }
+
+    private func move(to folder: MailFolder?) {
+        guard let folder else { return }
+        MoveSearchHistory.record(query)
+        isPresented = false
+        Task { await vm.move(ids, to: folder) }
+    }
+}
+
 /// The ⌥1–⌥4 quick actions on the selected message row. Flag and delete call the
 /// same view-model methods the row's hover icons call; move and snooze open the
 /// row icons' own SwiftUI menus by synthesizing a click on them, so the popup
