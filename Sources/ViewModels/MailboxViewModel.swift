@@ -55,6 +55,7 @@ final class MailboxViewModel {
     // RSS feeds: a single service polls the chosen Gmail account and inserts new
     // feed items into its Inbox. `feedSubscriptions` backs the Settings editor.
     @ObservationIgnored private var feedService: FeedService?
+    @ObservationIgnored private var digestScheduler: DigestScheduler?
     var feedSubscriptions: [FeedSubscription] = []
 
     /// Email of the currently selected account (used as the compose "from").
@@ -199,6 +200,7 @@ final class MailboxViewModel {
         let base: [MessageHeader]
         switch newsletterFilter {
         case .all: base = messages
+        case .onlyDigests: base = messages.filter { isDigestMessage($0) }
         case .onlyNewsletters: base = messages.filter { isNewsletterMessage($0) }
         case .noNewsletters: base = messages.filter { !isNewsletterMessage($0) }
         }
@@ -278,6 +280,8 @@ final class MailboxViewModel {
             if messages[i].isCalendarEvent != isEvent { messages[i].isCalendarEvent = isEvent }
             let isNews = isNewsletterMessage(messages[i])
             if messages[i].isNewsletter != isNews { messages[i].isNewsletter = isNews }
+            let isDigest = isDigestMessage(messages[i])
+            if messages[i].isDigest != isDigest { messages[i].isDigest = isDigest }
         }
     }
 
@@ -531,7 +535,11 @@ final class MailboxViewModel {
     /// first Gmail account). Safe to call repeatedly — the picker calls it on change.
     func startFeeds() {
         let gmail = gmailSessions
-        guard !gmail.isEmpty else { feedService?.stop(); feedService = nil; return }
+        guard !gmail.isEmpty else {
+            feedService?.stop(); feedService = nil
+            digestScheduler?.stop(); digestScheduler = nil
+            return
+        }
         let chosenId = UserDefaults.standard.string(forKey: "feedAccountId")
         let session = gmail.first { $0.account.id == chosenId } ?? gmail[0]
         let service = FeedService(provider: session.provider, accountId: session.account.id)
@@ -539,6 +547,13 @@ final class MailboxViewModel {
         feedService?.stop()
         feedService = service
         service.start()
+
+        // The scheduled digest runs off the same accounts as the feed poller,
+        // so its lifetime is the poller's.
+        let scheduler = DigestScheduler { [weak self] in await self?.generateDigest() }
+        digestScheduler?.stop()
+        digestScheduler = scheduler
+        scheduler.start()
     }
 
     func reloadFeedSubscriptions() {
@@ -602,6 +617,15 @@ final class MailboxViewModel {
 
     private func newsletterRules() -> [NewsletterRule] {
         (try? feedContext.fetch(FetchDescriptor<NewsletterRule>())) ?? []
+    }
+
+    /// Whether the message is a generated digest. Keyed on the From address
+    /// rather than the `Digest` label: the label exists so digests are findable
+    /// in Gmail on every device, but it arrives asynchronously, while the
+    /// address is true the instant the message lands (and is already what
+    /// `digestSourceCount` keys on).
+    func isDigestMessage(_ header: MessageHeader) -> Bool {
+        header.from.email == DigestService.fromAddress
     }
 
     /// Whether the message carries its account's Newsletter label.
@@ -747,10 +771,12 @@ final class MailboxViewModel {
         }
     }
 
-    /// Cycles the toolbar filter: all → only newsletters → all without newsletters.
+    /// Cycles the toolbar filter: all → only digests → only newsletters →
+    /// all without newsletters.
     func cycleNewsletterFilter() {
         switch newsletterFilter {
-        case .all: newsletterFilter = .onlyNewsletters
+        case .all: newsletterFilter = .onlyDigests
+        case .onlyDigests: newsletterFilter = .onlyNewsletters
         case .onlyNewsletters: newsletterFilter = .noNewsletters
         case .noNewsletters: newsletterFilter = .all
         }
@@ -2168,6 +2194,7 @@ final class MailboxViewModel {
                 setDigestResult("Digest: nothing new since the last digest.")
                 return
             }
+            applyArchivedDigestSources(result.archived)
             setDigestResult("Digest ready — \(result.sourceCount) item\(result.sourceCount == 1 ? "" : "s") covered.")
             await focusDigestMessage(result.digestId, accountId: dest.account.id)
         } catch {
@@ -2187,7 +2214,8 @@ final class MailboxViewModel {
     /// Opens the delivering account's Inbox and selects the fresh digest message.
     private func focusDigestMessage(_ id: String, accountId: String) async {
         // The digest itself isn't newsletter-labeled, so an "only newsletters"
-        // filter would hide the row we're about to select.
+        // filter would hide the row we're about to select. "Only digests" shows
+        // it, so that one stays.
         if newsletterFilter == .onlyNewsletters { newsletterFilter = .all }
         if let inbox = foldersByAccount[accountId]?.first(where: { $0.kind == .inbox }) {
             sidebarSelection = "acct:\(inbox.compositeId)"
@@ -2209,7 +2237,26 @@ final class MailboxViewModel {
         return count > 0 ? count : nil
     }
 
-    /// Trashes every message the digest covered, via each message's own account.
+    /// Mirrors the digest's best-effort source archiving into the local cache,
+    /// the same way `deleteDigestSources` mirrors a trash — the messages have
+    /// left the Inbox on the server, so the list must stop showing them.
+    private func applyArchivedDigestSources(_ archived: [String: [String]]) {
+        for (accountId, ids) in archived where !ids.isEmpty {
+            let inboxId = foldersByAccount[accountId]?.first { $0.kind == .inbox }?.id
+            addTombstones(ids: ids, folderId: inboxId)
+            if currentAccountId == accountId {
+                removeLocal(ids: ids)
+            } else {
+                store.deleteMessages(ids: ids)
+            }
+        }
+    }
+
+    /// Trashes every message the digest covered, via each message's own account,
+    /// then forgets the ones that are gone — so the button's count reflects what
+    /// is actually left and disappears once nothing is. Without that, a
+    /// successful purge left the button showing its original count, and clicking
+    /// it again silently re-trashed already-trashed mail: it read as broken.
     func deleteDigestSources(for header: MessageHeader) async {
         guard let record = digestRecord(for: header.id) else { return }
         var byAccount: [String: [String]] = [:]
@@ -2217,8 +2264,15 @@ final class MailboxViewModel {
             byAccount[source.accountId, default: []].append(source.messageId)
         }
         var deleted = 0
+        var remaining: [(accountId: String, messageId: String)] = []
+        var failure: String?
         for (accountId, ids) in byAccount {
-            guard let session = sessions.first(where: { $0.account.id == accountId }) else { continue }
+            guard let session = sessions.first(where: { $0.account.id == accountId }) else {
+                // Keep them: a signed-out account may come back.
+                remaining.append(contentsOf: ids.map { (accountId, $0) })
+                failure = failure ?? "one of the accounts isn’t signed in"
+                continue
+            }
             do {
                 try await session.provider.trash(ids: ids)
                 deleted += ids.count
@@ -2230,11 +2284,23 @@ final class MailboxViewModel {
                     store.deleteMessages(ids: ids)
                 }
             } catch {
-                errorMessage = "Couldn’t delete the digest’s sources: \(error.localizedDescription)"
-                return
+                remaining.append(contentsOf: ids.map { (accountId, $0) })
+                failure = failure ?? error.localizedDescription
             }
         }
-        setDigestResult("Deleted \(deleted) digest source message\(deleted == 1 ? "" : "s").")
+        record.sourcesRaw = remaining
+            .map { "\($0.accountId)\u{1}\($0.messageId)" }
+            .joined(separator: ",")
+        try? feedContext.save()
+
+        if let failure {
+            errorMessage = "Couldn’t delete every digest source: \(failure)"
+        }
+        // The sources are usually already archived out of the Inbox by the time
+        // this runs, so nothing visibly moves — say what happened explicitly.
+        setDigestResult(deleted == 0
+            ? "No digest sources were deleted."
+            : "Moved \(deleted) digest source message\(deleted == 1 ? "" : "s") to Trash.")
     }
 
     /// Number of digests remembered in the ledger (drives the Settings button).
@@ -2251,6 +2317,21 @@ final class MailboxViewModel {
         }
         try? feedContext.save()
         setDigestResult("Digest history cleared — the next digest covers everything.")
+    }
+
+    /// Number of stories the cross-day ledger remembers (drives the Settings button).
+    var storyLedgerCount: Int {
+        (try? feedContext.fetchCount(FetchDescriptor<StoryRecord>())) ?? 0
+    }
+
+    /// Forgets every remembered story, so the next digest treats everything as
+    /// new again instead of reporting only what changed.
+    func clearStoryLedger() {
+        for record in (try? feedContext.fetch(FetchDescriptor<StoryRecord>())) ?? [] {
+            feedContext.delete(record)
+        }
+        try? feedContext.save()
+        setDigestResult("Story memory cleared — the next digest reports everything as new.")
     }
 
     private func digestRecord(for digestMessageId: String) -> DigestRecord? {
@@ -3322,9 +3403,9 @@ final class MailboxViewModel {
     }
 }
 
-/// The toolbar's tristate newsletter filter over the message list.
+/// The toolbar's four-state newsletter filter over the message list.
 enum NewsletterFilter {
-    case all, onlyNewsletters, noNewsletters
+    case all, onlyDigests, onlyNewsletters, noNewsletters
 }
 
 /// A context-menu entry for the Newsletter category, carrying its exact title.

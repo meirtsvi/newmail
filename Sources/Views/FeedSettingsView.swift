@@ -339,9 +339,53 @@ private struct DigestSettingsTab: View {
     /// Flips after a clear so the row confirms it (the count itself is not
     /// observable state — it's fetched from the store on each render).
     @State private var ledgerCleared = false
+    @State private var storiesCleared = false
+    @AppStorage(DigestPrefs.scheduleEnabledKey) private var scheduleEnabled = false
+    @AppStorage(DigestPrefs.scheduleHourKey) private var scheduleHour = 8
+    @AppStorage(DigestPrefs.autoArchiveKey) private var autoArchive = true
 
     var body: some View {
         Form {
+            Section {
+                Toggle("Generate a digest every day", isOn: $scheduleEnabled)
+                Picker("At", selection: $scheduleHour) {
+                    ForEach(0..<24, id: \.self) { hour in
+                        Text(String(format: "%02d:00", hour)).tag(hour)
+                    }
+                }
+                .disabled(!scheduleEnabled)
+            } header: {
+                Text("Schedule")
+            } footer: {
+                Text("Runs while newmail is open. If the Mac was asleep or the app was closed at that hour, the digest is generated on the next launch — late, never skipped.")
+            }
+
+            Section {
+                Toggle("Archive the source mail after a digest", isOn: $autoArchive)
+            } footer: {
+                Text("Moves the newsletters the digest covered out of the Inbox once the digest that replaces them exists. Nothing is deleted — they stay searchable, and “Delete source mails” is still there for an explicit purge.")
+            }
+
+            Section {
+                HStack {
+                    Text(storiesCleared
+                         ? "Story memory cleared."
+                         : "\(vm.storyLedgerCount) stor\(vm.storyLedgerCount == 1 ? "y" : "ies") remembered")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Clear Story Memory") {
+                        vm.clearStoryLedger()
+                        storiesCleared = true
+                    }
+                    .disabled(storiesCleared || vm.storyLedgerCount == 0)
+                    .help("Forget which stories earlier digests already covered")
+                }
+            } header: {
+                Text("Story memory")
+            } footer: {
+                Text("A story covered on an earlier day is reported again only as what changed. Stories are forgotten automatically after 21 days; clearing makes the next digest treat everything as new.")
+            }
+
             Section {
                 HStack {
                     Text(ledgerCleared
@@ -363,7 +407,10 @@ private struct DigestSettingsTab: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear { ledgerCleared = false }
+        .onAppear {
+            ledgerCleared = false
+            storiesCleared = false
+        }
     }
 }
 

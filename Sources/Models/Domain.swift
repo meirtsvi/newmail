@@ -172,13 +172,20 @@ struct MessageHeader: Identifiable, Hashable {
     /// `labelIds` by the view model (which knows each account's label id), so the
     /// Category column can render and sort on it.
     var isNewsletter: Bool = false
+    /// Whether this message is a generated newsletter digest. Mirrored from
+    /// `labelIds` the same way `isNewsletter` is.
+    var isDigest: Bool = false
 
     // Comparable sort keys for boolean columns (Bool isn't Comparable).
     var readSort: Int { isRead ? 1 : 0 }
     var flagSort: Int { isFlagged ? 1 : 0 }
     var attachmentSort: Int { hasAttachments ? 1 : 0 }
-    /// Category column sort key: regular < newsletter < calendar event.
-    var categorySort: Int { isCalendarEvent ? 2 : (isNewsletter ? 1 : 0) }
+    /// Category column sort key: regular < newsletter < digest < calendar event.
+    var categorySort: Int {
+        if isCalendarEvent { return 3 }
+        if isDigest { return 2 }
+        return isNewsletter ? 1 : 0
+    }
 }
 
 // MARK: - Newsletter category
@@ -186,6 +193,12 @@ struct MessageHeader: Identifiable, Hashable {
 enum NewsletterCategory {
     /// Name of the Gmail user label backing the category (created on first use).
     static let labelName = "Newsletter"
+}
+
+/// The Gmail label every generated digest carries, so digests are findable on
+/// every device rather than only recognizable by their From address.
+enum DigestCategory {
+    static let labelName = "Digest"
 }
 
 struct MailAttachment: Identifiable, Hashable, Codable {

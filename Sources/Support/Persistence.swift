@@ -256,6 +256,38 @@ final class DigestRecord {
     }
 }
 
+/// One news story remembered across digest runs, so a story first reported on
+/// Monday is recognized on Tuesday and reported only as *what changed*.
+/// `entitiesRaw` holds normalized entity names wrapped in delimiters
+/// (",gpt55,openai,") so a shortlist scan can match ",<entity>," without
+/// partial collisions. `sourcesRaw` is "vendor\u{1}url" pairs joined by \u{2}.
+@Model
+final class StoryRecord {
+    @Attribute(.unique) var id: String
+    var titleHe: String
+    /// The story's accumulated state — each matched item's delta is appended,
+    /// bounded in length. This is what the matcher compares against.
+    var gistHe: String
+    var entitiesRaw: String
+    var firstSeen: Date
+    var lastSeen: Date
+    var mentionCount: Int
+    var sourcesRaw: String
+
+    init(id: String = UUID().uuidString, titleHe: String, gistHe: String,
+         entitiesRaw: String, firstSeen: Date = .init(), lastSeen: Date = .init(),
+         mentionCount: Int = 1, sourcesRaw: String = "") {
+        self.id = id
+        self.titleHe = titleHe
+        self.gistHe = gistHe
+        self.entitiesRaw = entitiesRaw
+        self.firstSeen = firstSeen
+        self.lastSeen = lastSeen
+        self.mentionCount = mentionCount
+        self.sourcesRaw = sourcesRaw
+    }
+}
+
 // MARK: - Container
 
 enum Persistence {
@@ -264,7 +296,7 @@ enum Persistence {
             SnoozeRecord.self, CachedFolder.self, CachedMessage.self, CachedBody.self,
             PersistedAccount.self, CachedContact.self,
             FeedSubscription.self, SeenFeedItem.self, CachedTranslation.self,
-            NewsletterRule.self, DigestRecord.self,
+            NewsletterRule.self, DigestRecord.self, StoryRecord.self,
         ])
         // Versioned store file: the multi-account schema is incompatible with the
         // single-account one, and the cache is disposable (re-fetched from the

@@ -195,7 +195,9 @@ final class TranslationService {
 
     /// Comma-joined skip list for the prompts: built-ins plus the user's words,
     /// deduplicated case-insensitively.
-    private static var skipWordsClause: String {
+    /// Also used by `DigestService`'s prompts, so one Settings list governs
+    /// every Hebrew path in the app.
+    static var skipWordsClause: String {
         var seen = Set<String>()
         var words: [String] = []
         for word in builtInSkipWords + TranslationPrefs.skipWordList {
