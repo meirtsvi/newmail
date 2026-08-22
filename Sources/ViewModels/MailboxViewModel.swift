@@ -1166,7 +1166,7 @@ final class MailboxViewModel {
             // freshly-fetched (newest-first) window but the server no longer lists —
             // mail that left the folder since it was last cached. Rows older than the
             // window stay; they're the not-yet-refreshed tail reachable via `loadMore`.
-            pruneStale(within: serverHeaders)
+            pruneStale(within: serverHeaders, folder: folder)
             applyNewsletterRules(to: serverHeaders, accountId: folder.accountId)
             statusMessage = nil
             // Paged to the end without navigating away: `messages` is now the complete
@@ -1249,7 +1249,7 @@ final class MailboxViewModel {
             mergeFresh(fresh)
             // Also drop rows the server no longer lists (e.g. mail deleted from
             // another device) — merging alone never removes anything.
-            pruneStale(within: fresh)
+            pruneStale(within: fresh, folder: folder)
             store.saveHeaders(fresh)
             recordContacts(from: fresh, folder: folder)
             hydrateCalendarIds()
@@ -1319,10 +1319,26 @@ final class MailboxViewModel {
     /// fetched header should be present in `server` if it's still in the folder;
     /// rows older than that window are the not-yet-refreshed tail and are kept.
     /// An empty `server` means the folder is empty, so the list is cleared.
-    private func pruneStale(within server: [MessageHeader]) {
-        guard let oldest = server.map(\.date).min() else { messages.removeAll(); return }
+    private func pruneStale(within server: [MessageHeader], folder: MailFolder) {
         let serverIds = Set(server.map(\.id))
-        messages.removeAll { !serverIds.contains($0.id) && $0.date >= oldest }
+        let oldest = server.map(\.date).min()
+        let stale = messages.filter { header in
+            guard !serverIds.contains(header.id) else { return false }
+            // Only messages inside the fetched page's date range can be judged;
+            // anything older simply wasn't listed. An empty page means the
+            // folder itself is empty, so everything in it is stale.
+            guard let oldest else { return true }
+            return header.date >= oldest
+        }.map(\.id)
+        guard !stale.isEmpty else { return }
+        let staleIds = Set(stale)
+        messages.removeAll { staleIds.contains($0.id) }
+        // Mirror the drop into the cache. `saveHeaders` only ever adds or updates
+        // rows a listing returned, so without this a message deleted on another
+        // device keeps its stale folder label forever — and whatever reads the
+        // cache directly rather than the server (the digest's newsletter scan)
+        // goes on treating it as mail still sitting in this folder.
+        store.updateLabel(ids: stale, label: folder.id, present: false)
     }
 
     /// Mark-as-read is deferred: standing on a message only marks it read once
