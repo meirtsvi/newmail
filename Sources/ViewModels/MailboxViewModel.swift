@@ -1166,7 +1166,8 @@ final class MailboxViewModel {
             // freshly-fetched (newest-first) window but the server no longer lists —
             // mail that left the folder since it was last cached. Rows older than the
             // window stay; they're the not-yet-refreshed tail reachable via `loadMore`.
-            pruneStale(within: serverHeaders, folder: folder)
+            pruneStale(within: serverHeaders, folder: folder,
+                       complete: result.nextPageToken == nil)
             applyNewsletterRules(to: serverHeaders, accountId: folder.accountId)
             statusMessage = nil
             // Paged to the end without navigating away: `messages` is now the complete
@@ -1249,7 +1250,8 @@ final class MailboxViewModel {
             mergeFresh(fresh)
             // Also drop rows the server no longer lists (e.g. mail deleted from
             // another device) — merging alone never removes anything.
-            pruneStale(within: fresh, folder: folder)
+            pruneStale(within: fresh, folder: folder,
+                       complete: result.nextPageToken == nil)
             store.saveHeaders(fresh)
             recordContacts(from: fresh, folder: folder)
             hydrateCalendarIds()
@@ -1319,11 +1321,19 @@ final class MailboxViewModel {
     /// fetched header should be present in `server` if it's still in the folder;
     /// rows older than that window are the not-yet-refreshed tail and are kept.
     /// An empty `server` means the folder is empty, so the list is cleared.
-    private func pruneStale(within server: [MessageHeader], folder: MailFolder) {
+    ///
+    /// `complete` means the fetch reached the folder's end (no next-page token),
+    /// so `server` is the folder's entire contents and anything absent from it is
+    /// stale no matter its date. Without this, a folder that shrank below one
+    /// page keeps rows older than its remaining mail forever: the date window
+    /// collapses to just the surviving messages, and older deleted-elsewhere
+    /// rows are mistaken for an unrefreshed tail.
+    private func pruneStale(within server: [MessageHeader], folder: MailFolder, complete: Bool) {
         let serverIds = Set(server.map(\.id))
         let oldest = server.map(\.date).min()
         let stale = messages.filter { header in
             guard !serverIds.contains(header.id) else { return false }
+            if complete { return true }
             // Only messages inside the fetched page's date range can be judged;
             // anything older simply wasn't listed. An empty page means the
             // folder itself is empty, so everything in it is stale.
