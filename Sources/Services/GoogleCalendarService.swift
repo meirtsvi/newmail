@@ -41,6 +41,7 @@ struct EventReminder: Identifiable, Hashable {
     var title: String
     var start: Date
     var isAllDay: Bool
+    var isInstant: Bool     // zero-duration event (end == start): "ends" the moment it starts
     var fireDate: Date      // mutable: snooze reschedules it
     var joinURL: URL?       // video-meeting link (Zoom/Meet/Teams), if any
     var location: String?   // event location text, if any
@@ -141,7 +142,8 @@ actor GoogleCalendarService {
                 out.append(EventReminder(
                     id: event.id,
                     eventId: event.id, title: event.title,
-                    start: event.start, isAllDay: false, fireDate: fireDate,
+                    start: event.start, isAllDay: false, isInstant: event.end == event.start,
+                    fireDate: fireDate,
                     joinURL: event.joinURL, location: Self.displayLocation(from: item), htmlLink: htmlLink
                 ))
             } else if event.end > now {
@@ -155,7 +157,8 @@ actor GoogleCalendarService {
                 out.append(EventReminder(
                     id: event.id,
                     eventId: event.id, title: event.title,
-                    start: event.start, isAllDay: false, fireDate: now,
+                    start: event.start, isAllDay: false, isInstant: false,
+                    fireDate: now,
                     joinURL: event.joinURL, location: Self.displayLocation(from: item), htmlLink: htmlLink
                 ))
             }

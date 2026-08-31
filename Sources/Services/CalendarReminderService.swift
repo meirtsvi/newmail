@@ -116,6 +116,8 @@ final class CalendarReminderService {
     /// Re-checks every still-presented reminder against a fresh fetch and keeps the
     /// visible cards in sync with the calendar:
     ///  - Event gone (deleted/cancelled), ended, or turned all-day → close the card.
+    ///    Except a zero-duration event that has started: it's always absent from the
+    ///    fetch (it ended the instant it began), so its card stays until acted on.
     ///  - Event moved so its reminder window hasn't started yet (`fireDate` now in the
     ///    future) → close the card now and reschedule so it re-fires at the new time.
     ///  - Event details changed (start/title/location/meeting link) → refresh the card.
@@ -133,6 +135,10 @@ final class CalendarReminderService {
 
         for reminder in Array(presented.values) {   // snapshot: the loop mutates `presented`
             guard let current = freshById[reminder.id] else {
+                // A zero-duration event "ends" the instant it starts, so once it has
+                // started its absence from the fetch is expected — not evidence it was
+                // deleted. Leave the card up until the user dismisses or snoozes it.
+                if reminder.isInstant && reminder.start <= now { continue }
                 // No longer an upcoming/in-progress popup reminder: deleted, cancelled,
                 // ended, or now all-day. Close for good.
                 presented[reminder.id] = nil
