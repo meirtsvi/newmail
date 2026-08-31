@@ -268,6 +268,34 @@ struct HTMLEditorView: NSViewRepresentable {
                 window.webkit.messageHandlers.mention.postMessage({ key: e.key });
               }
             }, true);
+            // Pasted image data would be inserted as webkit-fake-url:// references,
+            // which only resolve inside this live WebView — the image would vanish
+            // from the saved copy. Insert such pastes as data: URIs instead; the
+            // save path re-embeds those as normal inline (cid:) attachments.
+            document.addEventListener('paste', function (e) {
+              var data = e.clipboardData;
+              if (!data || !data.items) return;
+              // Pastes that carry HTML keep the default behavior: their images are
+              // real URLs that survive saving.
+              if (Array.prototype.indexOf.call(data.types || [], 'text/html') >= 0) return;
+              var files = [];
+              for (var i = 0; i < data.items.length; i++) {
+                var item = data.items[i];
+                if (item.kind === 'file' && /^image\\//.test(item.type)) {
+                  var f = item.getAsFile();
+                  if (f) files.push(f);
+                }
+              }
+              if (!files.length) return;
+              e.preventDefault();
+              files.forEach(function (file) {
+                var reader = new FileReader();
+                reader.onload = function () {
+                  document.execCommand('insertHTML', false, '<img src="' + reader.result + '">');
+                };
+                reader.readAsDataURL(file);
+              });
+            }, true);
             if (document.body) { document.body.focus(); }
             """
             webView.evaluateJavaScript(js)
