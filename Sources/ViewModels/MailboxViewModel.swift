@@ -377,9 +377,15 @@ final class MailboxViewModel {
 
         // Float the new-mail popup panel and record a baseline of what's already
         // in each inbox (so the existing backlog doesn't pop on launch).
-        notificationPanel = NotificationPanelController(
-            rootView: NotificationStackView().environment(self)
-        )
+        // Created at most once: `bootstrap` re-runs when the main window is closed
+        // and reopened (its `.task` fires again), and replacing a visible panel
+        // would orphan it on screen — still live and mirroring every card, but
+        // with no controller left to hide or reposition it.
+        if notificationPanel == nil {
+            notificationPanel = NotificationPanelController(
+                rootView: NotificationStackView().environment(self)
+            )
+        }
         await pollInboxes()
         await startCalendarReminders()
         reloadFeedSubscriptions()
