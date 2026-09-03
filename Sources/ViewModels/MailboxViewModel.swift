@@ -1294,6 +1294,18 @@ final class MailboxViewModel {
         for id in ids { deleteTombstones.removeValue(forKey: "\(folderId)\u{1}\(id)") }
     }
 
+    /// The mirror image of a tombstone: "folderId\u{1}messageId" → expiry for
+    /// messages just restored by ⌘Z. Untrash has the same consistency lag as
+    /// trash — for a few seconds the server listing still omits the restored
+    /// message — so without a grace `pruneStale` treats the restored row as
+    /// deleted-elsewhere and removes it again right after the undo.
+    private var restoreGraces: [String: Date] = [:]
+
+    private func addRestoreGraces(ids: [String], folderId: String) {
+        let expiry = Date().addingTimeInterval(Self.tombstoneTTL)
+        for id in ids { restoreGraces["\(folderId)\u{1}\(id)"] = expiry }
+    }
+
     /// Drops headers that were recently removed from `folderId` locally but that a
     /// lagging server listing still returns. Expired tombstones are purged.
     private func withoutTombstoned(_ headers: [MessageHeader], folderId: String) -> [MessageHeader] {
@@ -1337,8 +1349,17 @@ final class MailboxViewModel {
     private func pruneStale(within server: [MessageHeader], folder: MailFolder, complete: Bool) {
         let serverIds = Set(server.map(\.id))
         let oldest = server.map(\.date).min()
+        let now = Date()
+        restoreGraces = restoreGraces.filter { $0.value > now }
         let stale = messages.filter { header in
-            guard !serverIds.contains(header.id) else { return false }
+            guard !serverIds.contains(header.id) else {
+                // The listing has caught up with the restore; the grace is done.
+                restoreGraces.removeValue(forKey: "\(folder.id)\u{1}\(header.id)")
+                return false
+            }
+            // A just-restored message can be missing from the listing for a few
+            // seconds (same lag as trash, in reverse) — don't re-remove it.
+            if restoreGraces["\(folder.id)\u{1}\(header.id)"] != nil { return false }
             if complete { return true }
             // Only messages inside the fetched page's date range can be judged;
             // anything older simply wasn't listed. An empty page means the
@@ -1877,8 +1898,11 @@ final class MailboxViewModel {
         do {
             try await session.provider.untrash(ids: batch.headers.map(\.id), toFolderId: batch.folderId)
             // Forget the delete's tombstones or the next refresh would hide the
-            // restored messages again for the tombstones' lifetime.
+            // restored messages again for the tombstones' lifetime — and grace the
+            // restored ids so pruneStale doesn't drop them while the server listing
+            // still lags behind the untrash.
             clearTombstones(ids: batch.headers.map(\.id), folderId: batch.folderId)
+            addRestoreGraces(ids: batch.headers.map(\.id), folderId: batch.folderId)
             // Reappear instantly if that folder is still on screen. (For Graph the
             // restored copy has a fresh id, so these rows are cosmetic until the
             // next folder refresh reconciles them; Gmail keeps the same id.)
