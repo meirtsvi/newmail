@@ -60,6 +60,12 @@ final class DigestService {
     private static let extractionChunkChars = 24_000
     /// How many messages extract concurrently.
     private static let extractionConcurrency = 4
+    /// Umbrella veto threshold: an extracted item whose segments include this
+    /// many link-bearing ones is a fused round-up, split back apart. A real
+    /// story spanning that much text with a link in every segment is rare, and
+    /// over-splitting one is recovered by the dedup stage; under-splitting is
+    /// what produced a 14-link "item" no dedup could ever take apart.
+    private static let umbrellaSegments = 4
 
     /// Story ledger: how long a story stays matchable.
     private static let storyRetention: TimeInterval = 21 * 24 * 3600
@@ -543,7 +549,7 @@ final class DigestService {
         // force-included verbatim so it cannot be silently dropped.
         var accounted = noise
         for item in items { accounted.formUnion(item.segments) }
-        var missing = Set(segments.indices).subtracting(accounted)
+        let missing = Set(segments.indices).subtracting(accounted)
         if !missing.isEmpty {
             if let retry = await extractChunk(
                 subject: subject, source: source, link: link,
@@ -551,10 +557,42 @@ final class DigestService {
             ) {
                 items.append(contentsOf: retry.items)
                 noise.formUnion(retry.noise)
-                for item in retry.items { missing.subtract(item.segments) }
-                missing.subtract(retry.noise)
             }
         }
+
+        // Umbrella veto: an item sweeping several link-bearing segments is a
+        // commentary round-up fused into one "story" (The Neuron's "Midweek
+        // Wisdom" — 13 one-link blurbs, each in its own segment — came back as
+        // a single 14-link item). The prompt forbids this, but a prompt can be
+        // ignored; this cannot. Each swept segment is re-extracted on its own —
+        // a call that sees one segment cannot fold it into its neighbours — and
+        // a real story the veto over-splits is re-merged by stage 1.5's dedup,
+        // the same recovery chunk-boundary splits already rely on.
+        var kept: [ExtractionOutput.Item] = []
+        var resplit: Set<Int> = []
+        for item in items {
+            let linkBearing = Set(item.segments.filter {
+                segments.indices.contains($0) && segments[$0].contains("[L:")
+            })
+            if linkBearing.count >= Self.umbrellaSegments {
+                resplit.formUnion(item.segments)
+            } else {
+                kept.append(item)
+            }
+        }
+        for id in resplit.sorted() where segments.indices.contains(id) {
+            if let output = await extractChunk(subject: subject, source: source, link: link,
+                                               segments: [(id, segments[id])]) {
+                kept.append(contentsOf: output.items)
+                noise.formUnion(output.noise)
+            }
+        }
+        items = kept
+
+        // Whatever is still unaccounted (the re-ask fell short, or a re-split
+        // segment's own call failed) is force-included verbatim.
+        var unaccounted = Set(segments.indices).subtracting(noise)
+        for item in items { unaccounted.subtract(item.segments) }
 
         var result = items.map { item in
             ExtractedEntry(
@@ -564,7 +602,7 @@ final class DigestService {
                 significance: item.significance ?? "normal"
             )
         }
-        for id in missing.sorted() {
+        for id in unaccounted.sorted() {
             let text = segments[id]
             result.append(ExtractedEntry(title: String(text.prefix(90)), summary: text, link: "",
                                          forced: true, links: [], entities: [],
@@ -679,7 +717,11 @@ final class DigestService {
         even when a bullet is a single sentence. A funding round, a product launch, a lawsuit, \
         and a research result are four stories, not one — never fold them into a combined item \
         like "AI industry updates". If a segment holds five bullets, return five items that \
-        all list that segment's id.
+        all list that segment's id. The same applies across segments: a commentary or "wisdom" \
+        section where each short paragraph covers a different person's take, product, or \
+        company — each with its own [L:n] link — is a round-up too, and EVERY such paragraph \
+        is its own item, even when each sits in its own segment. Never return one item that \
+        spans a whole section of one-link blurbs.
         - Never create an item that covers more than one company's announcement. If you catch \
         yourself writing a title that is a category ("funding news", "industry updates", \
         "model releases"), you have merged stories that must stay separate — split them.
