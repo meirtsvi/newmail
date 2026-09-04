@@ -4,10 +4,11 @@ import SwiftUI
 /// reply/forward controls in a message viewer. Both toggle the body in place;
 /// a spinner shows while a Gemini request is running and the active mode is
 /// highlighted.
-/// Zoom-out / zoom-in buttons with a transient percentage readout ("90%",
-/// "110%") shown between them whenever the level changes — via the buttons or
-/// the ⌘+/⌘−/⌘0 shortcuts — fading out shortly after. Styling (borderless,
-/// scale, tint) is inherited from the surrounding button row.
+/// Zoom-out / zoom-in buttons with a transient percentage badge ("90%",
+/// "110%") floated just below the buttons whenever the level changes — via the
+/// buttons or the ⌘+/⌘−/⌘0 shortcuts — fading out shortly after. The badge is
+/// an overlay so it never shifts the surrounding button row. Styling
+/// (borderless, scale, tint) is inherited from the surrounding button row.
 struct ZoomControls: View {
     @Binding var zoom: Double
     var range: ClosedRange<Double> = 0.5...3.0
@@ -19,13 +20,22 @@ struct ZoomControls: View {
         HStack(spacing: 6) {
             Button { step(-0.1) } label: { Image(systemName: "minus.magnifyingglass") }
                 .help("Zoom out")
+            Button { step(+0.1) } label: { Image(systemName: "plus.magnifyingglass") }
+                .help("Zoom in")
+        }
+        .overlay(alignment: .bottom) {
             if showLevel {
                 Text("\(Int((zoom * 100).rounded()))%")
                     .font(.caption.monospacedDigit())
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.regularMaterial, in: Capsule())
+                    .overlay(Capsule().strokeBorder(.quaternary))
+                    .fixedSize()
+                    .offset(y: 26)
+                    .allowsHitTesting(false)
                     .transition(.opacity)
             }
-            Button { step(+0.1) } label: { Image(systemName: "plus.magnifyingglass") }
-                .help("Zoom in")
         }
         // Zoom changes made elsewhere (the ⌘ shortcuts) surface the readout too.
         .onChange(of: zoom) { _, _ in flash() }

@@ -303,6 +303,14 @@ private struct MailNotificationCard: View {
         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.black.opacity(0.08)))
         .shadow(color: .black.opacity(0.20), radius: 12, y: 5)
         .animation(.easeInOut(duration: 0.15), value: expanded)
+        // ⌘+/⌘−/⌘0 zoom the expanded body preview, matching the reading pane.
+        // Registered only while a body is showing so a collapsed card doesn't
+        // silently change the shared zoom level.
+        .background {
+            if expanded && invite == nil {
+                ZoomShortcuts(zoom: $zoom)
+            }
+        }
         // Fetch the full body the first time the card expands; reused on later hovers.
         .task(id: expanded) {
             if expanded, messageBody == nil {
@@ -383,6 +391,9 @@ private struct MailNotificationCard: View {
         .frame(height: 360)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.quaternary))
+        // The panel must be key for the ⌘ zoom shortcuts to fire while the
+        // pointer sits over the body, not just over the action rows.
+        .focusWindowOnHover()
     }
 
     // MARK: Calendar invite
