@@ -880,10 +880,20 @@ final class DigestService {
     /// Vetoes only when BOTH sides named entities; an untagged item falls back
     /// to the matcher's judgement rather than being force-split.
     private static func mayMerge(_ existing: DigestItem, _ item: SourceItem) -> Bool {
-        let a = Set(existing.entities.map(normalize)).subtracting([""])
-        let b = Set(item.entities.map(normalize)).subtracting([""])
-        guard !a.isEmpty, !b.isEmpty else { return true }
-        return !a.isDisjoint(with: b)
+        compatibleEntities(existing.entities, item.entities)
+    }
+
+    /// True when two entity sets could describe one story: either side is
+    /// untagged, or they share at least one entity. Shared by the in-run merge
+    /// AND the cross-day ledger match — the ledger side used to trust the
+    /// matcher unvetoed, which let a "DeepSeek Harness" record absorb OpenClaw,
+    /// LangSmith, and a harness guide across 20 mentions: every wrong match
+    /// grew its gist, which made the record attract the next wrong match.
+    private static func compatibleEntities(_ a: [String], _ b: [String]) -> Bool {
+        let na = Set(a.map(normalize)).subtracting([""])
+        let nb = Set(b.map(normalize)).subtracting([""])
+        guard !na.isEmpty, !nb.isEmpty else { return true }
+        return !na.isDisjoint(with: nb)
     }
 
     /// Compares one new item against everything accumulated so far, newest
@@ -1070,7 +1080,8 @@ final class DigestService {
                 calls += 1
                 progress("Digest: matching against earlier stories… (\(calls)/\(items.count))")
                 if let output = await storyMatchCall(item: item, candidates: candidates),
-                   !output.story_id.isEmpty, resolution.stories[output.story_id] != nil {
+                   !output.story_id.isEmpty, let story = resolution.stories[output.story_id],
+                   Self.compatibleEntities(story.entities, item.entities) {
                     hit = (output.story_id, output.delta_he ?? "", output.is_new_info ?? true)
                 }
             }
@@ -1222,6 +1233,11 @@ final class DigestService {
         announcement, or result — even when phrased differently or by a different newsletter. \
         Use "" when none of them do. Two items about the same company or product are NOT the \
         same story unless they are about the same event. When in doubt, answer "".
+        - Two different products or companies are NEVER the same story. One tool shipping a \
+        release and another tool's tutorial are both "agent tooling news" and still two \
+        separate stories — "the same category of news" is NOT a match. If a candidate's \
+        gist_he already reads like an umbrella over several unrelated stories, answer "": \
+        matching into it makes it worse.
         - delta_he: when matched, ONLY what this item adds beyond gist_he, in natural Hebrew — \
         new benchmarks, pricing, availability dates, a correction, a reaction. Do NOT restate \
         anything gist_he already says. Leave it "" when the item adds nothing.
