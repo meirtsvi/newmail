@@ -176,6 +176,10 @@ struct MessageHeader: Identifiable, Hashable {
     /// `labelIds` the same way `isNewsletter` is.
     var isDigest: Bool = false
 
+    /// "To" column text and sort key: recipient display names, comma-separated
+    /// (the Sent folder shows this column in place of From).
+    var toDisplay: String { to.map(\.display).joined(separator: ", ") }
+
     // Comparable sort keys for boolean columns (Bool isn't Comparable).
     var readSort: Int { isRead ? 1 : 0 }
     var flagSort: Int { isFlagged ? 1 : 0 }

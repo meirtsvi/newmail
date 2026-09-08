@@ -301,9 +301,15 @@ struct MessageListView: View {
                     value: \MessageHeader.categorySort) { msg in categoryCell(msg) }
             .width(16)
             .customizationID("category")
-        TableColumn("From", value: \MessageHeader.from.display) { msg in fromCell(msg) }
-            .width(min: 120, ideal: 240)
-            .customizationID("from")
+        if vm.currentFolder?.kind == .sent {
+            TableColumn("To", value: \MessageHeader.toDisplay) { msg in toCell(msg) }
+                .width(min: 120, ideal: 240)
+                .customizationID("to")
+        } else {
+            TableColumn("From", value: \MessageHeader.from.display) { msg in fromCell(msg) }
+                .width(min: 120, ideal: 240)
+                .customizationID("from")
+        }
         TableColumn("Subject", value: \MessageHeader.subject) { msg in subjectCell(msg) }
             .customizationID("subject")
         TableColumn("Date", value: \MessageHeader.date) { msg in dateCell(msg) }
@@ -472,6 +478,19 @@ struct MessageListView: View {
         HStack(spacing: 8) {
             Avatar(address: msg.from)
             Text(msg.from.display)
+                .font(msg.isRead ? .body : .body.weight(.bold))
+                .lineLimit(1)
+            Spacer(minLength: 4)
+        }
+        .modifier(rowInteraction(msg))
+    }
+
+    /// Sent-folder replacement for `fromCell`: the recipients, with the first
+    /// recipient's avatar.
+    private func toCell(_ msg: MessageHeader) -> some View {
+        HStack(spacing: 8) {
+            Avatar(address: msg.to.first ?? msg.from)
+            Text(msg.toDisplay)
                 .font(msg.isRead ? .body : .body.weight(.bold))
                 .lineLimit(1)
             Spacer(minLength: 4)
