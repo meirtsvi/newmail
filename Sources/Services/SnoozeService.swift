@@ -9,6 +9,9 @@ final class SnoozeService {
     enum Preset: String, CaseIterable, Identifiable {
         case endOfToday = "Later Today"
         case tomorrow = "Tomorrow"
+        case inTwoDays = "2 Days From Now"
+        case inThreeDays = "3 Days From Now"
+        case inOneWeek = "A Week From Now"
         case nextWeek = "Next Week"
         case nextMonth = "Next Month"
         var id: String { rawValue }
@@ -38,6 +41,10 @@ final class SnoozeService {
         case .tomorrow:
             let tomorrow = calendar.date(byAdding: .day, value: 1, to: now) ?? now
             return calendar.date(bySettingHour: 8, minute: 0, second: 0, of: tomorrow) ?? tomorrow
+        case .inTwoDays, .inThreeDays, .inOneWeek:
+            let days = preset == .inTwoDays ? 2 : preset == .inThreeDays ? 3 : 7
+            let day = calendar.date(byAdding: .day, value: days, to: now) ?? now
+            return calendar.date(bySettingHour: 8, minute: 0, second: 0, of: day) ?? day
         case .nextWeek:
             // Next Sunday at 08:00.
             var comps = DateComponents()
