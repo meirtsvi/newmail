@@ -1136,10 +1136,11 @@ final class MailboxViewModel {
         do {
             var result = try await provider.listMessages(folderId: folder.id, query: nil, pageToken: nil)
             // Network fetches suspend at `await`, during which the user may switch
-            // folders (which starts a fresh `loadMessages` for the new folder). Bail
-            // before touching the shared `messages`/`nextPageToken` so this folder's
-            // results never overwrite the one now on screen.
-            guard currentFolder?.id == folder.id else { return }
+            // folders (which starts a fresh `loadMessages` for the new folder) or
+            // start a search (which replaces `messages` with results). Bail before
+            // touching the shared `messages`/`nextPageToken` so this folder's
+            // pages never overwrite — or get appended onto — the list now on screen.
+            guard currentFolder?.id == folder.id, !isSearching else { return }
             // Merge the first page into the cached list already on screen rather than
             // replacing it. A hard `messages = result.headers` shrinks the list down to
             // the first page (Gmail 100 / Graph 50) before paging back up to the target,
@@ -1159,7 +1160,7 @@ final class MailboxViewModel {
             // already shown (the cached tail may overlap these older pages).
             while messages.count < Self.initialLoadTarget, let token = result.nextPageToken {
                 result = try await provider.listMessages(folderId: folder.id, query: nil, pageToken: token)
-                guard currentFolder?.id == folder.id else { return }
+                guard currentFolder?.id == folder.id, !isSearching else { return }
                 pageHeaders = withoutTombstoned(result.headers, folderId: folder.id)
                 serverHeaders.append(contentsOf: pageHeaders)
                 let known = Set(messages.map(\.id))
@@ -1184,7 +1185,7 @@ final class MailboxViewModel {
                                       keepIds: messages.map(\.id))
             }
         } catch {
-            guard currentFolder?.id == folder.id else { return }
+            guard currentFolder?.id == folder.id, !isSearching else { return }
             if messages.isEmpty {
                 messages = store.cachedHeaders(folderId: folder.id, accountId: folder.accountId)
             }
@@ -1197,6 +1198,7 @@ final class MailboxViewModel {
               let token = nextPageToken, !isLoading else { return }
         isLoading = true
         defer { isLoading = false }
+        let wasSearching = isSearching
         do {
             let result: (headers: [MessageHeader], nextPageToken: String?)
             if isSearching, let query = activeSearchQuery {
@@ -1211,9 +1213,10 @@ final class MailboxViewModel {
             } else {
                 result = try await provider.listMessages(folderId: folder.id, query: nil, pageToken: token)
             }
-            // Don't append this folder's older page onto a list the user has since
-            // switched away from.
-            guard currentFolder?.id == folder.id else { return }
+            // Don't append this page onto a list the user has since switched away
+            // from — a different folder, or search mode entered/exited meanwhile
+            // (a folder page must not land in search results, nor vice versa).
+            guard currentFolder?.id == folder.id, isSearching == wasSearching else { return }
             let page = withoutTombstoned(result.headers, folderId: folder.id)
             messages.append(contentsOf: page)
             nextPageToken = result.nextPageToken
