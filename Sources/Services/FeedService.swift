@@ -152,26 +152,28 @@ final class FeedService {
 
         // If the feed only carries a summary with a "Read full article" link, fetch
         // that page and use the full article as the body instead of the snippet.
+        // Disabled: subscribed to the full-article feed instead, so items arrive
+        // complete. Kept commented out in case that changes.
         var html = item.html
-        var originalLink = item.link
-        if let articleURL = fullArticleURL(in: item.html),
-           let data = try? await URLSession.shared.data(from: articleURL).0,
-           !data.isEmpty {
-            let page = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
-            if !page.isEmpty {
-                // Prefer the page's main content so the site header, nav, ads (an
-                // empty leaderboard slot renders as a tall blank gap with JS off),
-                // and footer don't get embedded; fall back to the whole page. Carry
-                // the page's stylesheets along so its content — e.g. inline SVG icons
-                // sized only via CSS classes — renders at the right size, not blown up.
-                if let content = extractMainContent(from: page) {
-                    html = withBase(Self.iconFallbackCSS + headStyleTags(in: page) + "\n" + content, url: articleURL)
-                } else {
-                    html = withBase(page, url: articleURL)
-                }
-                if originalLink.isEmpty { originalLink = articleURL.absoluteString }
-            }
-        }
+        let originalLink = item.link
+        // if let articleURL = fullArticleURL(in: item.html),
+        //    let data = try? await URLSession.shared.data(from: articleURL).0,
+        //    !data.isEmpty {
+        //     let page = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+        //     if !page.isEmpty {
+        //         // Prefer the page's main content so the site header, nav, ads (an
+        //         // empty leaderboard slot renders as a tall blank gap with JS off),
+        //         // and footer don't get embedded; fall back to the whole page. Carry
+        //         // the page's stylesheets along so its content — e.g. inline SVG icons
+        //         // sized only via CSS classes — renders at the right size, not blown up.
+        //         if let content = extractMainContent(from: page) {
+        //             html = withBase(Self.iconFallbackCSS + headStyleTags(in: page) + "\n" + content, url: articleURL)
+        //         } else {
+        //             html = withBase(page, url: articleURL)
+        //         }
+        //         if originalLink.isEmpty { originalLink = articleURL.absoluteString }
+        //     }
+        // }
         // Always end with the article's own URL. Summary-only feeds (Ars Technica)
         // have their body replaced by the fetched page, which drops the feed's link
         // along with it, so the link has to be re-added in that case too.
