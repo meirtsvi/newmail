@@ -48,6 +48,11 @@ struct MessagePreviewView: View {
                 }
                 bodyBlock(header)
             }
+            // Top-aligned: when the header (many To/Cc lines) plus the invite
+            // card outgrow the pane, SwiftUI centers oversized content, which
+            // clipped the subject/from rows behind the window toolbar. Anchor
+            // to the top so any overflow clips at the bottom instead.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .background(zoomShortcuts)
             .onChange(of: header.id) { _, _ in
                 translation.reset()

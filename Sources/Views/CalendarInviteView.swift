@@ -198,7 +198,11 @@ struct CalendarInviteView: View {
                 inviteStart: invite.start,
                 inviteEnd: invite.end ?? invite.start?.addingTimeInterval(3600)
             )
-            .frame(height: 260)
+            // Flexible height: a fixed 260 made the invite card incompressible,
+            // so a tall header (many To/Cc recipients) pushed the whole pane
+            // past its bounds. The timeline scrolls internally, so it can give
+            // up height when the pane is tight.
+            .frame(minHeight: 120, idealHeight: 260, maxHeight: 260)
             .overlay(alignment: .center) {
                 if vm.inviteEventsLoading && mine {
                     ProgressView().controlSize(.small)
