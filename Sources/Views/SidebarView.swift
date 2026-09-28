@@ -233,12 +233,14 @@ struct SidebarView: View {
             } else {
                 Button("Add to Favorites") { vm.toggleFavorite(folder) }
             }
-            if folder.kind == .custom {
+            if folder.kind == .custom || folder.kind == .inbox {
                 Divider()
                 Button("New Sub-folder…") {
                     newFolderName = ""
                     createTarget = CreateTarget(accountId: folder.accountId, parent: folder)
                 }
+            }
+            if folder.kind == .custom {
                 Button("Delete Folder…", role: .destructive) { deleteTarget = folder }
             }
         }
