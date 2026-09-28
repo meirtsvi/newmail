@@ -2254,7 +2254,11 @@ final class MailboxViewModel {
                 return
             }
             applyArchivedDigestSources(result.archived)
-            setDigestResult("Digest ready — \(result.sourceCount) item\(result.sourceCount == 1 ? "" : "s") covered.")
+            if let sendError = result.sendError {
+                setDigestResult("Digest ready, but sending it to the extra recipients failed: \(sendError)")
+            } else {
+                setDigestResult("Digest ready — \(result.sourceCount) item\(result.sourceCount == 1 ? "" : "s") covered.")
+            }
             await focusDigestMessage(result.digestId, accountId: dest.account.id)
         } catch {
             setDigestResult("Digest failed: \(error.localizedDescription)")

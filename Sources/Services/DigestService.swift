@@ -259,7 +259,7 @@ final class DigestService {
         accounts: [SourceAccount],
         destination: MailProvider,
         progress: @escaping (String) -> Void
-    ) async throws -> (digestId: String, sourceCount: Int, archived: [String: [String]])? {
+    ) async throws -> (digestId: String, sourceCount: Int, archived: [String: [String]], sendError: String?)? {
         // Sources: newsletter-labeled Inbox messages from the last week that no
         // prior digest covered (the ledger keeps an immediate re-run empty).
         let records = (try? context.fetch(FetchDescriptor<DigestRecord>())) ?? []
@@ -415,6 +415,23 @@ final class DigestService {
             try? await gmail.setLabel(ids: [digestId], labelId: labelId, on: true)
         }
 
+        // Extra recipients get the same digest as a real mail sent from the
+        // destination account. Best-effort: the Inbox copy already exists.
+        var sendError: String?
+        let extra = DigestPrefs.extraRecipients
+        if !extra.isEmpty {
+            progress("Digest: sending to \(extra)…")
+            let outgoing = MIMEBuilder.buildHTML(
+                from: destination.accountEmail, to: extra, cc: "",
+                subject: subject, html: html, attachments: []
+            )
+            do {
+                try await destination.send(rawMIME: outgoing, flagged: false)
+            } catch {
+                sendError = error.localizedDescription
+            }
+        }
+
         let sourcesRaw = sources
             .map { "\($0.account.accountId)\u{1}\($0.header.id)" }
             .joined(separator: ",")
@@ -438,7 +455,7 @@ final class DigestService {
                 archived[accountId] = ids
             }
         }
-        return (digestId, sources.count, archived)
+        return (digestId, sources.count, archived, sendError)
     }
 
     // MARK: - Stage 1: extraction
@@ -1731,6 +1748,7 @@ enum DigestPrefs {
     static let scheduleHourKey = "digestScheduleHour"
     /// "yyyy-MM-dd" of the last day the scheduler generated a digest.
     static let lastRunDayKey = "digestLastRunDay"
+    static let extraRecipientsKey = "digestExtraRecipients"
 
     /// Default on: the Inbox is clean once the digest that replaces the sources
     /// exists, and archiving destroys nothing.
@@ -1745,6 +1763,12 @@ enum DigestPrefs {
     static var scheduleHour: Int {
         let hour = UserDefaults.standard.object(forKey: scheduleHourKey) as? Int ?? 8
         return min(23, max(0, hour))
+    }
+
+    /// Comma-separated addresses that also get each digest as a real sent mail.
+    static var extraRecipients: String {
+        (UserDefaults.standard.string(forKey: extraRecipientsKey) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

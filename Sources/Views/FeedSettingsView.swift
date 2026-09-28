@@ -343,6 +343,7 @@ private struct DigestSettingsTab: View {
     @AppStorage(DigestPrefs.scheduleEnabledKey) private var scheduleEnabled = false
     @AppStorage(DigestPrefs.scheduleHourKey) private var scheduleHour = 8
     @AppStorage(DigestPrefs.autoArchiveKey) private var autoArchive = true
+    @AppStorage(DigestPrefs.extraRecipientsKey) private var extraRecipients = ""
 
     var body: some View {
         Form {
@@ -358,6 +359,15 @@ private struct DigestSettingsTab: View {
                 Text("Schedule")
             } footer: {
                 Text("Runs while newmail is open. If the Mac was asleep or the app was closed at that hour, the digest is generated on the next launch — late, never skipped.")
+            }
+
+            Section {
+                TextField("Also send to", text: $extraRecipients,
+                          prompt: Text("name@example.com, other@example.com"))
+            } header: {
+                Text("Recipients")
+            } footer: {
+                Text("Each digest is also sent to these addresses, separated by commas, from the account that receives it. Leave empty to keep the digest in your Inbox only.")
             }
 
             Section {
