@@ -45,9 +45,10 @@ struct CalendarDayTimeline: View {
                     .background(widthReader)
                 }
                 .onAppear {
+                    // Top on the invite's own hour: scrolling to the hour before
+                    // pushed the invite out of view when the timeline is short.
                     if let s = inviteStart {
-                        let hour = max(0, cal.component(.hour, from: s) - 1)
-                        proxy.scrollTo(hour, anchor: .top)
+                        proxy.scrollTo(cal.component(.hour, from: s), anchor: .top)
                     }
                 }
             }
