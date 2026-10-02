@@ -1104,22 +1104,33 @@ final class MailboxViewModel {
     /// only covers the folder currently on screen).
     private func refreshDraftsCount(accountId: String? = nil) async {
         guard let accountId = accountId ?? currentAccountId,
-              let provider = sessions.first(where: { $0.account.id == accountId })?.provider,
-              let draftsId = foldersByAccount[accountId]?.first(where: { $0.kind == .drafts })?.id,
-              let count = try? await provider.folderCount(id: draftsId) else { return }
+              let draftsId = foldersByAccount[accountId]?.first(where: { $0.kind == .drafts })?.id
+        else { return }
+        await refreshFolderCount(draftsId, accountId: accountId)
+    }
+
+    /// Fetches one folder's counts from the server and updates its sidebar and
+    /// favorites badges — for folders that aren't on screen, which the periodic
+    /// refresh doesn't cover.
+    private func refreshFolderCount(_ folderId: String, accountId: String) async {
+        guard let provider = sessions.first(where: { $0.account.id == accountId })?.provider,
+              let count = try? await provider.folderCount(id: folderId) else { return }
         var changed = false
-        if let i = foldersByAccount[accountId]?.firstIndex(where: { $0.id == draftsId }),
+        if let i = foldersByAccount[accountId]?.firstIndex(where: { $0.id == folderId }),
            foldersByAccount[accountId]?[i].unreadCount != count.unread
             || foldersByAccount[accountId]?[i].totalCount != count.total {
             foldersByAccount[accountId]?[i].unreadCount = count.unread
             foldersByAccount[accountId]?[i].totalCount = count.total
             changed = true
         }
-        if currentFolder?.id == draftsId {
+        if currentFolder?.id == folderId {
             currentFolder?.unreadCount = count.unread
             currentFolder?.totalCount = count.total
         }
-        if changed { recomputeFavorites() }
+        if changed {
+            recomputeFavorites()
+            updateDockBadge()
+        }
     }
 
     // MARK: - Message loading
@@ -2787,6 +2798,10 @@ final class MailboxViewModel {
                 mergeFresh(headers)
                 hydrateCalendarIds()
                 mergedIntoCurrentFolder = true
+            } else {
+                // An inbox that isn't on screen gets no other count refresh until
+                // its account is opened, so update its badge here.
+                await refreshFolderCount(inbox.id, accountId: session.account.id)
             }
             let currentIds = Set(headers.map(\.id))
             guard let seen = seenInboxIds[session.account.id] else {

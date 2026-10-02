@@ -185,7 +185,10 @@ final class GraphProvider: MailProvider {
         let data = try await request("mailFolders/\(id)", query: [
             URLQueryItem(name: "$select", value: "unreadItemCount,totalItemCount")
         ])
-        let f = try JSONDecoder().decode(GraphAPI.MailFolder.self, from: data)
+        // Only the two counts come back (no id/displayName), so GraphAPI.MailFolder
+        // can't decode this response.
+        struct Counts: Decodable { var unreadItemCount: Int?; var totalItemCount: Int? }
+        let f = try JSONDecoder().decode(Counts.self, from: data)
         return (f.unreadItemCount ?? 0, f.totalItemCount ?? 0)
     }
 
