@@ -17,6 +17,8 @@ final class ComposeWindowController: NSObject, NSWindowDelegate {
             NSApp.activate(ignoringOtherApps: true)
             return
         }
+        // Send from the account being viewed unless the request already names one.
+        if request.fromAccountId == nil { request.fromAccountId = vm.currentAccountId }
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 640, height: 560),

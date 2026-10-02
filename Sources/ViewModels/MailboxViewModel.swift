@@ -98,7 +98,7 @@ final class MailboxViewModel {
     // Sidebar selection (tag like "acct:<accountId>\u{1}<folderId>").
     var sidebarSelection: String?
     var currentFolder: MailFolder?
-    private var currentAccountId: String?
+    private(set) var currentAccountId: String?
 
     // Message list
     var messages: [MessageHeader] = []
@@ -1102,8 +1102,9 @@ final class MailboxViewModel {
     /// Refreshes the current account's Drafts folder count so its sidebar badge
     /// reflects a just-saved or just-sent draft (the periodic per-folder refresh
     /// only covers the folder currently on screen).
-    private func refreshDraftsCount() async {
-        guard let accountId = currentAccountId, let provider = currentProvider,
+    private func refreshDraftsCount(accountId: String? = nil) async {
+        guard let accountId = accountId ?? currentAccountId,
+              let provider = sessions.first(where: { $0.account.id == accountId })?.provider,
               let draftsId = foldersByAccount[accountId]?.first(where: { $0.kind == .drafts })?.id,
               let count = try? await provider.folderCount(id: draftsId) else { return }
         var changed = false
@@ -2655,17 +2656,18 @@ final class MailboxViewModel {
         return nil
     }
 
-    func sendComposed(to: String, cc: String, subject: String, html: String, attachments: [URL], inlineImages: [ComposeInlineImage] = [], draftId: String? = nil, draftMessageId: String? = nil, flagged: Bool = false) async {
+    func sendComposed(from accountId: String?, to: String, cc: String, subject: String, html: String, attachments: [URL], inlineImages: [ComposeInlineImage] = [], draftId: String? = nil, draftMessageId: String? = nil, flagged: Bool = false) async {
         // Remember who we send to so they autocomplete next time.
         contactStore.record(MailAddress.parseList(to) + MailAddress.parseList(cc))
-        guard let provider = currentProvider else {
+        guard let session = composeSession(accountId) else {
             errorMessage = "No account is selected."
             return
         }
+        let provider = session.provider
         let scoped = attachments.filter { $0.startAccessingSecurityScopedResource() }
         defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
         let mime = MIMEBuilder.buildHTML(
-            from: accountEmail, to: to, cc: cc, subject: subject, html: html,
+            from: session.account.email, to: to, cc: cc, subject: subject, html: html,
             attachments: attachments, inlineImages: inlineImages
         )
         do {
@@ -2675,13 +2677,34 @@ final class MailboxViewModel {
             return
         }
         // Only drop the saved draft once the send actually succeeds.
-        await discardSentDraft(id: draftId, messageId: draftMessageId, provider: provider)
+        await discardSentDraft(id: draftId, messageId: draftMessageId, session: session)
+    }
+
+    /// The account a compose window sends from: the one picked in its From menu,
+    /// or the selected account when none was picked (or it has since been removed).
+    private func composeSession(_ accountId: String?) -> Session? {
+        sessions.first { $0.account.id == accountId }
+            ?? sessions.first { $0.account.id == currentAccountId }
+    }
+
+    /// Deletes a compose window's autosaved draft from `accountId` — used when the
+    /// From account changes, so the draft doesn't stay behind on the old account.
+    func discardDraft(id: String?, messageId: String?, accountId: String?) async {
+        guard let session = composeSession(accountId) else { return }
+        var draftId = id
+        if draftId == nil, let messageId, !messageId.isEmpty {
+            draftId = try? await session.provider.draftId(forMessageId: messageId)
+        }
+        guard let draftId, (try? await session.provider.deleteDraft(id: draftId)) != nil else { return }
+        if let messageId, !messageId.isEmpty { forgetDraftRow(messageId: messageId, accountId: session.account.id) }
+        await refreshDraftsCount(accountId: session.account.id)
     }
 
     /// Removes the draft a just-sent message was composed in. This runs after the
     /// send succeeded, so failing here strands a draft rather than losing mail —
     /// worth a retry, and worth saying so if it still doesn't take.
-    private func discardSentDraft(id: String?, messageId: String?, provider: MailProvider) async {
+    private func discardSentDraft(id: String?, messageId: String?, session: Session) async {
+        let provider = session.provider
         // A draft opened from the Drafts list whose draft id couldn't be resolved
         // back then (Gmail's ids differ from message ids) would otherwise survive
         // the send; resolve it from its message id now.
@@ -2706,15 +2729,14 @@ final class MailboxViewModel {
         // The draft is gone from the server, but listings are eventually consistent:
         // without a tombstone the reload that follows the compose window closing can
         // fetch the dead draft again and re-cache its row.
-        if let messageId, !messageId.isEmpty { forgetDraftRow(messageId: messageId) }
-        await refreshDraftsCount()
+        if let messageId, !messageId.isEmpty { forgetDraftRow(messageId: messageId, accountId: session.account.id) }
+        await refreshDraftsCount(accountId: session.account.id)
     }
 
     /// Drops a deleted draft's row from the list and the cache, and tombstones it so
     /// a lagging listing can't put it back (the same guard used for delete and move).
-    private func forgetDraftRow(messageId: String) {
-        guard let accountId = currentAccountId,
-              let draftsId = foldersByAccount[accountId]?.first(where: { $0.kind == .drafts })?.id
+    private func forgetDraftRow(messageId: String, accountId: String) {
+        guard let draftsId = foldersByAccount[accountId]?.first(where: { $0.kind == .drafts })?.id
         else { return }
         addTombstones(ids: [messageId], folderId: draftsId)
         removeLocal(ids: [messageId])
@@ -2724,19 +2746,20 @@ final class MailboxViewModel {
     /// the saved draft so the caller can keep updating it and later delete it.
     /// Returns nil on failure; the caller keeps the draft it already had rather than
     /// forgetting an id that's still live on the server.
-    func saveDraft(to: String, cc: String, subject: String, html: String,
+    func saveDraft(from accountId: String?, to: String, cc: String, subject: String, html: String,
                    attachments: [URL], inlineImages: [ComposeInlineImage] = [], draftId: String?) async -> SavedDraft? {
-        guard let provider = currentProvider else { return nil }
+        guard let session = composeSession(accountId) else { return nil }
+        let provider = session.provider
         let scoped = attachments.filter { $0.startAccessingSecurityScopedResource() }
         defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
         let mime = MIMEBuilder.buildHTML(
-            from: accountEmail, to: to, cc: cc, subject: subject, html: html,
+            from: session.account.email, to: to, cc: cc, subject: subject, html: html,
             attachments: attachments, inlineImages: inlineImages
         )
         guard let saved = try? await provider.saveDraft(id: draftId, rawMIME: mime) else { return nil }
         // A brand-new draft (no prior id) changes the Drafts folder count; an
         // in-place update of an existing draft leaves the count unchanged.
-        if draftId == nil { await refreshDraftsCount() }
+        if draftId == nil { await refreshDraftsCount(accountId: session.account.id) }
         return saved
     }
 
@@ -3531,6 +3554,9 @@ final class ComposeRequest: Identifiable {
     /// sending can drop the row locally and, if `draftId` was never resolved, still
     /// find the draft to delete.
     var draftMessageId: String?
+    /// The account this message is sent (and its draft saved) from. Seeded with the
+    /// selected account when the window opens; the From menu changes it.
+    var fromAccountId: String?
 
     // MARK: - Edit (kind == .edit): the original message being replaced on Save.
     /// The message this edit replaces; Save inserts an edited copy and deletes it.

@@ -210,7 +210,7 @@ struct ComposeView: View {
 
     /// True once there's anything worth keeping (recipients, subject, or body).
     private var hasDraftContent: Bool {
-        !request.to.isEmpty || !request.cc.isEmpty || !request.subject.isEmpty
+        return !request.to.isEmpty || !request.cc.isEmpty || !request.subject.isEmpty
             || !attachments.isEmpty || !rich.exportHTML().isEmpty
     }
 
@@ -249,7 +249,7 @@ struct ComposeView: View {
         guard snapshot != lastSavedSnapshot else { return }
         let save = Task {
             if let saved = await vm.saveDraft(
-                to: request.to, cc: request.cc, subject: request.subject,
+                from: request.fromAccountId, to: request.to, cc: request.cc, subject: request.subject,
                 html: html, attachments: attachments, inlineImages: inlineImages, draftId: request.draftId
             ) {
                 request.draftId = saved.id
@@ -293,7 +293,7 @@ struct ComposeView: View {
                 // draft that actually exists on the server when we delete it.
                 await draftSave?.value
                 await vm.sendComposed(
-                    to: request.to, cc: request.cc, subject: request.subject,
+                    from: request.fromAccountId, to: request.to, cc: request.cc, subject: request.subject,
                     html: html, attachments: attachments, inlineImages: inlineImages, draftId: request.draftId,
                     draftMessageId: request.draftMessageId, flagged: flagged
                 )
@@ -343,6 +343,8 @@ struct ComposeView: View {
 
     private var fields: some View {
         VStack(spacing: 8) {
+            // Editing keeps the original sender, so there's nothing to pick there.
+            if vm.sessions.count > 1, request.kind != .edit { fromPicker }
             // When editing a message only Subject + body change; recipients are
             // shown for context but kept as-is.
             RecipientField(title: "To", text: $request.to,
@@ -383,6 +385,40 @@ struct ComposeView: View {
         .padding(.vertical, 8)
         // Keep the autocomplete dropdown above the formatting bar and editor.
         .zIndex(1)
+    }
+
+    /// Picks which account the message goes out from (any configured account,
+    /// regardless of which one the replied-to message arrived in).
+    private var fromPicker: some View {
+        HStack(spacing: 8) {
+            Text("From")
+                .foregroundStyle(.secondary)
+                .frame(width: 52, alignment: .trailing)
+            Picker("From", selection: $request.fromAccountId) {
+                ForEach(vm.sessions) { session in
+                    Text(session.account.email.isEmpty ? session.account.displayName : session.account.email)
+                        .tag(Optional(session.account.id))
+                }
+            }
+            .labelsHidden()
+            .fixedSize()
+            Spacer()
+        }
+        .onChange(of: request.fromAccountId) { old, _ in moveDraft(from: old) }
+    }
+
+    /// A draft already autosaved on the previous From account is deleted there, and
+    /// the next autosave starts a fresh one on the new account.
+    private func moveDraft(from oldAccountId: String?) {
+        Task {
+            await draftSave?.value
+            let id = request.draftId, messageId = request.draftMessageId
+            guard id != nil || messageId != nil else { return }
+            request.draftId = nil
+            request.draftMessageId = nil
+            lastSavedSnapshot = ""
+            await vm.discardDraft(id: id, messageId: messageId, accountId: oldAccountId)
+        }
     }
 
     /// Full height of the quoted-original pane: two thirds of the window, capped
