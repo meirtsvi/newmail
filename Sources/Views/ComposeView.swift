@@ -208,8 +208,21 @@ struct ComposeView: View {
         }
     }
 
+    /// New mail, replies and forwards with nothing typed in the body aren't kept as
+    /// drafts, whatever their recipients, subject or attachments.
+    private var discardsWhenBodyEmpty: Bool {
+        [.new, .reply, .replyAll, .forward].contains(request.kind)
+    }
+
+    /// True when the body editor holds no text (whitespace only) and no images.
+    private var bodyIsEmpty: Bool {
+        let text = rich.textView?.string ?? ""
+        return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && rich.inlineImages.isEmpty
+    }
+
     /// True once there's anything worth keeping (recipients, subject, or body).
     private var hasDraftContent: Bool {
+        if discardsWhenBodyEmpty { return !bodyIsEmpty }
         return !request.to.isEmpty || !request.cc.isEmpty || !request.subject.isEmpty
             || !attachments.isEmpty || !rich.exportHTML().isEmpty
     }
@@ -269,7 +282,16 @@ struct ComposeView: View {
     /// then close the window — so dismissing never loses work.
     private func closeKeepingDraft() {
         Task {
-            await autosaveDraft()
+            if discardsWhenBodyEmpty, bodyIsEmpty {
+                // Drop any draft an earlier autosave made before the body was cleared.
+                await draftSave?.value
+                if request.draftId != nil || request.draftMessageId != nil {
+                    await vm.discardDraft(id: request.draftId, messageId: request.draftMessageId,
+                                          accountId: request.fromAccountId)
+                }
+            } else {
+                await autosaveDraft()
+            }
             onClose()
         }
     }
