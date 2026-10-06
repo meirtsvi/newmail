@@ -246,7 +246,6 @@ private struct RecipientRow: View {
             Text(label)
                 .font(.caption).foregroundStyle(.secondary)
                 .frame(width: 24, alignment: .trailing)
-                .padding(.top, 3)
             chips(shown: shown, overflow: overflow)
         }
     }
