@@ -52,9 +52,22 @@ final class HTMLEditorController: ObservableObject {
     func makeLeftToRight() { setDirection("ltr") }
     func makeRightToLeft() { setDirection("rtl") }
 
-    /// Wraps the selection in a link (nothing happens when nothing is selected,
-    /// matching the rich-text editor).
-    func applyLink(_ urlString: String) { exec("createLink", value: urlString) }
+    /// The selected text, used to pre-fill the link prompt's text field.
+    func selectedText() async -> String {
+        guard let webView else { return "" }
+        return (try? await webView.evaluateJavaScript("window.getSelection().toString()") as? String) ?? ""
+    }
+
+    /// Replaces the selection (or inserts at the caret) with `text` linked to
+    /// `urlString`, matching the rich-text editor.
+    func insertLink(_ urlString: String, text: String) {
+        run("""
+        var link = document.createElement('a');
+        link.href = \(Self.jsString(urlString));
+        link.textContent = \(Self.jsString(text));
+        document.execCommand('insertHTML', false, link.outerHTML);
+        """)
+    }
 
     /// Inserts the clipboard's plain text, so it picks up the formatting at the
     /// insertion point instead of carrying the source's styling.

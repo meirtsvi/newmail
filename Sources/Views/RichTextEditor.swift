@@ -425,12 +425,27 @@ final class RichTextController: ObservableObject {
     /// styling into the message.
     func pasteMatchingStyle() { textView?.pasteAsPlainText(nil) }
 
-    func applyLink(_ urlString: String) {
+    /// The selected text, used to pre-fill the link prompt's text field.
+    var selectedText: String {
+        guard let tv = textView else { return "" }
+        return (tv.string as NSString).substring(with: tv.selectedRange())
+    }
+
+    /// Replaces the selection (or inserts at the caret) with `text` linked to
+    /// `urlString`, keeping the surrounding formatting.
+    func insertLink(_ urlString: String, text: String) {
         guard let tv = textView, let ts = tv.textStorage,
               let url = URL(string: urlString) else { return }
         let range = tv.selectedRange()
-        guard range.length > 0 else { return }
-        ts.addAttribute(.link, value: url, range: range)
+        var linked = range.length > 0 ? ts.attributes(at: range.location, effectiveRange: nil) : tv.typingAttributes
+        linked[.link] = url
+        guard tv.shouldChangeText(in: range, replacementString: text) else { return }
+        ts.replaceCharacters(in: range, with: NSAttributedString(string: text, attributes: linked))
+        tv.didChangeText()
+        tv.setSelectedRange(NSRange(location: range.location + (text as NSString).length, length: 0))
+        // So what's typed next isn't pulled into the anchor.
+        tv.typingAttributes[.link] = nil
+        refreshContentHeight()
     }
 
     // MARK: Mentions

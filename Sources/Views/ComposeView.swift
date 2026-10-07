@@ -24,6 +24,7 @@ struct ComposeView: View {
     @State private var showImporter = false
     @State private var showLinkPrompt = false
     @State private var linkURL = ""
+    @State private var linkText = ""
     @State private var fontFamily = RichTextController.defaultFamily
     @State private var fontSize: CGFloat = RichTextController.defaultSize
     /// Snapshot of the fields at the last successful draft save, so the 10-second
@@ -547,7 +548,7 @@ struct ComposeView: View {
             Button { rich.pasteMatchingStyle() } label: { Image(systemName: "doc.on.clipboard") }
                 .keyboardShortcut("v", modifiers: [.command, .option, .shift])
                 .help("Paste and match style (⌥⇧⌘V)")
-            Button { showLinkPrompt = true } label: { Image(systemName: "link") }.help("Insert link")
+            Button { openLinkPrompt() } label: { Image(systemName: "link") }.help("Insert link")
             Divider().frame(height: 16)
             Button { rich.alignLeft() } label: { Image(systemName: "text.alignleft") }.help("Align left")
             Button { rich.alignRight() } label: { Image(systemName: "text.alignright") }.help("Align right")
@@ -598,7 +599,7 @@ struct ComposeView: View {
             Button { htmlEditor.pasteMatchingStyle() } label: { Image(systemName: "doc.on.clipboard") }
                 .keyboardShortcut("v", modifiers: [.command, .option, .shift])
                 .help("Paste and match style (⌥⇧⌘V)")
-            Button { showLinkPrompt = true } label: { Image(systemName: "link") }.help("Insert link")
+            Button { openLinkPrompt() } label: { Image(systemName: "link") }.help("Insert link")
             Divider().frame(height: 16)
             Button { htmlEditor.alignLeft() } label: { Image(systemName: "text.alignleft") }.help("Align left")
             Button { htmlEditor.alignRight() } label: { Image(systemName: "text.alignright") }.help("Align right")
@@ -780,21 +781,31 @@ struct ComposeView: View {
         return (html, images)
     }
 
+    /// Opens the link prompt with its text pre-filled from the body's selection.
+    private func openLinkPrompt() {
+        Task {
+            linkText = request.kind == .edit ? await htmlEditor.selectedText() : rich.selectedText
+            showLinkPrompt = true
+        }
+    }
+
     private var linkPrompt: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Insert link").font(.headline)
-            Text("Select text in the body first, then enter a URL.")
-                .font(.caption).foregroundStyle(.secondary)
+            TextField("Text to display (optional)", text: $linkText)
+                .textFieldStyle(.roundedBorder)
             TextField("https://…", text: $linkURL)
                 .textFieldStyle(.roundedBorder)
             HStack {
                 Spacer()
-                Button("Cancel") { showLinkPrompt = false; linkURL = "" }
+                Button("Cancel") { showLinkPrompt = false; linkURL = ""; linkText = "" }
                 Button("Add") {
-                    if request.kind == .edit { htmlEditor.applyLink(linkURL) }
-                    else { rich.applyLink(linkURL) }
+                    let text = linkText.isEmpty ? linkURL : linkText
+                    if request.kind == .edit { htmlEditor.insertLink(linkURL, text: text) }
+                    else { rich.insertLink(linkURL, text: text) }
                     showLinkPrompt = false
                     linkURL = ""
+                    linkText = ""
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(linkURL.isEmpty)
