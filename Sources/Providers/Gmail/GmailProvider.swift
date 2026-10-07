@@ -612,18 +612,40 @@ final class GmailProvider: MailProvider {
         if markUnread { labels.append("UNREAD") }
         // The inline JSON insert is capped around 5 MB; larger messages (big
         // attachments) go through the resumable/multipart upload endpoint instead.
+        let id: String
         if raw.count > 4_000_000 {
-            return try await uploadImport(raw: raw, labelIds: labels)
+            id = try await uploadImport(raw: raw, labelIds: labels)
+        } else {
+            struct Body: Encodable { var raw: String; var labelIds: [String] }
+            let body = try JSONEncoder().encode(Body(raw: Self.base64url(raw), labelIds: labels))
+            let data = try await request(
+                "messages",
+                query: [URLQueryItem(name: "internalDateSource", value: "dateHeader")],
+                method: "POST", jsonBody: body
+            )
+            struct Inserted: Decodable { var id: String }
+            id = try JSONDecoder().decode(Inserted.self, from: data).id
         }
-        struct Body: Encodable { var raw: String; var labelIds: [String] }
-        let body = try JSONEncoder().encode(Body(raw: Self.base64url(raw), labelIds: labels))
-        let data = try await request(
-            "messages",
-            query: [URLQueryItem(name: "internalDateSource", value: "dateHeader")],
-            method: "POST", jsonBody: body
-        )
-        struct Inserted: Decodable { var id: String }
-        return try JSONDecoder().decode(Inserted.self, from: data).id
+        try await placeImported(id: id, inFolder: toFolderId)
+        return id
+    }
+
+    /// Gmail merges an imported message into an existing copy with the same
+    /// `Message-ID` (e.g. the original was delivered to both accounts), and that
+    /// copy may be archived, trashed, or in Spam — so the insert "succeeds" but
+    /// nothing shows up in the target folder. Reads the copy back and puts it
+    /// there. Throws if Gmail kept no copy, so the caller never deletes the source.
+    private func placeImported(id: String, inFolder folderId: String) async throws {
+        struct Labels: Decodable { var labelIds: [String]? }
+        let data = try await request("messages/\(id)", query: [URLQueryItem(name: "format", value: "minimal")])
+        let labels = try JSONDecoder().decode(Labels.self, from: data).labelIds ?? []
+        if labels.contains("TRASH"), folderId != "TRASH" {
+            _ = try await request("messages/\(id)/untrash", method: "POST")
+        }
+        let remove = labels.contains("SPAM") && folderId != "SPAM" ? ["SPAM"] : []
+        if !labels.contains(folderId) || !remove.isEmpty {
+            try await batchModify(ids: [id], add: [folderId], remove: remove)
+        }
     }
 
     /// Inserts a large message through the media-upload endpoint (a different host
