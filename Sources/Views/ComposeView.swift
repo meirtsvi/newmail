@@ -548,6 +548,8 @@ struct ComposeView: View {
             Button { rich.pasteMatchingStyle() } label: { Image(systemName: "doc.on.clipboard") }
                 .keyboardShortcut("v", modifiers: [.command, .option, .shift])
                 .help("Paste and match style (⌥⇧⌘V)")
+            Button { rich.pastePlainText() } label: { Image(systemName: "doc.plaintext") }
+                .help("Paste as plain text")
             Button { openLinkPrompt() } label: { Image(systemName: "link") }.help("Insert link")
             Divider().frame(height: 16)
             Button { rich.alignLeft() } label: { Image(systemName: "text.alignleft") }.help("Align left")

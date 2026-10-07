@@ -425,6 +425,23 @@ final class RichTextController: ObservableObject {
     /// styling into the message.
     func pasteMatchingStyle() { textView?.pasteAsPlainText(nil) }
 
+    /// Pastes the clipboard's bare text in the default body font and color: no
+    /// links, lists, alignment or styling from either the source or the caret.
+    func pastePlainText() {
+        guard let tv = textView, let ts = tv.textStorage,
+              let text = NSPasteboard.general.string(forType: .string) else { return }
+        let plain = NSAttributedString(string: text, attributes: [
+            .font: Self.defaultFont,
+            .foregroundColor: NSColor.textColor,
+        ])
+        let range = tv.selectedRange()
+        guard tv.shouldChangeText(in: range, replacementString: text) else { return }
+        ts.replaceCharacters(in: range, with: plain)
+        tv.didChangeText()
+        tv.setSelectedRange(NSRange(location: range.location + plain.length, length: 0))
+        refreshContentHeight()
+    }
+
     /// The selected text, used to pre-fill the link prompt's text field.
     var selectedText: String {
         guard let tv = textView else { return "" }
