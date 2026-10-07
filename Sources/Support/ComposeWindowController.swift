@@ -21,7 +21,7 @@ final class ComposeWindowController: NSObject, NSWindowDelegate {
         if request.fromAccountId == nil { request.fromAccountId = vm.currentAccountId }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 560),
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false
         )
@@ -50,7 +50,7 @@ final class ComposeWindowController: NSObject, NSWindowDelegate {
         let fitHeight = hosting.view.fittingSize.height
         let titleBarHeight = window.frame.height - window.contentLayoutRect.height
         let contentHeight = max(fitHeight + titleBarHeight, 380)
-        window.setContentSize(NSSize(width: 640, height: contentHeight))
+        window.setContentSize(NSSize(width: 760, height: contentHeight))
         window.center()
 
         let controller = NSWindowController(window: window)

@@ -113,7 +113,7 @@ struct ComposeView: View {
                 updateQuotedHeight(base: quotedBase(geo))
             }
         }
-        .frame(minWidth: 480, idealWidth: 640, minHeight: 380,
+        .frame(minWidth: 480, idealWidth: 760, minHeight: 380,
                idealHeight: request.quotedHTML.isEmpty ? 560 : 680)
         .background(ZoomShortcuts(zoom: Binding(
             get: { Double(request.kind == .edit ? htmlEditor.zoom : rich.zoom) },
