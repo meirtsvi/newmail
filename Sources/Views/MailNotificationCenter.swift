@@ -196,6 +196,8 @@ private struct MailNotificationCard: View {
     /// so a quick pass over the card doesn't pop it open. Cancelled if the pointer leaves.
     @State private var expandTask: Task<Void, Never>?
     @FocusState private var replyFocused: Bool
+    /// Flag state shown on the card's Flag button; starts from the message's own.
+    @State private var flagged: Bool?
 
     private var header: MessageHeader { note.header }
 
@@ -279,6 +281,15 @@ private struct MailNotificationCard: View {
                         .fixedSize()
                         .controlSize(.small)
                     }
+                    let isFlagged = flagged ?? header.isFlagged
+                    Button {
+                        Task {
+                            if await vm.setNotificationFlagged(note, !isFlagged) { flagged = !isFlagged }
+                        }
+                    } label: {
+                        Label(isFlagged ? "Unflag" : "Flag", systemImage: isFlagged ? "flag.fill" : "flag")
+                    }
+                    .controlSize(.small)
                     Button(role: .destructive) {
                         Task { await vm.deleteNotification(note) }
                     } label: {

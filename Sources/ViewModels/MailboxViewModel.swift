@@ -2952,6 +2952,22 @@ final class MailboxViewModel {
         }
     }
 
+    /// Flags or unflags a popup's message via the account that received it. The
+    /// card stays open. Returns whether the server accepted the change.
+    func setNotificationFlagged(_ note: MailNotification, _ flagged: Bool) async -> Bool {
+        guard let session = sessions.first(where: { $0.account.id == note.accountId }) else { return false }
+        do {
+            try await session.provider.setFlagged(ids: [note.id], flagged: flagged)
+            // Reflect the change in the list if that account's folder is on screen.
+            if currentAccountId == note.accountId { mutateLocal(ids: [note.id]) { $0.isFlagged = flagged } }
+            store.updateFlag(ids: [note.id], flagged: flagged)
+            return true
+        } catch {
+            errorMessage = "Couldn’t flag message: \(error.localizedDescription)"
+            return false
+        }
+    }
+
     func dismissNotification(_ id: String) {
         cancelAutoDismiss(id)
         notifications.removeAll { $0.id == id }
