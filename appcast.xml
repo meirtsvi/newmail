@@ -10,6 +10,14 @@
     <description>newmail updates</description>
     <language>en</language>
     <item>
+      <title>Version 0.9.7</title>
+      <pubDate>Fri, 09 Oct 2026 11:24:44 +0000</pubDate>
+      <sparkle:version>0.9.7</sparkle:version>
+      <sparkle:shortVersionString>0.9.7</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/meirtsvi/newmail/releases/download/v0.9.7/newmail-0.9.7.dmg" sparkle:edSignature="QubUJNWej/VxV/8KjqcpZxTBRpWV69WF8iPxAc7h/0AygiWPvRH/wZWm6xkOh+QnjKbLV8O2LRI6Z5F3YsQoAQ==" length="8467180" type="application/octet-stream"/>
+    </item>
+    <item>
       <title>Version 0.9.6</title>
       <pubDate>Fri, 02 Oct 2026 20:26:29 +0000</pubDate>
       <sparkle:version>0.9.6</sparkle:version>
