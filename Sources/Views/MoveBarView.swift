@@ -53,11 +53,13 @@ struct FolderDropTarget: ViewModifier {
 struct MoveBarView: View {
     @Environment(MailboxViewModel.self) private var vm
     @State private var showConfig = false
+    @State private var showSweepRules = false
 
     var body: some View {
         HStack(spacing: 8) {
             let folders = vm.quickMoveForCurrentAccount
-            if folders.isEmpty {
+            let rules = vm.sweepRulesForCurrentAccount
+            if folders.isEmpty && rules.isEmpty {
                 Button { showConfig = true } label: {
                     Label("Choose quick-move folders…", systemImage: "plus")
                         .font(.caption)
@@ -69,6 +71,9 @@ struct MoveBarView: View {
                 // it takes, so no chip is ever clipped off the right edge — the bar
                 // grows taller instead.
                 ChipGridLayout(spacing: 6, rowSpacing: 4) {
+                    ForEach(rules) { rule in
+                        sweepChip(rule)
+                    }
                     ForEach(folders, id: \.compositeId) { folder in
                         chip(folder)
                     }
@@ -77,17 +82,59 @@ struct MoveBarView: View {
                 // wraps to it instead of running past the right edge.
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            Button { showConfig = true } label: {
+            Menu {
+                Button("Quick-Move Folders…") { showConfig = true }
+                Button("Sweep Rules…") { showSweepRules = true }
+            } label: {
                 Image(systemName: "gearshape")
             }
-            .buttonStyle(.borderless)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
             .layoutPriority(1)
-            .help("Configure quick-move folders")
+            .help("Configure quick-move folders and sweep rules")
+            // The editor opens either from this menu or from a message's
+            // "Add Sender to Sweep Rule ▸ New Rule…" (which sets the rule id).
+            .sheet(isPresented: Binding(
+                get: { showSweepRules || vm.sweepEditorRuleId != nil },
+                set: { if !$0 { showSweepRules = false; vm.sweepEditorRuleId = nil } }
+            )) { SweepRulesView(initialRuleId: vm.sweepEditorRuleId) }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(.bar)
         .sheet(isPresented: $showConfig) { QuickMoveConfigView() }
+    }
+
+    /// A rule chip: moves every loaded message from the rule's senders at once.
+    private func sweepChip(_ rule: SweepRule) -> some View {
+        let count = vm.sweepMatches(rule).count
+        let folderName = vm.sweepTarget(rule)?.name ?? ""
+        return Button {
+            Task { await vm.runSweep(rule) }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "wand.and.stars")
+                Text(Self.wrappedName(rule.name.isEmpty ? folderName : rule.name))
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(2)
+                Spacer(minLength: 0)
+                if count > 0 {
+                    Text("\(count)").monospacedDigit().foregroundStyle(.secondary)
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(Color(nsColor: .textColor))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .background(Color(nsColor: .textBackgroundColor), in: Self.chipShape)
+            .overlay(Self.chipShape.stroke(Color.accentColor.opacity(0.7)))
+        }
+        .buttonStyle(.plain)
+        .disabled(count == 0)
+        .opacity(count == 0 ? 0.6 : 1)
+        .help("Move \(count) message\(count == 1 ? "" : "s") from \(rule.addresses.joined(separator: ", ")) to \(folderName)")
     }
 
     private func chip(_ folder: MailFolder) -> some View {

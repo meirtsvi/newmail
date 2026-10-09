@@ -150,6 +150,26 @@ struct MailFolder: Identifiable, Hashable {
     var compositeId: String { "\(accountId)\u{1}\(id)" }
 }
 
+/// A move-bar chip that moves every loaded message from `addresses` into the
+/// folder `targetFolderId` (a `MailFolder.compositeId`, so it also fixes the account).
+struct SweepRule: Codable, Identifiable, Hashable {
+    var id: UUID
+    var name: String
+    var addresses: [String]
+    var targetFolderId: String
+
+    private static let key = "sweepRules"
+
+    static func load() -> [SweepRule] {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return [] }
+        return (try? JSONDecoder().decode([SweepRule].self, from: data)) ?? []
+    }
+
+    static func save(_ rules: [SweepRule]) {
+        UserDefaults.standard.set(try? JSONEncoder().encode(rules), forKey: key)
+    }
+}
+
 // MARK: - Messages
 
 struct MessageHeader: Identifiable, Hashable {

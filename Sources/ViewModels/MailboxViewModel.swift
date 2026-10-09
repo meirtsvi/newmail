@@ -42,6 +42,12 @@ final class MailboxViewModel {
     var quickMoveFolders: [MailFolder] = []
     private var quickMoveOrder: [String] = UserDefaults.standard.stringArray(forKey: "quickMoveFolderIds") ?? []
 
+    // Sweep rules: move-bar chips that move every loaded message from a set of
+    // senders into a chosen folder in one click.
+    var sweepRules: [SweepRule] = SweepRule.load()
+    /// Rule the sweep editor sheet should open on; set from the message context menu.
+    var sweepEditorRuleId: UUID?
+
     // One MSAL app backs all Microsoft accounts; created lazily on first use.
     private var _graphAuth: GraphAuth?
     // Per-account snooze timers.
@@ -975,6 +981,70 @@ final class MailboxViewModel {
         let all = sessions.flatMap { foldersByAccount[$0.account.id] ?? [] }
         let byId = Dictionary(all.map { ($0.compositeId, $0) }, uniquingKeysWith: { first, _ in first })
         quickMoveFolders = quickMoveOrder.compactMap { byId[$0] }
+    }
+
+    // MARK: - Sweep rules
+
+    /// The folder a rule moves into, if it still exists.
+    func sweepTarget(_ rule: SweepRule) -> MailFolder? {
+        foldersByAccount.values.lazy.flatMap { $0 }.first { $0.compositeId == rule.targetFolderId }
+    }
+
+    /// Rules whose target folder is in the current account (moves stay within a provider).
+    var sweepRulesForCurrentAccount: [SweepRule] {
+        sweepRules.filter { sweepTarget($0)?.accountId == currentAccountId }
+    }
+
+    /// Ids of the loaded messages sent from one of the rule's addresses.
+    func sweepMatches(_ rule: SweepRule) -> [String] {
+        let addresses = Set(rule.addresses.map { $0.lowercased() })
+        return messages.filter { addresses.contains($0.from.email.lowercased()) }.map(\.id)
+    }
+
+    /// Moves every loaded message matching the rule into its target folder.
+    func runSweep(_ rule: SweepRule) async {
+        guard let folder = sweepTarget(rule),
+              folder.compositeId != currentFolder?.compositeId else { return }
+        let ids = sweepMatches(rule)
+        guard !ids.isEmpty else {
+            statusMessage = "No messages from \(rule.name) here."
+            return
+        }
+        errorMessage = nil
+        await moveDropped(ids, to: folder)
+        if errorMessage == nil {
+            statusMessage = "Moved \(ids.count) to \(folder.name)."
+        }
+    }
+
+    @discardableResult
+    func addSweepRule(name: String, addresses: [String] = []) -> SweepRule {
+        let rule = SweepRule(id: UUID(), name: name, addresses: addresses, targetFolderId: "")
+        sweepRules.append(rule)
+        SweepRule.save(sweepRules)
+        return rule
+    }
+
+    func updateSweepRule(_ rule: SweepRule) {
+        guard let i = sweepRules.firstIndex(where: { $0.id == rule.id }) else { return }
+        sweepRules[i] = rule
+        SweepRule.save(sweepRules)
+    }
+
+    func deleteSweepRule(_ id: UUID) {
+        sweepRules = sweepRules.filter { $0.id != id }
+        SweepRule.save(sweepRules)
+    }
+
+    /// Adds the sender to the rule, or takes it out if already there.
+    func toggleSweepSender(_ email: String, in ruleId: UUID) {
+        guard var rule = sweepRules.first(where: { $0.id == ruleId }) else { return }
+        if let i = rule.addresses.firstIndex(where: { $0.caseInsensitiveCompare(email) == .orderedSame }) {
+            rule.addresses.remove(at: i)
+        } else {
+            rule.addresses.append(email)
+        }
+        updateSweepRule(rule)
     }
 
     /// Whether `folder` can receive a drop of the current selection: not the folder

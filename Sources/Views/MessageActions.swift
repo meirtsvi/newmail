@@ -87,6 +87,28 @@ struct MoveMenu: View {
     }
 }
 
+/// Toggles a sender in each sweep rule (ticked when already in it), or starts a
+/// new rule for it and opens the editor so the target folder can be chosen.
+struct SweepRuleMenu: View {
+    let vm: MailboxViewModel
+    let sender: MailAddress
+
+    var body: some View {
+        ForEach(vm.sweepRules) { rule in
+            let included = rule.addresses.contains { $0.caseInsensitiveCompare(sender.email) == .orderedSame }
+            Toggle(rule.name.isEmpty ? "Untitled" : rule.name, isOn: Binding(
+                get: { included },
+                set: { _ in vm.toggleSweepSender(sender.email, in: rule.id) }
+            ))
+        }
+        if !vm.sweepRules.isEmpty { Divider() }
+        Button("New Rule…") {
+            let rule = vm.addSweepRule(name: sender.display, addresses: [sender.email])
+            vm.sweepEditorRuleId = rule.id
+        }
+    }
+}
+
 /// The filter terms that have actually picked a folder, most recent first.
 /// Only terms that ended in a move are kept — a search the user abandoned says
 /// nothing about where they file mail.
@@ -436,6 +458,10 @@ struct MessageContextMenu: View {
                 case .remove(let title):
                     Button(title) { Task { await vm.removeNewsletterRule(forMessage: ids[0]) } }
                 }
+            }
+            if ids.count == 1, let sender = vm.messages.first(where: { $0.id == ids[0] })?.from,
+               !sender.email.isEmpty {
+                Menu("Add Sender to Sweep Rule") { SweepRuleMenu(vm: vm, sender: sender) }
             }
             Menu("Move to") { MoveMenu(vm: vm, ids: ids) }
             Menu("Snooze") { SnoozeMenu(vm: vm, ids: ids) }
