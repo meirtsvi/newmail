@@ -683,7 +683,7 @@ final class DigestService {
                         "entities": ["type": "ARRAY", "items": ["type": "STRING"]],
                         "significance": ["type": "STRING"],
                     ],
-                    "required": ["title_he", "summary_he", "segments"],
+                    "required": ["title_he", "summary_he", "segments", "links"],
                 ] as [String: Any]],
                 "noise": ["type": "ARRAY", "items": ["type": "INTEGER"]],
             ],
@@ -712,6 +712,13 @@ final class DigestService {
             return LinkRef(id: link.id, title: title.isEmpty ? "קישור" : title)
         }
     }
+
+    /// Gemini's JSON mode ends a string at an unescaped ASCII `"`, so a title
+    /// written as מנכ"ל came back cut to "מנכ". Hebrew has its own marks for this.
+    private static let hebrewQuotesClause = """
+        Never use the ASCII double-quote character (") inside any Hebrew text. Write Hebrew \
+        abbreviations with gershayim (״), e.g. מנכ״ל, דו״ח, ארה״ב, and quote words with “ and ”.
+        """
 
     private static var extractionSystem: String {
         """
@@ -746,7 +753,10 @@ final class DigestService {
         that marker's number, exactly as written — never invent an id, and never write a URL. \
         `title` is the FULL sentence the marker appeared in, in its original language, trimmed, \
         with the marker itself removed — not the two or three words of anchor text, and never \
-        "Read more" or "Click here". Omit markers in noise text (unsubscribe, sponsor, nav).
+        "Read more" or "Click here". Omit markers in noise text (unsubscribe, sponsor, nav). \
+        An item whose text contains any [L:n] marker MUST list it — an empty links array is \
+        only correct when the item's text has no marker at all.
+        - \(hebrewQuotesClause)
         - entities: 1–5 canonical names, IN ENGLISH, of the models, products, companies, or \
         papers this story is about — for example ["GPT-5.5", "OpenAI"]. These identify the \
         story across newsletters, so use the common name, not a description.
@@ -800,7 +810,7 @@ final class DigestService {
         canonical names IN ENGLISH of the models, products, companies, or papers the article \
         is about}. Keep product, company, and model names, code, CLI commands, and URLs in \
         English; do not transliterate. ALWAYS keep these exact words in English, never \
-        translate them: \(TranslationService.skipWordsClause).
+        translate them: \(TranslationService.skipWordsClause). \(hebrewQuotesClause)
         """
     }
 
@@ -1046,6 +1056,7 @@ final class DigestService {
         Keep product, company, and model names, code, CLI commands, and URLs in English. \
         ALWAYS keep these exact words in English, never translate them: \
         \(TranslationService.skipWordsClause).
+        \(hebrewQuotesClause)
         Respond as JSON: {"title_he": ..., "summary_he": ...}.
         """
     }
@@ -1263,6 +1274,7 @@ final class DigestService {
         - Keep product, company, and model names, code, CLI commands, and URLs in English. \
         ALWAYS keep these exact words in English, never translate them: \
         \(TranslationService.skipWordsClause).
+        - \(hebrewQuotesClause)
         """
     }
 
@@ -1405,6 +1417,7 @@ final class DigestService {
         - Do NOT rewrite, summarize, merge, split, or drop any item — you are only assigning \
         headings. The items' own text is already final.
         - Keep product, company, and model names in English in the headings.
+        - \(hebrewQuotesClause)
         """
     }
 
