@@ -157,6 +157,18 @@ struct HTMLView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.defaultWebpagePreferences.allowsContentJavaScript = false
+        // Show each link's URL as a hover tooltip via the `title` attribute, keeping
+        // any title the sender set above it. Runs in the app's content world, which
+        // `allowsContentJavaScript = false` doesn't block.
+        let linkTitles = """
+        document.querySelectorAll('a[href]').forEach(function(a) {
+          var t = a.getAttribute('title');
+          a.title = t && t !== a.href ? t + '\\n' + a.href : a.href;
+        });
+        """
+        config.userContentController.addUserScript(WKUserScript(
+            source: linkTitles, injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true, in: .defaultClient))
         let webView = MessageWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
