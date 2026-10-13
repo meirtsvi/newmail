@@ -195,6 +195,16 @@ struct MessageHeader: Identifiable, Hashable {
     /// Whether this message is a generated newsletter digest. Mirrored from
     /// `labelIds` the same way `isNewsletter` is.
     var isDigest: Bool = false
+    /// The RFC 5322 `Message-ID` (angle brackets stripped). Keys this message's
+    /// replied/forwarded mark; empty when the provider didn't supply it.
+    var rfcMessageId: String = ""
+    /// The `Message-ID` this message answers (`In-Reply-To`, else the last
+    /// `References` entry). Only Gmail fills it; a sent message with one marks
+    /// that original as replied or forwarded.
+    var inReplyTo: String = ""
+    /// Replied/forwarded state the server stores on the message itself (Graph's
+    /// last-verb property). nil when the provider didn't report it.
+    var serverReplyState: ReplyState?
 
     /// "To" column text and sort key: recipient display names, comma-separated
     /// (the Sent folder shows this column in place of From).
@@ -209,6 +219,24 @@ struct MessageHeader: Identifiable, Hashable {
         if isCalendarEvent { return 3 }
         if isDigest { return 2 }
         return isNewsletter ? 1 : 0
+    }
+}
+
+/// Whether the user has replied to or forwarded a message, shown as a tag in the
+/// message list. Raw values are persisted.
+enum ReplyState: Int {
+    case replied = 1
+    case forwarded = 2
+
+    /// Reply or forward, judged from the subject of the message that was sent.
+    init(sentSubject subject: String) {
+        let s = subject.lowercased()
+        self = s.hasPrefix("fwd:") || s.hasPrefix("fw:") ? .forwarded : .replied
+    }
+
+    /// Strips whitespace and angle brackets from a `Message-ID` header value.
+    static func normalizeId(_ raw: String) -> String {
+        raw.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "<>")))
     }
 }
 

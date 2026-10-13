@@ -25,8 +25,25 @@ final class MailboxViewModel {
     let store = MailStore()
     let contactStore = ContactStore()
     let accountStore = AccountStore()
+    /// Online/offline state; offline, actions are saved and sent later.
+    let network = NetworkMonitor()
+    /// Mail actions waiting to reach the server (see `PendingActionQueue`).
+    @ObservationIgnored let pendingQueue = PendingActionQueue()
+    @ObservationIgnored private let syncEngine: SyncEngine
+    @ObservationIgnored private let bodyPrefetcher: BodyPrefetcher
+    /// Number of queued actions, shown in the status bar.
+    var pendingActionCount = 0
+    /// First-download progress ("Downloading mail for offline use… 1,200
+    /// messages"); nil when idle.
+    var syncProgress: String?
+    /// False until the first sync pass of this launch completes: mail that
+    /// arrived while the app was closed doesn't raise popups.
+    @ObservationIgnored private var hasCompletedFirstSync = false
+    @ObservationIgnored private var isFlushing = false
+    @ObservationIgnored private var contactsSyncedAt: Date = .distantPast
+    @ObservationIgnored private var contactsNoticeShown = false
     private var refreshTimer: Timer?
-    /// Polls every account's inbox for new mail to raise top-right popups.
+    /// Runs the incremental sync (new mail, changes from other devices).
     private var inboxPollTimer: Timer?
     /// Background pass that flags the current folder's calendar invites.
     private var calendarScanTask: Task<Void, Never>?
@@ -88,8 +105,6 @@ final class MailboxViewModel {
     @ObservationIgnored private var lastAlertSound: Date?
     // The currently playing alert; file-based NSSounds stop if released mid-play.
     @ObservationIgnored private var alertSound: NSSound?
-    // Inbox message ids already seen per account, so only genuinely new mail pops.
-    private var seenInboxIds: [String: Set<String>] = [:]
     @ObservationIgnored private var notificationPanel: NotificationPanelController?
     // Per-popup auto-dismiss timers (cancelled if the user starts a reply).
     @ObservationIgnored private var dismissTasks: [String: Task<Void, Never>] = [:]
@@ -122,7 +137,12 @@ final class MailboxViewModel {
 
     /// Whether the list can pull an older page on demand — for both the folder
     /// listing and search results (`loadMore()` pages whichever is on screen).
-    var canLoadMore: Bool { nextPageToken != nil }
+    var canLoadMore: Bool { nextPageToken != nil && network.isOnline }
+
+    /// `nextPageToken` value meaning "older mail comes from listing the folder
+    /// from the top": set when a synced folder is shown from the cache, which
+    /// already holds the newest pages.
+    private static let listFromTopToken = ""
 
     // Preview
     var currentBody: MessageBody?
@@ -189,8 +209,26 @@ final class MailboxViewModel {
     var digestProgress: String?
     var digestResult: String?
     @ObservationIgnored private var newsletterLabelIds: [String: String] = [:]
+    /// Replied/forwarded marks, keyed by `CachedReplyMark.key`; the message list
+    /// shows a tag for each header whose `Message-ID` has one.
+    private(set) var replyMarks: [String: ReplyState] = [:]
 
-    init() {}
+    init() {
+        syncEngine = SyncEngine(store: store)
+        bodyPrefetcher = BodyPrefetcher(store: store)
+        pendingActionCount = pendingQueue.count
+        syncEngine.pendingIds = { [weak self] in self?.pendingQueue.pendingMessageIds(accountId: $0) ?? [] }
+        syncEngine.onUpdate = { [weak self] in self?.applySyncUpdate($0) }
+        syncEngine.onProgress = { [weak self] in self?.syncProgress = $0 }
+        bodyPrefetcher.onBody = { [weak self] in self?.noteFetchedBody($0) }
+        replyMarks = store.replyMarks()
+        store.onReplyMarks = { [weak self] in self?.replyMarks.merge($0) { _, new in new } }
+        network.onReconnect = { [weak self] in
+            Task { await self?.reconnected() }
+        }
+    }
+
+    var isOnline: Bool { network.isOnline }
 
     /// Provider for the currently selected account.
     var currentProvider: MailProvider? {
@@ -295,7 +333,7 @@ final class MailboxViewModel {
     /// and flags the column for the whole list (cancelled/superseded on folder change).
     private func scanCalendarEvents(for folder: MailFolder) {
         calendarScanTask?.cancel()
-        guard let provider = currentProvider else { return }
+        guard let provider = currentProvider, network.isOnline else { return }
         let folderId = folder.id
         let accountId = folder.accountId
         calendarScanTask = Task { [weak self] in
@@ -366,7 +404,10 @@ final class MailboxViewModel {
                         self.updateAccountEmail(session.account.id, email: session.provider.accountEmail)
                         try await self.loadFolders(for: session)
                         self.startSnooze(for: session)
+                        Task { await self.scanSentReplies(for: session) }
                     } catch {
+                        // Offline, the status bar already says so and cached mail shows.
+                        guard self.network.isOnline else { return }
                         self.statusMessage = "Couldn’t connect \(self.connectLabel(session)): \(error.localizedDescription)"
                     }
                 }
@@ -392,7 +433,9 @@ final class MailboxViewModel {
                 rootView: NotificationStackView().environment(self)
             )
         }
-        await pollInboxes()
+        // The first sync of an account downloads 90 days of mail, which can take
+        // minutes; it runs in the background rather than holding up the rest.
+        Task { await runSync() }
         await startCalendarReminders()
         reloadFeedSubscriptions()
         startFeeds()
@@ -524,6 +567,38 @@ final class MailboxViewModel {
                 await selectFolder(inbox)
             }
         }
+    }
+
+    /// Whether the user replied to or forwarded this message.
+    func replyState(of header: MessageHeader) -> ReplyState? {
+        guard !header.rfcMessageId.isEmpty else { return nil }
+        return replyMarks[CachedReplyMark.key(accountId: header.accountId, rfcMessageId: header.rfcMessageId)]
+    }
+
+    /// Gmail keeps no replied/forwarded state, so marks come from sent mail: the
+    /// 500 most recent sent messages are read once per account, and sync picks up
+    /// new ones after that (see `MailStore.recordReplyMarks(from:)`).
+    private func scanSentReplies(for session: Session) async {
+        guard session.account.providerKind == .gmail else { return }
+        let key = "sentReplyScan.\(session.account.id)"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        var token: String?
+        for _ in 0..<5 {
+            guard let page = try? await session.provider.listMessages(folderId: "SENT", query: nil, pageToken: token)
+            else { return }
+            store.recordReplyMarks(from: page.headers)
+            token = page.nextPageToken
+            if token == nil { break }
+        }
+        UserDefaults.standard.set(true, forKey: key)
+    }
+
+    /// Marks the original of a sent reply or forward, locally and on the server.
+    private func recordReplySent(_ reply: ReplyContext) {
+        guard !reply.rfcMessageId.isEmpty else { return }
+        store.recordReplyMarks([(reply.accountId, reply.rfcMessageId, reply.state, Date())])
+        guard let provider = sessions.first(where: { $0.account.id == reply.accountId })?.provider else { return }
+        Task { try? await provider.markReplyState(id: reply.messageId, state: reply.state) }
     }
 
     private func startSnooze(for session: Session) {
@@ -751,7 +826,7 @@ final class MailboxViewModel {
         applyCategoryFlags()
         // The first inbox poll ran before the label ids were known; catch up on
         // newsletter mail that arrived while the app was closed.
-        enqueueNewsletterTranslationBacklog()
+        await enqueueNewsletterTranslationBacklog()
     }
 
     /// Labels freshly-synced headers that match a newsletter rule but don't carry
@@ -867,6 +942,7 @@ final class MailboxViewModel {
         }
         snoozeServices[accountId]?.stop()
         snoozeServices[accountId] = nil
+        syncEngine.forget(accountId: accountId)
         sessions.removeAll { $0.account.id == accountId }
         foldersByAccount[accountId] = nil
         accountStore.remove(id: accountId)
@@ -897,7 +973,7 @@ final class MailboxViewModel {
         // Poll inboxes more often than the folder refresh so new-mail popups feel timely.
         inboxPollTimer?.invalidate()
         inboxPollTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            Task { await self?.pollInboxes() }
+            Task { await self?.runSync() }
         }
         // `scheduledTimer` installs in the default run-loop mode only, which is
         // suspended while AppKit tracks an open menu, a live resize or a scroll
@@ -1117,9 +1193,24 @@ final class MailboxViewModel {
         activeSearchQuery = nil
         searchResultSummary = nil
         nlProposedQuery = nil
-        messages = store.cachedHeaders(folderId: folder.id, accountId: folder.accountId)
+        nextPageToken = nil
+        // A synced folder's recent mail is all in the cache and kept current by
+        // the sync, so it's shown from there without a server listing; older
+        // mail loads on demand ("Load older messages").
+        let synced = isSynced(folder)
+        messages = store.cachedHeaders(folderId: folder.id, accountId: folder.accountId,
+                                       limit: synced ? 3000 : 300)
         hydrateCalendarIds()
+        guard network.isOnline else { return }
         scanCalendarEvents(for: folder)
+        if synced {
+            nextPageToken = Self.listFromTopToken
+            // Pick up this folder's latest changes now (Outlook syncs the open
+            // folder every pass; this makes switching feel current).
+            Task { await runSync() }
+            await refreshCurrentFolderCount(trustLocalList: false)
+            return
+        }
         // Fetch the folder's count right away, concurrently with the header load —
         // the load can take several paged round-trips, and the sidebar's unread
         // badge shouldn't wait behind it.
@@ -1212,7 +1303,7 @@ final class MailboxViewModel {
     private static let initialLoadTarget = 500
 
     func loadMessages() async {
-        guard let folder = currentFolder, let provider = currentProvider else { return }
+        guard let folder = currentFolder, let provider = currentProvider, network.isOnline else { return }
         isLoading = true
         defer { isLoading = false }
         do {
@@ -1271,6 +1362,7 @@ final class MailboxViewModel {
             if messages.isEmpty {
                 messages = store.cachedHeaders(folderId: folder.id, accountId: folder.accountId)
             }
+            guard network.isOnline, !NetworkMonitor.isConnectivityError(error) else { return }
             statusMessage = "Couldn’t load \(folder.name): \(error.localizedDescription)"
         }
     }
@@ -1292,6 +1384,19 @@ final class MailboxViewModel {
                 case .allFolders:
                     result = try await provider.search(query: query, pageToken: token)
                 }
+            } else if token == Self.listFromTopToken {
+                // A synced folder shown from the cache: list from the top, skipping
+                // pages the cache already holds, until older mail turns up.
+                var known = Set(messages.map(\.id))
+                var listing = try await provider.listMessages(folderId: folder.id, query: nil, pageToken: nil)
+                var pages = 1
+                while listing.headers.allSatisfy({ known.contains($0.id) }),
+                      let next = listing.nextPageToken, pages < 30 {
+                    known.formUnion(listing.headers.map(\.id))
+                    listing = try await provider.listMessages(folderId: folder.id, query: nil, pageToken: next)
+                    pages += 1
+                }
+                result = (listing.headers.filter { !known.contains($0.id) }, listing.nextPageToken)
             } else {
                 result = try await provider.listMessages(folderId: folder.id, query: nil, pageToken: token)
             }
@@ -1299,7 +1404,8 @@ final class MailboxViewModel {
             // from — a different folder, or search mode entered/exited meanwhile
             // (a folder page must not land in search results, nor vice versa).
             guard currentFolder?.id == folder.id, isSearching == wasSearching else { return }
-            let page = withoutTombstoned(result.headers, folderId: folder.id)
+            let shown = Set(messages.map(\.id))
+            let page = withoutTombstoned(result.headers, folderId: folder.id).filter { !shown.contains($0.id) }
             messages.append(contentsOf: page)
             nextPageToken = result.nextPageToken
             store.saveHeaders(page)
@@ -1317,7 +1423,10 @@ final class MailboxViewModel {
         //  - while searching, leave the result list alone — re-running the search
         //    would replace it (briefly flashing folder mail) and reset scroll;
         //  - otherwise merge fresh mail in place so scroll position is preserved.
-        if !isSearching {
+        guard network.isOnline else { return }
+        // A synced folder is kept current by `runSync`; only unsynced ones
+        // (still downloading) need the listing refresh.
+        if !isSearching, let folder = currentFolder, !isSynced(folder) {
             await refreshMessages()
         }
         if let session = sessions.first(where: { $0.account.id == currentAccountId }) {
@@ -1349,6 +1458,7 @@ final class MailboxViewModel {
             applyNewsletterRules(to: fresh, accountId: folder.accountId)
             statusMessage = nil
         } catch {
+            guard network.isOnline, !NetworkMonitor.isConnectivityError(error) else { return }
             statusMessage = "Couldn’t refresh \(folder.name): \(error.localizedDescription)"
         }
     }
@@ -1486,6 +1596,7 @@ final class MailboxViewModel {
     func openMessage(_ id: String) async {
         guard let provider = currentProvider else { return }
         scheduleMarkRead(id)
+        backfillMessageId(id, provider: provider)
         // Paint the cached body instantly so the preview is immediate; only show the
         // loading spinner when there's nothing cached to display yet.
         if let cached = store.cachedBody(id: id) {
@@ -1493,6 +1604,15 @@ final class MailboxViewModel {
             isLoadingBody = false
         } else {
             isLoadingBody = true
+        }
+        // Offline (or a draft saved on this Mac): the cached copy is all there is.
+        guard network.isOnline, !id.hasPrefix(MailStore.localDraftPrefix) else {
+            isLoadingBody = false
+            if currentBody?.headerId != id {
+                currentBody = nil
+                statusMessage = "This message hasn’t been downloaded yet. It will open when you’re back online."
+            }
+            return
         }
         defer { isLoadingBody = false }
         do {
@@ -1508,6 +1628,22 @@ final class MailboxViewModel {
             if currentBody == nil, !Self.isCancellation(error) { errorMessage = error.localizedDescription }
         }
         prefetchAdjacentBodies(around: id)
+    }
+
+    /// Rows cached before Message-IDs were stored have none, so their
+    /// replied/forwarded tag can't be looked up: fetch the header once when such
+    /// a message is opened. Only the Message-ID and marks are taken from it, so
+    /// local changes still owed to the server aren't overwritten.
+    private func backfillMessageId(_ id: String, provider: MailProvider) {
+        guard network.isOnline, !id.hasPrefix(MailStore.localDraftPrefix),
+              messages.first(where: { $0.id == id })?.rfcMessageId.isEmpty == true else { return }
+        Task {
+            guard let fresh = try? await provider.fetchHeaders(ids: [id]).first,
+                  !fresh.rfcMessageId.isEmpty else { return }
+            store.setRfcMessageId(fresh.rfcMessageId, forId: id)
+            store.recordReplyMarks(from: [fresh])
+            mutateLocal(ids: [id]) { $0.rfcMessageId = fresh.rfcMessageId }
+        }
     }
 
     /// Network/task cancellations are benign — a superseded body fetch (e.g. the
@@ -1526,7 +1662,7 @@ final class MailboxViewModel {
     /// Warms the on-disk body cache for the messages immediately above and below
     /// `id` so navigating to a neighbour (arrow keys or click) is instant.
     private func prefetchAdjacentBodies(around id: String) {
-        guard let provider = currentProvider else { return }
+        guard let provider = currentProvider, network.isOnline else { return }
         let ids = displayedMessages.map(\.id)
         guard let idx = ids.firstIndex(of: id) else { return }
         let neighbours = [idx - 1, idx + 1].filter(ids.indices.contains).map { ids[$0] }
@@ -1599,7 +1735,8 @@ final class MailboxViewModel {
     private func openDraftForEditing(_ header: MessageHeader, provider: MailProvider) {
         Task {
             let body = await ensureBody(for: header)
-            let draftId = try? await provider.draftId(forMessageId: header.id)
+            let draftId = header.id.hasPrefix(MailStore.localDraftPrefix)
+                ? nil : try? await provider.draftId(forMessageId: header.id)
             // Images embedded in the body are re-adopted inline by the editor, so
             // drop image-typed attachments here to avoid sending them twice; non-image
             // files (PDFs, etc.) are still carried as attachments.
@@ -1615,7 +1752,8 @@ final class MailboxViewModel {
             )
             request.cc = (body?.cc ?? []).map(\.email).filter { !$0.isEmpty }.joined(separator: ", ")
             request.bodyHTML = body?.html ?? ""
-            request.draftId = draftId
+            // A draft saved on this Mac is identified by its local key.
+            request.draftId = header.id.hasPrefix(MailStore.localDraftPrefix) ? header.id : draftId
             request.draftMessageId = header.id
             composeWindows.open(request, vm: self)
         }
@@ -1723,6 +1861,9 @@ final class MailboxViewModel {
             gmailWriteScope = (try? await GoogleAuth.shared.hasWriteScope) ?? false
             gmailFullScope = (try? await GoogleAuth.shared.hasFullMailScope) ?? false
             hasWriteScope = currentAccountCanWrite
+            // New scopes may include contacts: sync them on the next pass.
+            contactsSyncedAt = .distantPast
+            contactsNoticeShown = false
             if gmailWriteScope {
                 authMessage = "Signed in successfully. Write access (delete, move, snooze, send) is now enabled."
             } else {
@@ -1846,9 +1987,31 @@ final class MailboxViewModel {
         // A newer query supersedes any search still in flight, so its late response
         // can't overwrite these results.
         searchTask?.cancel()
-        let task = Task { await performSearch(text) }
+        let task = Task {
+            let query = await autoRewrite(text)
+            guard !Task.isCancelled else { return }
+            await performSearch(query)
+        }
         searchTask = task
         await task.value
+    }
+
+    /// Smart search on Enter: natural-language text is rewritten by Gemini into
+    /// the provider's search operators, and the rewrite replaces the text in the
+    /// field so it's visible (and editable) what ran. Text that already uses
+    /// operators, a single word, no Gemini key, or being offline skips the
+    /// rewrite, as does a failed rewrite — then the text runs as typed.
+    private func autoRewrite(_ text: String) async -> String {
+        let words = text.split(whereSeparator: \.isWhitespace)
+        let hasOperator = words.contains { $0.contains(":") }
+        guard GeminiConfig.isConfigured, network.isOnline, words.count >= 2, !hasOperator else { return text }
+        isRewritingSearch = true
+        defer { isRewritingSearch = false }
+        let kind = sessions.first { $0.account.id == currentAccountId }?.account.providerKind ?? .gmail
+        guard let rewritten = try? await NaturalSearchService.rewrite(text, dialect: .init(kind)),
+              !Task.isCancelled else { return text }
+        searchText = rewritten
+        return rewritten
     }
 
     /// Rewrites the free text in the search field into the current provider's
@@ -1888,9 +2051,23 @@ final class MailboxViewModel {
         // and only a selection *change* re-fires the sidebar's onChange — so this
         // is what lets clicking the current folder exit search mode.
         sidebarSelection = nil
-        isSearchInProgress = true
         searchResultSummary = nil
         let scope = searchScope
+        // Mail saved on this Mac answers first (and is all there is offline);
+        // the server's results are added when they arrive.
+        let local = store.localSearch(text, accountId: currentAccountId ?? "",
+                                      folderId: scope == .currentFolder ? (currentFolder?.id ?? "INBOX") : nil)
+        messages = local
+        nextPageToken = nil
+        activeSearchQuery = text
+        hydrateCalendarIds()
+        guard network.isOnline else {
+            searchResultSummary = local.isEmpty
+                ? "No results in mail saved on this Mac"
+                : "Found \(local.count) in mail saved on this Mac (offline)"
+            return
+        }
+        isSearchInProgress = true
         defer { isSearchInProgress = false }
         do {
             let result: (headers: [MessageHeader], nextPageToken: String?)
@@ -1904,22 +2081,26 @@ final class MailboxViewModel {
             // A newer search (or a clear) started while this one was suspended at the
             // network await — discard this stale response rather than flash it on screen.
             guard !Task.isCancelled else { return }
-            messages = result.headers
+            let serverIds = Set(result.headers.map(\.id))
+            messages = result.headers + local.filter { !serverIds.contains($0.id) }
             nextPageToken = result.nextPageToken
-            activeSearchQuery = text
             store.saveHeaders(result.headers)
-            applyCategoryFlags()
-            if result.headers.isEmpty {
+            hydrateCalendarIds()
+            if messages.isEmpty {
                 searchResultSummary = "No results"
             } else {
                 let more = result.nextPageToken != nil ? "+" : ""
-                searchResultSummary = "Found \(result.headers.count)\(more) result(s)"
+                searchResultSummary = "Found \(messages.count)\(more) result(s)"
             }
         } catch {
             // A superseded search cancels the in-flight request, which surfaces as
             // either Task cancellation or a URLError(.cancelled); neither is a real
             // failure, so don't flash a "Something went wrong" alert.
             guard !Task.isCancelled, !Self.isCancellation(error) else { return }
+            if NetworkMonitor.isConnectivityError(error) {
+                searchResultSummary = "Found \(local.count) in mail saved on this Mac (server unreachable)"
+                return
+            }
             errorMessage = error.localizedDescription
         }
     }
@@ -1927,26 +2108,53 @@ final class MailboxViewModel {
     // MARK: - Actions
 
     func markRead(_ ids: [String], read: Bool) async {
-        let set = Set(ids)
-        let changed = messages.filter { set.contains($0.id) && $0.isRead != read }.count
-        await withProvider { try await $0.setRead(ids: ids, read: read) }
-        mutateLocal(ids: ids) { $0.isRead = read }
-        store.updateRead(ids: ids, read: read)
-        adjustCurrentFolderCounts(total: 0, unread: read ? -changed : changed)
-    }
-
-    func toggleFlag(_ ids: [String]) async {
-        let shouldFlag = !(selectedAllFlagged(ids))
-        await withProvider { try await $0.setFlagged(ids: ids, flagged: shouldFlag) }
-        mutateLocal(ids: ids) { $0.isFlagged = shouldFlag }
-        store.updateFlag(ids: ids, flagged: shouldFlag)
-    }
-
-    func deleteMessages(_ ids: [String]) async {
-        guard let provider = currentProvider else {
+        let ids = ids.filter { !$0.hasPrefix(MailStore.localDraftPrefix) }
+        guard !ids.isEmpty else { return }
+        guard let provider = currentProvider, let accountId = currentAccountId else {
             errorMessage = "No account is selected."
             return
         }
+        let set = Set(ids)
+        let changed = messages.filter { set.contains($0.id) && $0.isRead != read }.count
+        mutateLocal(ids: ids) { $0.isRead = read }
+        store.updateRead(ids: ids, read: read)
+        adjustCurrentFolderCounts(total: 0, unread: read ? -changed : changed)
+        do {
+            try await submit(PendingActionQueue.make(.markRead, accountId: accountId, ids: ids, flag: read),
+                             provider: provider)
+        } catch {
+            report(error)
+        }
+    }
+
+    func toggleFlag(_ ids: [String]) async {
+        let ids = ids.filter { !$0.hasPrefix(MailStore.localDraftPrefix) }
+        guard !ids.isEmpty else { return }
+        guard let provider = currentProvider, let accountId = currentAccountId else {
+            errorMessage = "No account is selected."
+            return
+        }
+        let shouldFlag = !(selectedAllFlagged(ids))
+        mutateLocal(ids: ids) { $0.isFlagged = shouldFlag }
+        store.updateFlag(ids: ids, flagged: shouldFlag)
+        do {
+            try await submit(PendingActionQueue.make(.flag, accountId: accountId, ids: ids, flag: shouldFlag),
+                             provider: provider)
+        } catch {
+            report(error)
+        }
+    }
+
+    func deleteMessages(_ ids: [String]) async {
+        guard let provider = currentProvider, let accountId = currentAccountId else {
+            errorMessage = "No account is selected."
+            return
+        }
+        // Drafts saved on this Mac never reached the server: just drop them.
+        let localDrafts = ids.filter { $0.hasPrefix(MailStore.localDraftPrefix) }
+        for key in localDrafts { _ = takeLocalDraft(key) }
+        let ids = ids.filter { !$0.hasPrefix(MailStore.localDraftPrefix) }
+        guard !ids.isEmpty else { return }
         // Remove from the list right away so deletion feels instant, then trash on
         // the server in the background. `removeLocal` runs synchronously before the
         // first `await`, so the UI updates immediately; if the trash fails we put
@@ -1959,7 +2167,7 @@ final class MailboxViewModel {
         // resurrect the rows; a failure below removes the tombstones again.
         addTombstones(ids: ids, folderId: sourceFolderId)
         do {
-            try await provider.trash(ids: ids)
+            try await submit(PendingActionQueue.make(.trash, accountId: accountId, ids: ids), provider: provider)
             // Remember this delete so ⌘Z can put it back where it came from.
             if let sourceFolderId, let sourceAccountId {
                 lastDeleted = (removed, sourceFolderId, sourceAccountId)
@@ -1980,8 +2188,22 @@ final class MailboxViewModel {
         guard let batch = lastDeleted,
               let session = sessions.first(where: { $0.account.id == batch.accountId }) else { return }
         lastDeleted = nil
+        let ids = batch.headers.map(\.id)
+        // Deleted offline and not sent yet: just forget the queued delete.
+        if pendingQueue.cancelTrash(ids: ids, accountId: batch.accountId) {
+            pendingActionCount = pendingQueue.count
+            clearTombstones(ids: ids, folderId: batch.folderId)
+            if currentAccountId == batch.accountId, currentFolder?.id == batch.folderId {
+                restoreLocal(batch.headers)
+            } else {
+                store.saveHeaders(batch.headers)
+            }
+            return
+        }
         do {
-            try await session.provider.untrash(ids: batch.headers.map(\.id), toFolderId: batch.folderId)
+            try await submit(PendingActionQueue.make(.untrash, accountId: batch.accountId, ids: ids,
+                                                     folderId: batch.folderId),
+                             provider: session.provider)
             // Forget the delete's tombstones or the next refresh would hide the
             // restored messages again for the tombstones' lifetime — and grace the
             // restored ids so pruneStale doesn't drop them while the server listing
@@ -2159,18 +2381,39 @@ final class MailboxViewModel {
     }
 
     func archiveMessages(_ ids: [String]) async {
-        await withProvider { try await $0.archive(ids: ids) }
-        if currentFolder?.kind == .inbox {
-            removeLocal(ids: ids)
-            addTombstones(ids: ids, folderId: currentFolder?.id)
-        }
+        let target = currentFolders.first { $0.kind == .archive }?.id
+        await moveLocally(ids, kind: .archive, toFolderId: target, removeFromList: currentFolder?.kind == .inbox)
     }
 
     /// Junk-folder action: removes the messages from Spam and files them in the Inbox.
     func markNotSpam(_ ids: [String]) async {
-        await withProvider { try await $0.markNotSpam(ids: ids) }
-        removeLocal(ids: ids)
-        addTombstones(ids: ids, folderId: currentFolder?.id)
+        let inbox = currentFolders.first { $0.kind == .inbox }?.id
+        await moveLocally(ids, kind: .notSpam, toFolderId: inbox, removeFromList: true)
+    }
+
+    /// Shared path of archive / not-spam: updates the list and cache at once,
+    /// then sends (or queues) the action; a refusal puts the rows back.
+    private func moveLocally(_ ids: [String], kind: PendingActionQueue.Kind, toFolderId: String?,
+                             removeFromList: Bool) async {
+        guard let provider = currentProvider, let accountId = currentAccountId else {
+            errorMessage = "No account is selected."
+            return
+        }
+        let moved = messages.filter { ids.contains($0.id) }
+        let fromFolderId = currentFolder?.id
+        if removeFromList {
+            removeLocal(ids: ids, keepingCacheAs: provider.syncsPerFolder ? nil : toFolderId, from: fromFolderId)
+            addTombstones(ids: ids, folderId: fromFolderId)
+        }
+        do {
+            try await submit(PendingActionQueue.make(kind, accountId: accountId, ids: ids), provider: provider)
+        } catch {
+            if removeFromList {
+                clearTombstones(ids: ids, folderId: fromFolderId)
+                restoreLocal(moved)
+            }
+            report(error)
+        }
     }
 
     func move(_ ids: [String], to folder: MailFolder) async {
@@ -2187,10 +2430,12 @@ final class MailboxViewModel {
         // messages back and report the error.
         let removed = messages.filter { ids.contains($0.id) }
         let fromFolderId = currentFolder?.id
-        removeLocal(ids: ids)
+        removeLocal(ids: ids, keepingCacheAs: provider.syncsPerFolder ? nil : folder.id, from: fromFolderId)
         addTombstones(ids: ids, folderId: fromFolderId)
         do {
-            try await provider.move(ids: ids, toFolderId: folder.id, fromFolderId: fromFolderId)
+            try await submit(PendingActionQueue.make(.move, accountId: folder.accountId, ids: ids,
+                                                     folderId: folder.id, fromFolderId: fromFolderId ?? ""),
+                             provider: provider)
         } catch {
             clearTombstones(ids: ids, folderId: fromFolderId)
             restoreLocal(removed)
@@ -2205,6 +2450,10 @@ final class MailboxViewModel {
     /// so a failure never loses mail; on the first failure we stop and leave
     /// already-moved messages moved.
     func moveAcrossAccounts(_ ids: [String], to folder: MailFolder) async {
+        guard network.isOnline else {
+            statusMessage = "Moving mail to another account needs a connection."
+            return
+        }
         guard let source = sessions.first(where: { $0.account.id == currentAccountId }),
               let dest = sessions.first(where: { $0.account.id == folder.accountId }) else { return }
         // Importing into Gmail needs write scope; prompt for it rather than 403-ing.
@@ -2251,6 +2500,10 @@ final class MailboxViewModel {
     }
 
     func snoozeMessages(_ ids: [String], until wake: Date) async {
+        guard network.isOnline else {
+            statusMessage = "Snoozing needs a connection."
+            return
+        }
         guard let accountId = currentAccountId, let service = snoozeServices[accountId] else { return }
         let headers = messages.filter { ids.contains($0.id) }
         let from = currentFolder?.id ?? "INBOX"
@@ -2286,6 +2539,8 @@ final class MailboxViewModel {
     }
 
     func sync() async {
+        statusMessage = nil
+        await runSync()
         await reloadCurrentFolder()
     }
 
@@ -2667,6 +2922,7 @@ final class MailboxViewModel {
             quotedHTML: quoted
         )
         request.cc = cc.joined(separator: ", ")
+        request.replyContext = ReplyContext(header: header, state: .replied)
         composeWindows.open(request, vm: self)
     }
 
@@ -2677,12 +2933,14 @@ final class MailboxViewModel {
         Date: \(header.date.mailFullString)<br>
         Subject: \(escape(header.subject))</p>
         """
-        composeWindows.open(ComposeRequest(
+        let request = ComposeRequest(
             kind: .forward,
             subject: header.subject.hasPrefix("Fwd:") ? header.subject : "Fwd: \(header.subject)",
             quotedHTML: forwardHeader + quotedBody(body, fallbackSnippet: header.snippet),
             attachments: body?.attachments ?? []
-        ), vm: self)
+        )
+        request.replyContext = ReplyContext(header: header, state: .forwarded)
+        composeWindows.open(request, vm: self)
     }
 
     /// Returns the message body for quoting/forwarding: the open preview, then the
@@ -2691,7 +2949,7 @@ final class MailboxViewModel {
     private func ensureBody(for header: MessageHeader) async -> MessageBody? {
         if let body = bodyFor(header) { return body }
         if let cached = store.cachedBody(id: header.id) { return cached }
-        guard let provider = currentProvider else { return nil }
+        guard let provider = currentProvider, network.isOnline else { return nil }
         if let body = try? await provider.fetchBody(id: header.id) {
             store.saveBody(body)
             noteFetchedBody(body)
@@ -2737,7 +2995,7 @@ final class MailboxViewModel {
         return nil
     }
 
-    func sendComposed(from accountId: String?, to: String, cc: String, subject: String, html: String, attachments: [URL], inlineImages: [ComposeInlineImage] = [], draftId: String? = nil, draftMessageId: String? = nil, flagged: Bool = false) async {
+    func sendComposed(from accountId: String?, to: String, cc: String, subject: String, html: String, attachments: [URL], inlineImages: [ComposeInlineImage] = [], draftId: String? = nil, draftMessageId: String? = nil, flagged: Bool = false, reply: ReplyContext? = nil) async {
         // Remember who we send to so they autocomplete next time.
         contactStore.record(MailAddress.parseList(to) + MailAddress.parseList(cc))
         guard let session = composeSession(accountId) else {
@@ -2749,16 +3007,97 @@ final class MailboxViewModel {
         defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
         let mime = MIMEBuilder.buildHTML(
             from: session.account.email, to: to, cc: cc, subject: subject, html: html,
-            attachments: attachments, inlineImages: inlineImages
+            attachments: attachments, inlineImages: inlineImages, inReplyTo: reply?.rfcMessageId
         )
-        do {
-            try await provider.send(rawMIME: mime, flagged: flagged)
-        } catch {
-            errorMessage = error.localizedDescription
+        // Offline there's no outbox: the message is kept as a draft to send by hand.
+        guard network.isOnline else {
+            saveOfflineDraft(mime: mime, session: session, to: to, cc: cc, subject: subject,
+                             html: html, draftId: draftId)
+            statusMessage = "You’re offline. The message was saved to Drafts. Send it when you’re back online."
             return
         }
+        do {
+            // The thread id only means something in the original's own mailbox.
+            let threadId = reply?.accountId == session.account.id ? reply?.threadId : nil
+            try await provider.send(rawMIME: mime, flagged: flagged, threadId: threadId)
+        } catch {
+            if NetworkMonitor.isConnectivityError(error) {
+                saveOfflineDraft(mime: mime, session: session, to: to, cc: cc, subject: subject,
+                                 html: html, draftId: draftId)
+                statusMessage = "Couldn’t reach the server. The message was saved to Drafts. Send it when you’re back online."
+            } else {
+                errorMessage = error.localizedDescription
+            }
+            return
+        }
+        if let reply { recordReplySent(reply) }
         // Only drop the saved draft once the send actually succeeds.
         await discardSentDraft(id: draftId, messageId: draftMessageId, session: session)
+    }
+
+    // MARK: Local (offline) drafts
+
+    /// Keeps a message as a draft on this Mac: queued to be saved to the
+    /// server's Drafts when the connection is back, and shown in Drafts until
+    /// then. `draftId` is the compose window's current draft — a server draft
+    /// (which the local one will replace) or an earlier local draft (updated in
+    /// place). Returns the local draft's key.
+    @discardableResult
+    private func saveOfflineDraft(mime: Data, session: Session, to: String, cc: String, subject: String,
+                                  html: String, draftId: String?) -> String {
+        let accountId = session.account.id
+        let key: String
+        if let draftId, draftId.hasPrefix(MailStore.localDraftPrefix) {
+            key = draftId
+        } else {
+            key = MailStore.localDraftPrefix + UUID().uuidString
+        }
+        if let pending = pendingQueue.localDraft(key: key) {
+            pending.raw = mime
+            pendingQueue.add(pending)   // saves the change
+        } else {
+            let replaces = (draftId?.hasPrefix(MailStore.localDraftPrefix) == false) ? (draftId ?? "") : ""
+            pendingQueue.add(PendingAction(accountId: accountId, kindRaw: PendingActionQueue.Kind.saveDraft.rawValue,
+                                           raw: mime, localKey: key, replacesDraftId: replaces))
+        }
+        pendingActionCount = pendingQueue.count
+        if let draftsId = foldersByAccount[accountId]?.first(where: { $0.kind == .drafts })?.id {
+            store.saveLocalDraft(id: key, accountId: accountId, draftsFolderId: draftsId,
+                                 to: MailAddress.parseList(to), cc: MailAddress.parseList(cc),
+                                 subject: subject, html: html)
+            if currentAccountId == accountId, currentFolder?.id == draftsId, !isSearching {
+                messages.removeAll { $0.id == key }
+                messages.append(contentsOf: store.cachedHeaders(folderId: draftsId, accountId: accountId)
+                    .filter { $0.id == key })
+            }
+        }
+        return key
+    }
+
+    /// Ends a local draft: drops its queued save and its Drafts row, and returns
+    /// the server draft it stands for — the one it was replacing, or the one it
+    /// became after reaching the server — so the caller can update or delete that.
+    private func takeLocalDraft(_ key: String) -> (draftId: String?, messageId: String?) {
+        removeLocalDraftRow(key)
+        if let synced = pendingQueue.syncedDrafts[key] { return (synced.id, synced.messageId) }
+        if let pending = pendingQueue.localDraft(key: key) {
+            let replaces = pending.replacesDraftId
+            pendingQueue.remove(pending)
+            pendingActionCount = pendingQueue.count
+            return (replaces.isEmpty ? nil : replaces, nil)
+        }
+        return (nil, nil)
+    }
+
+    /// Removes a local draft's row from the cache and the list (it reached the
+    /// server, which the next sync shows, or it was discarded).
+    private func removeLocalDraftRow(_ key: String) {
+        store.deleteMessages(ids: [key])
+        if messages.contains(where: { $0.id == key }) {
+            messages.removeAll { $0.id == key }
+            selection.remove(key)
+            if currentBody?.headerId == key { currentBody = nil }
+        }
     }
 
     /// The account a compose window sends from: the one picked in its From menu,
@@ -2772,6 +3111,12 @@ final class MailboxViewModel {
     /// From account changes, so the draft doesn't stay behind on the old account.
     func discardDraft(id: String?, messageId: String?, accountId: String?) async {
         guard let session = composeSession(accountId) else { return }
+        var id = id
+        var messageId = messageId
+        if let key = id ?? messageId, key.hasPrefix(MailStore.localDraftPrefix) {
+            (id, messageId) = takeLocalDraft(key)
+            guard id != nil, network.isOnline else { return }
+        }
         var draftId = id
         if draftId == nil, let messageId, !messageId.isEmpty {
             draftId = try? await session.provider.draftId(forMessageId: messageId)
@@ -2786,6 +3131,11 @@ final class MailboxViewModel {
     /// worth a retry, and worth saying so if it still doesn't take.
     private func discardSentDraft(id: String?, messageId: String?, session: Session) async {
         let provider = session.provider
+        var id = id
+        var messageId = messageId
+        if let key = id ?? messageId, key.hasPrefix(MailStore.localDraftPrefix) {
+            (id, messageId) = takeLocalDraft(key)
+        }
         // A draft opened from the Drafts list whose draft id couldn't be resolved
         // back then (Gmail's ids differ from message ids) would otherwise survive
         // the send; resolve it from its message id now.
@@ -2837,7 +3187,26 @@ final class MailboxViewModel {
             from: session.account.email, to: to, cc: cc, subject: subject, html: html,
             attachments: attachments, inlineImages: inlineImages
         )
-        guard let saved = try? await provider.saveDraft(id: draftId, rawMIME: mime) else { return nil }
+        // Offline: keep the draft on this Mac (sent to the server later).
+        guard network.isOnline else {
+            let key = saveOfflineDraft(mime: mime, session: session, to: to, cc: cc, subject: subject,
+                                       html: html, draftId: draftId)
+            return SavedDraft(id: key, messageId: key)
+        }
+        // Back online with a local draft: continue the server draft it stands for.
+        var draftId = draftId
+        if let key = draftId, key.hasPrefix(MailStore.localDraftPrefix) {
+            draftId = takeLocalDraft(key).draftId
+        }
+        let saved: SavedDraft
+        do {
+            saved = try await provider.saveDraft(id: draftId, rawMIME: mime)
+        } catch {
+            guard NetworkMonitor.isConnectivityError(error) else { return nil }
+            let key = saveOfflineDraft(mime: mime, session: session, to: to, cc: cc, subject: subject,
+                                       html: html, draftId: draftId)
+            return SavedDraft(id: key, messageId: key)
+        }
         // A brand-new draft (no prior id) changes the Drafts folder count; an
         // in-place update of an existing draft leaves the count unchanged.
         if draftId == nil { await refreshDraftsCount(accountId: session.account.id) }
@@ -2846,49 +3215,189 @@ final class MailboxViewModel {
 
     // MARK: - New-mail notifications
 
-    /// Polls every account's inbox for newly-arrived unread mail and raises a
-    /// top-right popup for each. The first poll per account only records a
-    /// baseline (so the existing inbox doesn't pop on launch).
-    private func pollInboxes() async {
-        var mergedIntoCurrentFolder = false
-        for session in sessions {
-            guard let inbox = foldersByAccount[session.account.id]?.first(where: { $0.kind == .inbox }) else { continue }
-            guard let result = try? await session.provider.listMessages(folderId: inbox.id, query: nil, pageToken: nil) else { continue }
-            let headers = withoutTombstoned(result.headers, folderId: inbox.id)
-            // This poll already fetches every account's inbox; persist it so each
-            // account's cached inbox stays fresh (every 30s) even while off screen.
-            // Then switching to that account paints a near-current list instead of a
-            // stale one, so there's little to reconcile against the server.
-            store.saveHeaders(headers)
-            applyNewsletterRules(to: headers, accountId: session.account.id)
-            // When that inbox is the folder on screen, fold the poll's headers into
-            // the visible list too, so a new message appears in the list at the same
-            // moment its popup does instead of waiting for the next manual refresh.
-            if currentAccountId == session.account.id, currentFolder?.id == inbox.id, !isSearching {
-                mergeFresh(headers)
-                hydrateCalendarIds()
-                mergedIntoCurrentFolder = true
-            } else {
-                // An inbox that isn't on screen gets no other count refresh until
-                // its account is opened, so update its badge here.
-                await refreshFolderCount(inbox.id, accountId: session.account.id)
-            }
-            let currentIds = Set(headers.map(\.id))
-            guard let seen = seenInboxIds[session.account.id] else {
-                seenInboxIds[session.account.id] = currentIds
-                continue
-            }
-            let fresh = headers.filter { !seen.contains($0.id) && !$0.isRead }
-            seenInboxIds[session.account.id] = seen.union(currentIds)
-            // Present oldest-first so the newest message ends up on top of the stack.
-            for header in fresh.reversed() {
-                presentNotification(header, accountId: session.account.id)
+    // MARK: Sync
+
+    /// One sync pass: sends queued actions, pulls changes from every account
+    /// (see `SyncEngine`), refreshes contacts when due, then lets the body
+    /// prefetcher download what's new for offline reading. Run every 30 s,
+    /// on manual Sync, and when the connection comes back.
+    func runSync() async {
+        guard network.isOnline else { return }
+        await flushPending()
+        // A pass is still running (a first download can take minutes).
+        guard !syncEngine.running else { return }
+        let accounts = sessions.compactMap { session -> SyncEngine.Account? in
+            guard let folders = foldersByAccount[session.account.id], !folders.isEmpty else { return nil }
+            return SyncEngine.Account(id: session.account.id, provider: session.provider, folders: folders)
+        }
+        touchedAccounts = []
+        let error = await syncEngine.sync(accounts, priorityFolderIds: Set([currentFolder?.id].compactMap { $0 }))
+        if let error, network.isOnline {
+            statusMessage = "Couldn’t sync: \(error.localizedDescription)"
+        }
+        hasCompletedFirstSync = true
+        // Unread badges of inboxes that just changed but aren't on screen.
+        for accountId in touchedAccounts where accountId != currentAccountId {
+            if let inbox = foldersByAccount[accountId]?.first(where: { $0.kind == .inbox }) {
+                await refreshFolderCount(inbox.id, accountId: accountId)
             }
         }
-        if mergedIntoCurrentFolder { await refreshCurrentFolderCount() }
-        // Pick up newsletter mail whose headers just landed in the cache (new
-        // arrivals with popups off, RSS items imported mid-session, …).
-        enqueueNewsletterTranslationBacklog()
+        if let accountId = currentAccountId, touchedAccounts.contains(accountId) {
+            await refreshCurrentFolderCount()
+        }
+        // Pick up newsletter mail whose headers just landed in the cache.
+        await enqueueNewsletterTranslationBacklog()
+        await syncContactsIfDue()
+        let providers = Dictionary(sessions.map { ($0.account.id, $0.provider) }, uniquingKeysWith: { a, _ in a })
+        Task { [weak self] in
+            await self?.bodyPrefetcher.run(providers: providers) { [weak self] in self?.network.isOnline ?? false }
+        }
+    }
+
+    /// Accounts with changes in the current sync pass (their badges need a refresh).
+    @ObservationIgnored private var touchedAccounts: Set<String> = []
+
+    /// Reflects one batch of synced changes on screen: the open folder's list,
+    /// newsletter labels, the address book, and new-mail popups.
+    private func applySyncUpdate(_ update: SyncEngine.Update) {
+        touchedAccounts.insert(update.accountId)
+        applyNewsletterRules(to: update.upserted, accountId: update.accountId)
+        contactStore.record(update.upserted.filter { update.newIds.contains($0.id) }.map(\.from))
+
+        if currentAccountId == update.accountId, let folder = currentFolder, !isSearching {
+            let shows = { (h: MessageHeader) in
+                h.labelIds.contains(folder.id) && !Self.hiddenInFolder(h, folderId: folder.id)
+            }
+            mergeFresh(withoutTombstoned(update.upserted.filter(shows), folderId: folder.id))
+            var gone = Set(update.upserted.filter { !shows($0) }.map(\.id))
+            if update.folderId == nil || update.folderId == folder.id { gone.formUnion(update.removedIds) }
+            if messages.contains(where: { gone.contains($0.id) }) {
+                messages.removeAll { gone.contains($0.id) }
+                selection.subtract(gone)
+                if let body = currentBody, gone.contains(body.headerId) { currentBody = nil }
+            }
+            hydrateCalendarIds()
+        }
+
+        // Popups for mail that just arrived (not on a first download, nor for
+        // the backlog that came in while the app was closed).
+        guard hasCompletedFirstSync, !update.isInitial,
+              let inbox = foldersByAccount[update.accountId]?.first(where: { $0.kind == .inbox }) else { return }
+        let dayAgo = Date().addingTimeInterval(-86_400)
+        let arrived = update.upserted
+            .filter { update.newIds.contains($0.id) && $0.labelIds.contains(inbox.id) && !$0.isRead && $0.date > dayAgo }
+            .sorted { $0.date < $1.date }
+        for header in arrived { presentNotification(header, accountId: update.accountId) }
+    }
+
+    /// Whether the cache view of `folderId` hides this message (Trash/Spam mail
+    /// shows only in Trash/Spam; mirrors `MailStore.cachedHeaders`).
+    private static func hiddenInFolder(_ header: MessageHeader, folderId: String) -> Bool {
+        guard folderId != "TRASH", folderId != "SPAM" else { return false }
+        return header.labelIds.contains("TRASH") || header.labelIds.contains("SPAM")
+    }
+
+    /// Whether the open folder's recent mail is fully in the cache, so it can
+    /// be shown without listing it from the server.
+    private func isSynced(_ folder: MailFolder) -> Bool {
+        guard let provider = sessions.first(where: { $0.account.id == folder.accountId })?.provider else { return false }
+        return syncEngine.isSynced(folder, provider: provider)
+    }
+
+    /// Sends queued actions. An action the server refuses is dropped; its
+    /// messages are re-read so the cache shows the server's state again.
+    private func flushPending() async {
+        guard !isFlushing, pendingQueue.count > 0 else { return }
+        isFlushing = true
+        defer {
+            isFlushing = false
+            pendingActionCount = pendingQueue.count
+        }
+        var refused: [(accountId: String, ids: [String], error: Error)] = []
+        await pendingQueue.flush(
+            provider: { [weak self] id in self?.sessions.first { $0.account.id == id }?.provider },
+            onRefused: { action, error in
+                refused.append((action.accountId, PendingActionQueue.ids(action), error))
+            },
+            onDraftSynced: { [weak self] key, _ in self?.removeLocalDraftRow(key) }
+        )
+        for item in refused {
+            statusMessage = "A change made offline didn’t go through: \(item.error.localizedDescription)"
+            guard let provider = sessions.first(where: { $0.account.id == item.accountId })?.provider,
+                  let headers = try? await provider.fetchHeaders(ids: item.ids) else { continue }
+            store.saveHeaders(headers)
+            let found = Set(headers.map(\.id))
+            store.deleteMessages(ids: item.ids.filter { !found.contains($0) })
+            if currentAccountId == item.accountId, !isSearching, let folder = currentFolder {
+                mergeFresh(headers.filter { $0.labelIds.contains(folder.id) })
+            }
+        }
+    }
+
+    /// Sends a mail action now, or saves it for later when offline (or when
+    /// earlier actions for the account are still waiting, to keep the order).
+    /// Throws only when the server refused it or failed for another reason
+    /// while online; the caller rolls back and reports.
+    private func submit(_ action: PendingAction, provider: MailProvider) async throws {
+        if network.isOnline, !pendingQueue.hasPending(accountId: action.accountId) {
+            do {
+                try await PendingActionQueue.run(action, on: provider)
+                return
+            } catch {
+                guard NetworkMonitor.isConnectivityError(error) else { throw error }
+            }
+        }
+        pendingQueue.add(action)
+        pendingActionCount = pendingQueue.count
+        if network.isOnline { Task { await flushPending() } }
+    }
+
+    /// Reports an action's failure, ignoring benign cancellations.
+    private func report(_ error: Error) {
+        guard !Self.isCancellation(error) else { return }
+        errorMessage = error.localizedDescription
+    }
+
+    /// Back online: connects accounts that couldn't connect at launch, then syncs.
+    private func reconnected() async {
+        statusMessage = nil
+        for session in sessions where foldersByAccount[session.account.id]?.isEmpty ?? true
+            || snoozeServices[session.account.id] == nil {
+            do {
+                try await session.provider.loadProfile()
+                updateAccountEmail(session.account.id, email: session.provider.accountEmail)
+                try await loadFolders(for: session)
+                startSnooze(for: session)
+            } catch {
+                statusMessage = "Couldn’t connect \(connectLabel(session)): \(error.localizedDescription)"
+            }
+        }
+        if currentFolder == nil, let first = sessions.first,
+           let inbox = foldersByAccount[first.account.id]?.first(where: { $0.kind == .inbox }) {
+            sidebarSelection = "acct:\(inbox.compositeId)"
+            await selectFolder(inbox)
+        }
+        await runSync()
+    }
+
+    /// Refreshes the address book from every account's contacts, at most every
+    /// six hours (and right after signing in again).
+    private func syncContactsIfDue() async {
+        guard Date().timeIntervalSince(contactsSyncedAt) > 6 * 3600 else { return }
+        contactsSyncedAt = Date()
+        for session in sessions {
+            do {
+                contactStore.saveSynced(try await session.provider.fetchContacts())
+            } catch {
+                guard network.isOnline, !NetworkMonitor.isConnectivityError(error), !contactsNoticeShown else { continue }
+                contactsNoticeShown = true
+                if case MailError.auth(let message) = error {
+                    statusMessage = message
+                } else {
+                    statusMessage = "Couldn’t sync contacts for \(connectLabel(session)): \(error.localizedDescription)"
+                }
+            }
+        }
     }
 
     private func presentNotification(_ header: MessageHeader, accountId: String) {
@@ -2928,10 +3437,10 @@ final class MailboxViewModel {
     /// whose pre-translation was interrupted. Runs at launch and after each
     /// inbox poll; already-translated and already-queued messages are skipped,
     /// so repeat sweeps are cheap.
-    private func enqueueNewsletterTranslationBacklog() {
+    private func enqueueNewsletterTranslationBacklog() async {
         for (accountId, labelId) in newsletterLabelIds {
-            let recent = store.headers(withLabel: labelId, accountId: accountId, since: .distantPast)
-                .suffix(Self.pretranslateBacklogLimit)
+            let recent = await MailStore.newestHeaders(withLabel: labelId, accountId: accountId,
+                                                       limit: Self.pretranslateBacklogLimit)
             enqueuePretranslations(recent.map { MailNotification(header: $0, accountId: accountId) })
         }
     }
@@ -3114,10 +3623,12 @@ final class MailboxViewModel {
         let subject = header.subject.hasPrefix("Re:") ? header.subject : "Re: \(header.subject)"
         let mime = MIMEBuilder.buildHTML(
             from: session.account.email, to: header.from.email, cc: "",
-            subject: subject, html: quickReplyHTML(text: trimmed, replyingTo: header), attachments: []
+            subject: subject, html: quickReplyHTML(text: trimmed, replyingTo: header), attachments: [],
+            inReplyTo: header.rfcMessageId
         )
         do {
-            try await session.provider.send(rawMIME: mime)
+            try await session.provider.send(rawMIME: mime, flagged: false, threadId: header.threadId)
+            recordReplySent(ReplyContext(header: header, state: .replied))
             contactStore.record([header.from])
             dismissNotification(note.id)
         } catch {
@@ -3428,10 +3939,22 @@ final class MailboxViewModel {
         return urls
     }
 
+    /// An attachment's bytes: the copy saved on this Mac when there is one,
+    /// else downloaded (and saved, if small, for next time).
+    private func attachmentData(_ att: MailAttachment) async throws -> Data {
+        if let cached = AttachmentCache.data(for: att) { return cached }
+        guard network.isOnline else {
+            throw MailError.other("You’re offline, and this attachment wasn’t downloaded ahead of time.")
+        }
+        guard let provider = currentProvider else { throw MailError.other("No account is selected.") }
+        let data = try await provider.fetchAttachment(messageId: att.messageId, attachmentId: att.id)
+        if data.count <= AttachmentCache.maxPrefetchBytes { AttachmentCache.store(data, for: att) }
+        return data
+    }
+
     private func downloadToTemp(_ att: MailAttachment) async -> URL? {
-        guard let provider = currentProvider else { return nil }
         do {
-            let data = try await provider.fetchAttachment(messageId: att.messageId, attachmentId: att.id)
+            let data = try await attachmentData(att)
             let dir = FileManager.default.temporaryDirectory.appendingPathComponent("attachments", isDirectory: true)
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let url = dir.appendingPathComponent(att.filename)
@@ -3444,13 +3967,12 @@ final class MailboxViewModel {
     }
 
     private func saveToDownloads(_ atts: [MailAttachment]) async {
-        guard let provider = currentProvider else { return }
         let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         var savedURLs: [URL] = []
         for att in atts {
             do {
-                let data = try await provider.fetchAttachment(messageId: att.messageId, attachmentId: att.id)
+                let data = try await attachmentData(att)
                 let url = Self.uniqueURL(in: downloads, filename: att.filename)
                 try data.write(to: url)
                 savedURLs.append(url)
@@ -3505,14 +4027,6 @@ final class MailboxViewModel {
         return !chosen.isEmpty && chosen.allSatisfy { $0.isFlagged }
     }
 
-    private func withProvider(_ work: @escaping (MailProvider) async throws -> Void) async {
-        guard let provider = currentProvider else {
-            errorMessage = "No account is selected."
-            return
-        }
-        await perform { try await work(provider) }
-    }
-
     private func perform(_ work: @escaping () async throws -> Void) async {
         do {
             try await work()
@@ -3543,6 +4057,25 @@ final class MailboxViewModel {
         store.saveHeaders(toAdd)
         adjustCurrentFolderCounts(total: toAdd.count,
                                   unread: toAdd.filter { !$0.isRead }.count)
+    }
+
+    /// `keepingCacheAs`: instead of dropping the rows from the cache, keep them
+    /// (and their bodies, for offline reading) relabelled from `from` to this
+    /// folder. Used for Gmail moves, whose message ids survive the move; Graph
+    /// mints new ids, so its moved rows are dropped and re-synced.
+    private func removeLocal(ids: [String], keepingCacheAs destination: String?, from source: String?) {
+        guard let destination else {
+            removeLocal(ids: ids)
+            return
+        }
+        let moved = messages.filter { ids.contains($0.id) }.map { header -> MessageHeader in
+            var h = header
+            h.labelIds.removeAll { $0 == source }
+            if !h.labelIds.contains(destination) { h.labelIds.append(destination) }
+            return h
+        }
+        removeLocal(ids: ids)
+        store.saveHeaders(moved)
     }
 
     private func removeLocal(ids: [String]) {
@@ -3632,6 +4165,25 @@ enum ComposeKind {
     }
 }
 
+/// The original of a reply or forward: threads the sent message under it and
+/// marks it replied/forwarded once sent.
+struct ReplyContext {
+    let accountId: String
+    /// Provider id of the original.
+    let messageId: String
+    let rfcMessageId: String
+    let threadId: String
+    let state: ReplyState
+
+    init(header: MessageHeader, state: ReplyState) {
+        accountId = header.accountId
+        messageId = header.id
+        rfcMessageId = header.rfcMessageId
+        threadId = header.threadId
+        self.state = state
+    }
+}
+
 @Observable
 final class ComposeRequest: Identifiable {
     let id = UUID()
@@ -3672,6 +4224,9 @@ final class ComposeRequest: Identifiable {
     var originalIsRead: Bool = true
     /// The original flagged state, re-applied to the edited copy.
     var originalIsFlagged: Bool = false
+
+    /// The message being replied to or forwarded (reply/forward kinds only).
+    var replyContext: ReplyContext?
 
     init(kind: ComposeKind, to: String = "", subject: String = "", quoted: String = "",
          quotedHTML: String = "", attachments: [MailAttachment] = [], localAttachments: [URL] = []) {

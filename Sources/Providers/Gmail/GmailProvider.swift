@@ -52,11 +52,15 @@ final class GmailProvider: MailProvider {
             }
             if (200..<300).contains(http.statusCode) { return data }
             let transient = http.statusCode == 429 || http.statusCode >= 500
-            guard transient, attempt < 2 else {
+            // Rate limiting gets more patience (exponential, up to ~15 s in all):
+            // the offline download runs long bursts that can brush the per-user cap.
+            let limited = http.statusCode == 429
+            guard transient, attempt < (limited ? 5 : 2) else {
                 throw MailError.api(http.statusCode, String(data: data, encoding: .utf8) ?? "")
             }
             attempt += 1
-            try await Task.sleep(nanoseconds: UInt64(Double(attempt) * 0.7 * 1_000_000_000))
+            let delay = limited ? 0.5 * pow(2.0, Double(attempt - 1)) : Double(attempt) * 0.7
+            try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
         }
     }
 
@@ -262,6 +266,9 @@ final class GmailProvider: MailProvider {
             URLQueryItem(name: "metadataHeaders", value: "To"),
             URLQueryItem(name: "metadataHeaders", value: "Subject"),
             URLQueryItem(name: "metadataHeaders", value: "Date"),
+            URLQueryItem(name: "metadataHeaders", value: "Message-ID"),
+            URLQueryItem(name: "metadataHeaders", value: "In-Reply-To"),
+            URLQueryItem(name: "metadataHeaders", value: "References"),
         ]
         let data = try await request("messages/\(id)", query: items)
         let msg = try JSONDecoder().decode(GmailAPI.Message.self, from: data)
@@ -507,14 +514,14 @@ final class GmailProvider: MailProvider {
 
     // MARK: - Sending
 
-    func send(rawMIME: Data, flagged: Bool) async throws {
-        struct Body: Codable { var raw: String }
+    func send(rawMIME: Data, flagged: Bool, threadId: String?) async throws {
+        struct Body: Codable { var raw: String; var threadId: String? }
         struct SendResponse: Codable { var id: String }
         let raw = rawMIME.base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
-        let body = try JSONEncoder().encode(Body(raw: raw))
+        let body = try JSONEncoder().encode(Body(raw: raw, threadId: threadId))
         let data = try await request("messages/send", method: "POST", jsonBody: body)
         if flagged, let sent = try? JSONDecoder().decode(SendResponse.self, from: data) {
             try await setFlagged(ids: [sent.id], flagged: true)
@@ -775,7 +782,11 @@ final class GmailProvider: MailProvider {
             // carry attachments (the parts tree isn't returned by format=metadata).
             hasAttachments: (msg.payload?.mimeType ?? "").caseInsensitiveCompare("multipart/mixed") == .orderedSame,
             labelIds: labels,
-            accountId: accountId
+            accountId: accountId,
+            rfcMessageId: ReplyState.normalizeId(headers["message-id"] ?? ""),
+            inReplyTo: ReplyState.normalizeId(
+                headers["in-reply-to"] ?? headers["references"]?.split(whereSeparator: \.isWhitespace).last.map(String.init) ?? ""
+            )
         )
     }
 
@@ -797,5 +808,178 @@ final class GmailProvider: MailProvider {
         let end = tail.firstIndex { "\"'<> \n\r\t".contains($0) } ?? tail.endIndex
         let raw = String(tail[..<end]).replacingOccurrences(of: "&amp;", with: "&")
         return URL(string: raw)
+    }
+}
+
+// MARK: - Incremental sync & contacts
+
+extension GmailProvider {
+    /// One history feed covers every label, so Gmail syncs the whole mailbox at once.
+    var syncsPerFolder: Bool { false }
+
+    func changes(folderId: String?, cursor: String?, since: Date,
+                 onPage: @MainActor (_ page: [MessageHeader], _ resumeCursor: String) async -> Void) async throws -> SyncChanges {
+        guard let cursor else { return try await bootstrap(since: since, onPage: onPage) }
+        if cursor.hasPrefix(SyncChanges.resumePrefix) {
+            // "resume:<historyId>|<pageToken>"
+            let parts = cursor.dropFirst(SyncChanges.resumePrefix.count)
+                .split(separator: "|", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { throw SyncError.cursorExpired }
+            return try await bootstrap(since: since, start: parts[0], pageToken: parts[1], onPage: onPage)
+        }
+        var added: [String] = []
+        var deleted: Set<String> = []
+        var latest = cursor
+        var pageToken: String?
+        repeat {
+            var items = [
+                URLQueryItem(name: "startHistoryId", value: cursor),
+                URLQueryItem(name: "maxResults", value: "500"),
+            ]
+            for type in ["messageAdded", "messageDeleted", "labelAdded", "labelRemoved"] {
+                items.append(URLQueryItem(name: "historyTypes", value: type))
+            }
+            if let pageToken { items.append(URLQueryItem(name: "pageToken", value: pageToken)) }
+            let data: Data
+            do {
+                data = try await request("history", query: items)
+            } catch MailError.api(404, _) {
+                // The start id is older than Gmail keeps history for.
+                throw SyncError.cursorExpired
+            }
+            let page = try JSONDecoder().decode(GmailAPI.HistoryList.self, from: data)
+            for record in page.history ?? [] {
+                for entry in (record.messagesAdded ?? []) + (record.labelsAdded ?? []) + (record.labelsRemoved ?? []) {
+                    added.append(entry.message.id)
+                }
+                for entry in record.messagesDeleted ?? [] { deleted.insert(entry.message.id) }
+            }
+            if let id = page.historyId { latest = id }
+            pageToken = page.nextPageToken
+        } while pageToken != nil
+
+        // Label changes carry no read/flag state worth trusting, so re-read the
+        // current header of every touched message (once each).
+        var seen: Set<String> = []
+        let changed = added.filter { !deleted.contains($0) && seen.insert($0).inserted }
+        let headers = try await fetchHeadersStrict(changed)
+        // A message touched and then deleted before we fetched it is gone too.
+        let fetched = Set(headers.map(\.id))
+        let vanished = changed.filter { !fetched.contains($0) }
+        return SyncChanges(upserted: headers, removedIds: Array(deleted) + vanished, cursor: latest)
+    }
+
+    /// First sync: records the mailbox's current history id, then lists every
+    /// message since `since` (every label, Spam and Trash included) page by page.
+    /// `start`/`pageToken` resume an interrupted download.
+    private func bootstrap(since: Date, start resumeStart: String? = nil, pageToken resumeToken: String? = nil,
+                           onPage: @MainActor (_ page: [MessageHeader], _ resumeCursor: String) async -> Void) async throws -> SyncChanges {
+        let start: String
+        if let resumeStart {
+            start = resumeStart
+        } else {
+            let profileData = try await request("profile")
+            let profile = try JSONDecoder().decode(GmailAPI.Profile.self, from: profileData)
+            guard let id = profile.historyId else { throw MailError.other("Gmail returned no history id.") }
+            start = id
+        }
+        var pageToken = resumeToken
+        repeat {
+            var items = [
+                URLQueryItem(name: "maxResults", value: "100"),
+                URLQueryItem(name: "q", value: "after:\(Int(since.timeIntervalSince1970))"),
+                URLQueryItem(name: "includeSpamTrash", value: "true"),
+            ]
+            if let pageToken { items.append(URLQueryItem(name: "pageToken", value: pageToken)) }
+            let data: Data
+            do {
+                data = try await request("messages", query: items)
+            } catch MailError.api(400, _) where pageToken != nil && pageToken == resumeToken {
+                // The saved page token is no longer accepted: start over.
+                throw SyncError.cursorExpired
+            }
+            let list = try JSONDecoder().decode(GmailAPI.MessagesList.self, from: data)
+            let headers = try await fetchHeadersStrict((list.messages ?? []).map(\.id), paced: true)
+            await onPage(headers, list.nextPageToken.map { "\(SyncChanges.resumePrefix)\(start)|\($0)" } ?? "")
+            pageToken = list.nextPageToken
+        } while pageToken != nil
+        return SyncChanges(cursor: start)
+    }
+
+    func fetchHeaders(ids: [String]) async throws -> [MessageHeader] {
+        try await fetchHeadersStrict(ids)
+    }
+
+    /// Like `fetchHeaders(_:)` but a failure other than "message not found"
+    /// throws instead of being skipped, so a sync never advances its cursor
+    /// past a change it couldn't read.
+    /// `paced` adds a short pause between batches, keeping a long download
+    /// (the first sync) under Gmail's per-user rate limit.
+    private func fetchHeadersStrict(_ ids: [String], paced: Bool = false) async throws -> [MessageHeader] {
+        var byId: [String: MessageHeader] = [:]
+        var index = 0
+        while index < ids.count {
+            let slice = Array(ids[index..<min(index + headerFetchWindow, ids.count)])
+            try await withThrowingTaskGroup(of: MessageHeader?.self) { group in
+                for id in slice {
+                    group.addTask { [self] in
+                        do {
+                            return try await fetchHeader(id)
+                        } catch MailError.api(404, _) {
+                            return nil
+                        }
+                    }
+                }
+                for try await header in group {
+                    if let header { byId[header.id] = header }
+                }
+            }
+            index += headerFetchWindow
+            if paced, index < ids.count { try await Task.sleep(for: .milliseconds(250)) }
+        }
+        return ids.compactMap { byId[$0] }
+    }
+
+    func fetchContacts() async throws -> [MailAddress] {
+        guard (try? await auth.hasContactsScope) == true else {
+            throw MailError.auth("Sign in to Google again (Settings → Account) to sync your contacts.")
+        }
+        var result: [MailAddress] = []
+        // Saved contacts, then "Other contacts" (people you've emailed, which is
+        // what Gmail's own autocomplete draws on).
+        let sources: [(path: String, fieldParam: String)] = [
+            ("people/me/connections", "personFields"),
+            ("otherContacts", "readMask"),
+        ]
+        for source in sources {
+            var pageToken: String?
+            repeat {
+                var comps = URLComponents(string: "https://people.googleapis.com/v1/\(source.path)")!
+                var items = [
+                    URLQueryItem(name: "pageSize", value: "1000"),
+                    URLQueryItem(name: source.fieldParam, value: "names,emailAddresses"),
+                ]
+                if let pageToken { items.append(URLQueryItem(name: "pageToken", value: pageToken)) }
+                comps.queryItems = items
+                var req = URLRequest(url: comps.url!)
+                req.setValue("Bearer \(try await auth.accessToken())", forHTTPHeaderField: "Authorization")
+                let (data, resp) = try await URLSession.shared.data(for: req)
+                let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                guard (200..<300).contains(status) else {
+                    throw MailError.api(status, String(data: data, encoding: .utf8) ?? "")
+                }
+                let page = try JSONDecoder().decode(GmailAPI.PeopleList.self, from: data)
+                for person in (page.connections ?? []) + (page.otherContacts ?? []) {
+                    let name = person.names?.first?.displayName ?? ""
+                    for email in person.emailAddresses ?? [] {
+                        if let value = email.value, value.contains("@") {
+                            result.append(MailAddress(name: name, email: value))
+                        }
+                    }
+                }
+                pageToken = page.nextPageToken
+            } while pageToken != nil
+        }
+        return result
     }
 }

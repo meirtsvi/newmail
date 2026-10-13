@@ -102,6 +102,9 @@ final class CachedMessage {
     /// Label membership wrapped in delimiters, e.g. ",INBOX,Label_12," so a
     /// folder query can match ",<id>," without partial collisions.
     var labelIdsRaw: String
+    /// The RFC `Message-ID`, so cached rows can show their replied/forwarded
+    /// mark. Defaulted so the additive schema change migrates in place.
+    var rfcMessageId: String = ""
 
     init(
         id: String, accountId: String, threadId: String, fromName: String, fromEmail: String, toRaw: String,
@@ -124,6 +127,29 @@ final class CachedMessage {
     }
 }
 
+/// Records that the user replied to or forwarded the message with this
+/// `Message-ID` in this account. Kept apart from `CachedMessage` because the
+/// evidence (a sent reply) can arrive before or without the original's row.
+@Model
+final class CachedReplyMark {
+    @Attribute(.unique) var key: String   // "<accountId>|<Message-ID>"
+    var accountId: String
+    var rfcMessageId: String
+    var stateRaw: Int
+    /// When the reply or forward was sent; the latest one wins.
+    var date: Date
+
+    init(accountId: String, rfcMessageId: String, stateRaw: Int, date: Date) {
+        self.key = CachedReplyMark.key(accountId: accountId, rfcMessageId: rfcMessageId)
+        self.accountId = accountId
+        self.rfcMessageId = rfcMessageId
+        self.stateRaw = stateRaw
+        self.date = date
+    }
+
+    static func key(accountId: String, rfcMessageId: String) -> String { "\(accountId)|\(rfcMessageId)" }
+}
+
 /// A known recipient/sender, used to autocomplete the compose To/Cc fields.
 /// Collected from message senders and the recipients of mail you've sent.
 @Model
@@ -132,12 +158,70 @@ final class CachedContact {
     var name: String
     var useCount: Int
     var lastSeen: Date
+    /// True for addresses synced from the server's address book (Google
+    /// Contacts / Outlook People) rather than only collected from mail.
+    /// Defaulted so the additive schema change migrates in place.
+    var isSaved: Bool = false
 
-    init(email: String, name: String, useCount: Int, lastSeen: Date) {
+    init(email: String, name: String, useCount: Int, lastSeen: Date, isSaved: Bool = false) {
         self.email = email
         self.name = name
         self.useCount = useCount
         self.lastSeen = lastSeen
+        self.isSaved = isSaved
+    }
+}
+
+// MARK: - Offline sync
+
+/// A mail action taken while offline (or whose request failed for lack of a
+/// connection), kept until it reaches the server. Replayed oldest-first.
+/// `idsRaw` joins message ids with "\u{1}". `localKey` identifies a local
+/// draft (`saveDraft`), whose MIME is in `raw` and which replaces the server
+/// draft `replacesDraftId` (empty = a new draft).
+@Model
+final class PendingAction {
+    @Attribute(.unique) var id: String
+    var accountId: String
+    var kindRaw: String
+    var idsRaw: String
+    var folderId: String
+    var fromFolderId: String
+    var flag: Bool
+    var raw: Data?
+    var localKey: String
+    var replacesDraftId: String
+    var createdAt: Date
+
+    init(id: String = UUID().uuidString, accountId: String, kindRaw: String, idsRaw: String = "",
+         folderId: String = "", fromFolderId: String = "", flag: Bool = false, raw: Data? = nil,
+         localKey: String = "", replacesDraftId: String = "", createdAt: Date = .init()) {
+        self.id = id
+        self.accountId = accountId
+        self.kindRaw = kindRaw
+        self.idsRaw = idsRaw
+        self.folderId = folderId
+        self.fromFolderId = fromFolderId
+        self.flag = flag
+        self.raw = raw
+        self.localKey = localKey
+        self.replacesDraftId = replacesDraftId
+        self.createdAt = createdAt
+    }
+}
+
+/// Where incremental sync left off: a Gmail `historyId` (key = accountId) or a
+/// Graph folder's delta link (key = "accountId\u{1}folderId").
+@Model
+final class SyncCursor {
+    @Attribute(.unique) var key: String
+    var cursor: String
+    var updatedAt: Date
+
+    init(key: String, cursor: String, updatedAt: Date = .init()) {
+        self.key = key
+        self.cursor = cursor
+        self.updatedAt = updatedAt
     }
 }
 
@@ -297,6 +381,7 @@ enum Persistence {
             PersistedAccount.self, CachedContact.self,
             FeedSubscription.self, SeenFeedItem.self, CachedTranslation.self,
             NewsletterRule.self, DigestRecord.self, StoryRecord.self,
+            PendingAction.self, SyncCursor.self, CachedReplyMark.self,
         ])
         // Versioned store file: the multi-account schema is incompatible with the
         // single-account one, and the cache is disposable (re-fetched from the

@@ -4,6 +4,46 @@ import Foundation
 enum GmailAPI {
     struct Profile: Codable {
         var emailAddress: String
+        var historyId: String?
+    }
+
+    /// `users.history.list` response. Each record lists the messages it touched
+    /// per change type; only the message ids are used.
+    struct HistoryList: Codable {
+        var history: [HistoryRecord]?
+        var nextPageToken: String?
+        var historyId: String?
+    }
+
+    struct HistoryRecord: Codable {
+        var messagesAdded: [HistoryMessage]?
+        var messagesDeleted: [HistoryMessage]?
+        var labelsAdded: [HistoryMessage]?
+        var labelsRemoved: [HistoryMessage]?
+    }
+
+    struct HistoryMessage: Codable {
+        var message: MessageRef
+    }
+
+    // People API (contacts).
+    struct PeopleList: Codable {
+        var connections: [Person]?
+        var otherContacts: [Person]?
+        var nextPageToken: String?
+    }
+
+    struct Person: Codable {
+        var names: [PersonName]?
+        var emailAddresses: [PersonEmail]?
+    }
+
+    struct PersonName: Codable {
+        var displayName: String?
+    }
+
+    struct PersonEmail: Codable {
+        var value: String?
     }
 
     struct LabelsList: Codable {

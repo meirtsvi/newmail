@@ -25,13 +25,19 @@ enum MIMEBuilder {
         html: String,
         attachments: [URL],
         inlineImages: [ComposeInlineImage] = [],
-        date: Date? = nil
+        date: Date? = nil,
+        inReplyTo: String? = nil
     ) -> Data {
         var header: [String] = []
         if !from.isEmpty { header.append("From: \(from)") }
         header.append("To: \(to)")
         if !cc.isEmpty { header.append("Cc: \(cc)") }
         header.append("Subject: \(encodeHeader(subject))")
+        // Threads a reply or forward under the original (its `Message-ID`).
+        if let inReplyTo, !inReplyTo.isEmpty {
+            header.append("In-Reply-To: <\(inReplyTo)>")
+            header.append("References: <\(inReplyTo)>")
+        }
         // Preserve the original message's date when editing in place so the copy
         // sorts and displays identically (Gmail honors this via internalDateSource).
         if let date { header.append("Date: \(rfc5322Date(date))") }

@@ -40,6 +40,11 @@ enum AppConfig {
     /// no equivalent that lands a real, non-draft message.
     static let microsoftIMAPScopes = ["https://outlook.office.com/IMAP.AccessAsUser.All"]
 
+    /// Read access to the Outlook address book for compose autocomplete,
+    /// requested on first contact sync (one extra consent prompt) rather than
+    /// at sign-in, so existing accounts keep working without signing in again.
+    static let microsoftContactsScopes = ["Contacts.Read"]
+
     /// True once a real client ID has been filled in.
     static var isMicrosoftConfigured: Bool {
         !microsoftClientID.isEmpty && !microsoftClientID.hasPrefix("PASTE-")

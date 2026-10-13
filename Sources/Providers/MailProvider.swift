@@ -9,6 +9,27 @@ struct SavedDraft {
     let messageId: String
 }
 
+/// What changed on the server since a sync cursor (see `MailProvider.changes`).
+struct SyncChanges {
+    /// New or changed messages, with their current labels/folder.
+    var upserted: [MessageHeader] = []
+    /// Ids that left the synced scope: deleted outright (Gmail) or removed
+    /// from the synced folder (Graph, where a move shows up as a removal).
+    var removedIds: [String] = []
+    /// Cursor to pass to the next call.
+    var cursor: String
+
+    /// Prefix of a cursor that marks an unfinished first download: passing it
+    /// back resumes the download where it stopped instead of starting over.
+    static let resumePrefix = "resume:"
+}
+
+enum SyncError: Error {
+    /// The server no longer accepts the cursor (Gmail history 404, Graph 410);
+    /// the caller starts over with a fresh bootstrap.
+    case cursorExpired
+}
+
 /// Backend-agnostic mail interface. Gmail and (future) Microsoft Graph both
 /// conform; the UI layer talks only to this protocol.
 protocol MailProvider: AnyObject {
@@ -53,7 +74,12 @@ protocol MailProvider: AnyObject {
     func deleteFolder(id: String) async throws
 
     /// Sends the message; `flagged` marks the sent copy as flagged/starred.
-    func send(rawMIME: Data, flagged: Bool) async throws
+    /// `threadId` files a reply or forward in the original's thread (Gmail only).
+    func send(rawMIME: Data, flagged: Bool, threadId: String?) async throws
+
+    /// Records on the server that the message was replied to or forwarded, so
+    /// other clients show it too. Gmail has no such state, so the default no-ops.
+    func markReplyState(id: String, state: ReplyState) async throws
 
     /// Saves a draft from the message MIME. Pass `id: nil` to create a new draft, or
     /// an existing id to replace it in place; the returned id must be used for
@@ -85,6 +111,30 @@ protocol MailProvider: AnyObject {
     /// Permanently removes messages from the server (used to delete the source copy
     /// after it has been successfully imported into another account).
     func permanentlyDelete(ids: [String]) async throws
+
+    // MARK: - Incremental sync
+
+    /// True when the change feed is per folder (Graph delta); false when one
+    /// feed covers the whole mailbox (Gmail history).
+    var syncsPerFolder: Bool { get }
+
+    /// Incremental sync. With `cursor == nil` this bootstraps: every message
+    /// dated on or after `since` (in `folderId`, or the whole mailbox when the
+    /// feed isn't per folder) is delivered through `onPage` as it arrives, with
+    /// a resume cursor (`SyncChanges.resumePrefix`) to save so an interrupted
+    /// download can continue; the returned cursor marks the point to continue
+    /// from once it's done. With a cursor it returns only what changed since.
+    /// Throws `SyncError.cursorExpired` when the cursor is no longer valid.
+    func changes(folderId: String?, cursor: String?, since: Date,
+                 onPage: @MainActor (_ page: [MessageHeader], _ resumeCursor: String) async -> Void) async throws -> SyncChanges
+
+    /// Current headers for specific messages. Messages that no longer exist are
+    /// left out of the result.
+    func fetchHeaders(ids: [String]) async throws -> [MessageHeader]
+
+    /// The account's address book (saved contacts, plus Google's "Other
+    /// contacts"), for compose autocomplete.
+    func fetchContacts() async throws -> [MailAddress]
 }
 
 // Default implementations so a provider that can't take part in a cross-account
@@ -92,8 +142,12 @@ protocol MailProvider: AnyObject {
 // clear message instead of not compiling. Gmail and Graph implement all three.
 extension MailProvider {
     func send(rawMIME: Data) async throws {
-        try await send(rawMIME: rawMIME, flagged: false)
+        try await send(rawMIME: rawMIME, flagged: false, threadId: nil)
     }
+    func send(rawMIME: Data, flagged: Bool) async throws {
+        try await send(rawMIME: rawMIME, flagged: flagged, threadId: nil)
+    }
+    func markReplyState(id: String, state: ReplyState) async throws {}
     func exportRawMessage(id: String) async throws -> Data {
         throw MailError.other("Exporting messages isn't supported for this account.")
     }

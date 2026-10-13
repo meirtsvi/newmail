@@ -128,6 +128,9 @@ struct MessageListView: View {
         .padding(.vertical, 10)
     }
 
+    /// Row pitch of the message list, in points (row plus the gap below it).
+    private static let rowHeight: CGFloat = 28
+
     private var table: some View {
         @Bindable var vm = vm
         // Every cell fills its row and is a drag source (see `rowInteraction`), so a
@@ -224,6 +227,16 @@ struct MessageListView: View {
         // pick can be scrolled into view (Table has no SwiftUI scroll-to API).
         .background(TableLocatorView(locator: tableLocator))
         .onChange(of: vm.scrollToMessageId) { _, id in scrollToMessage(id) }
+        // Rows inserted into an already-laid-out table (new mail lands at the top)
+        // are measured before their content is in, so they keep the default row
+        // height and clip their text. Every row is the same height, so give the
+        // table a fixed one: new rows then never need measuring.
+        .onChange(of: vm.displayedMessages.count, initial: true) { _, count in
+            DispatchQueue.main.async {
+                guard let table = tableLocator.messageTable(rowCount: count) else { return }
+                tableLocator.lockRowHeight(of: table, to: Self.rowHeight)
+            }
+        }
     }
 
     /// Scrolls the row of `id` (the ⌘K palette's pick) into view.
@@ -476,7 +489,7 @@ struct MessageListView: View {
 
     private func fromCell(_ msg: MessageHeader) -> some View {
         HStack(spacing: 8) {
-            Avatar(address: msg.from)
+            Avatar(address: msg.from, size: 20)
             Text(msg.from.display)
                 .font(msg.isRead ? .body : .body.weight(.bold))
                 .lineLimit(1)
@@ -489,7 +502,7 @@ struct MessageListView: View {
     /// recipient's avatar.
     private func toCell(_ msg: MessageHeader) -> some View {
         HStack(spacing: 8) {
-            Avatar(address: msg.to.first ?? msg.from)
+            Avatar(address: msg.to.first ?? msg.from, size: 20)
             Text(msg.toDisplay)
                 .font(msg.isRead ? .body : .body.weight(.bold))
                 .lineLimit(1)
@@ -700,6 +713,33 @@ private struct ListKeyNavigator: NSViewRepresentable {
 @MainActor
 final class TableLocator {
     weak var anchor: NSView?
+    private var rowHeightObservation: NSKeyValueObservation?
+    private weak var observedTable: NSTableView?
+
+    /// Gives `table` a fixed row pitch of `height` points. SwiftUI's Table puts
+    /// its own row height back after updates, so watch it and reapply.
+    func lockRowHeight(of table: NSTableView, to height: CGFloat) {
+        let apply = { [weak table] in
+            guard let table else { return }
+            let target = height - table.intercellSpacing.height
+            if table.usesAutomaticRowHeights { table.usesAutomaticRowHeights = false }
+            if table.rowHeight != target { table.rowHeight = target }
+            // The columns fill the list's width; a horizontal scroller only
+            // appears when they overshoot it by a few points.
+            if table.enclosingScrollView?.hasHorizontalScroller == true {
+                table.enclosingScrollView?.hasHorizontalScroller = false
+            }
+        }
+        apply()
+        guard observedTable !== table else { return }
+        observedTable = table
+        // Reapply synchronously, inside SwiftUI's own update, so the reset
+        // height is never laid out or drawn — deferring it made the rows
+        // visibly jump each time hover re-rendered the cells.
+        rowHeightObservation = table.observe(\.rowHeight) { _, _ in
+            MainActor.assumeIsolated { apply() }
+        }
+    }
 
     func messageTable(rowCount: Int) -> NSTableView? {
         guard rowCount > 0 else { return nil }
@@ -741,11 +781,12 @@ private struct TableLocatorView: NSViewRepresentable {
 /// Colored initials avatar (no network lookups).
 struct Avatar: View {
     let address: MailAddress
+    var size: CGFloat = 26
 
     var body: some View {
         Circle()
             .fill(color.gradient)
-            .frame(width: 26, height: 26)
+            .frame(width: size, height: size)
             .overlay(
                 Text(address.initials)
                     .font(.caption2.weight(.semibold))

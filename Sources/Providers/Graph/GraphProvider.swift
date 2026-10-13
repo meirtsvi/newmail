@@ -19,8 +19,8 @@ final class GraphProvider: MailProvider {
 
     // MARK: - HTTP
 
-    private func token() async throws -> String {
-        try await auth.accessToken(homeAccountId: homeAccountId)
+    private func token(scopes: [String]? = nil) async throws -> String {
+        try await auth.accessToken(homeAccountId: homeAccountId, scopes: scopes)
     }
 
     /// Issues a Graph request. Pass `absoluteURL` to follow an `@odata.nextLink`
@@ -34,7 +34,9 @@ final class GraphProvider: MailProvider {
         jsonBody: Data? = nil,
         rawBody: Data? = nil,
         contentType: String? = nil,
-        absoluteURL: URL? = nil
+        absoluteURL: URL? = nil,
+        headers: [String: String] = [:],
+        scopes: [String]? = nil
     ) async throws -> Data {
         let url: URL
         if let absoluteURL {
@@ -54,8 +56,9 @@ final class GraphProvider: MailProvider {
             attempt += 1
             var req = URLRequest(url: url)
             req.httpMethod = method
-            let tok = try await token()
+            let tok = try await token(scopes: scopes)
             req.setValue("Bearer \(tok)", forHTTPHeaderField: "Authorization")
+            for (name, value) in headers { req.setValue(value, forHTTPHeaderField: name) }
             if let jsonBody {
                 req.httpBody = jsonBody
                 req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -219,7 +222,17 @@ final class GraphProvider: MailProvider {
     // MARK: - Listing & search
 
     private static let messageSelect =
-        "id,conversationId,subject,bodyPreview,receivedDateTime,isRead,hasAttachments,from,toRecipients,flag,parentFolderId"
+        "id,conversationId,subject,bodyPreview,receivedDateTime,isRead,hasAttachments,from,toRecipients,flag,parentFolderId,internetMessageId"
+
+    /// PidTagLastVerbExecuted: 102 reply, 103 reply all, 104 forward. Outlook
+    /// clients set it when you reply or forward; it drives the replied tag.
+    private static let lastVerbId = "Integer 0x1081"
+    /// PidTagIconIndex: the replied/forwarded icon Outlook shows for the message.
+    private static let iconIndexId = "Integer 0x1080"
+    /// Asks for the last-verb property alongside `messageSelect`. Left off delta
+    /// and `$search` queries, which may not accept `$expand`.
+    private static let lastVerbExpand =
+        URLQueryItem(name: "$expand", value: "singleValueExtendedProperties($filter=id eq '\(lastVerbId)')")
 
     func listMessages(
         folderId: String,
@@ -234,9 +247,10 @@ final class GraphProvider: MailProvider {
             URLQueryItem(name: "$select", value: Self.messageSelect),
         ]
         if let query, !query.isEmpty {
-            // $search and $orderby cannot be combined on Graph.
+            // $search can't be combined with $orderby or $expand on Graph.
             items.append(URLQueryItem(name: "$search", value: "\"\(query)\""))
         } else {
+            items.append(Self.lastVerbExpand)
             items.append(URLQueryItem(name: "$orderby", value: "receivedDateTime desc"))
         }
         let data = try await request("mailFolders/\(folderId)/messages", query: items)
@@ -371,6 +385,18 @@ final class GraphProvider: MailProvider {
         for id in ids {
             try await request("messages/\(id)", method: "PATCH", jsonBody: body)
         }
+    }
+
+    func markReplyState(id: String, state: ReplyState) async throws {
+        let verb = state == .forwarded ? "104" : "102"
+        let icon = state == .forwarded ? "262" : "261"
+        let body = try JSONSerialization.data(withJSONObject: [
+            "singleValueExtendedProperties": [
+                ["id": Self.lastVerbId, "value": verb],
+                ["id": Self.iconIndexId, "value": icon],
+            ],
+        ])
+        try await request("messages/\(id)", method: "PATCH", jsonBody: body)
     }
 
     func setFlagged(ids: [String], flagged: Bool) async throws {
@@ -547,7 +573,7 @@ final class GraphProvider: MailProvider {
 
     // MARK: - Sending
 
-    func send(rawMIME: Data, flagged: Bool) async throws {
+    func send(rawMIME: Data, flagged: Bool, threadId: String?) async throws {
         // Create a draft from the MIME, then send it (reuses the shared MIMEBuilder).
         let base64 = rawMIME.base64EncodedData()
         let created = try await request("messages", method: "POST", rawBody: base64, contentType: "text/plain")
@@ -626,8 +652,20 @@ final class GraphProvider: MailProvider {
             isFlagged: flagged,
             hasAttachments: m.hasAttachments ?? false,
             labelIds: labels,
-            accountId: accountId
+            accountId: accountId,
+            rfcMessageId: ReplyState.normalizeId(m.internetMessageId ?? ""),
+            serverReplyState: replyState(m)
         )
+    }
+
+    /// Maps the last-verb property; nil when it wasn't requested or isn't a reply/forward.
+    private static func replyState(_ m: GraphAPI.Message) -> ReplyState? {
+        let verb = m.singleValueExtendedProperties?.first { $0.id.caseInsensitiveCompare(lastVerbId) == .orderedSame }?.value
+        switch verb {
+        case "102", "103": return .replied
+        case "104": return .forwarded
+        default: return nil
+        }
     }
 
     private static func address(_ e: GraphAPI.EmailAddress?) -> MailAddress {
@@ -642,5 +680,125 @@ final class GraphProvider: MailProvider {
         let plain = ISO8601DateFormatter()
         plain.formatOptions = [.withInternetDateTime]
         return plain.date(from: s) ?? Date()
+    }
+}
+
+// MARK: - Incremental sync & contacts
+
+extension GraphProvider {
+    /// Graph's delta query is per folder.
+    var syncsPerFolder: Bool { true }
+
+    func changes(folderId: String?, cursor: String?, since: Date,
+                 onPage: @MainActor (_ page: [MessageHeader], _ resumeCursor: String) async -> Void) async throws -> SyncChanges {
+        guard let folderId else { throw MailError.other("Outlook sync needs a folder.") }
+        // "resume:<nextLink>": an interrupted first download of this folder.
+        let resuming = cursor?.hasPrefix(SyncChanges.resumePrefix) ?? false
+        let link = resuming ? cursor.map { String($0.dropFirst(SyncChanges.resumePrefix.count)) } : cursor
+        var next: URL
+        if let link, let url = URL(string: link) {
+            next = url
+        } else {
+            let iso = ISO8601DateFormatter().string(from: since)
+            var comps = URLComponents(
+                url: base.appendingPathComponent("mailFolders/\(folderId)/messages/delta"),
+                resolvingAgainstBaseURL: false)!
+            comps.queryItems = [
+                URLQueryItem(name: "$select", value: Self.messageSelect),
+                URLQueryItem(name: "$filter", value: "receivedDateTime ge \(iso)"),
+            ]
+            next = comps.url!
+        }
+        let bootstrapping = cursor == nil || resuming
+        var changes = SyncChanges(cursor: resuming ? "" : (cursor ?? ""))
+        while true {
+            let data: Data
+            do {
+                data = try await request("", absoluteURL: next,
+                                         headers: ["Prefer": "odata.maxpagesize=100"])
+            } catch MailError.api(let code, _) where code == 410 || (code == 404 && cursor != nil) {
+                // 410: the delta token expired. 404 on a resume: the folder moved
+                // or its state was reset. Either way, start the folder over.
+                throw SyncError.cursorExpired
+            }
+            let page = try JSONDecoder().decode(GraphAPI.MessageList.self, from: data)
+            var headers: [MessageHeader] = []
+            var partialIds: [String] = []
+            for message in page.value {
+                if message.removed != nil {
+                    changes.removedIds.append(message.id)
+                } else if message.receivedDateTime == nil {
+                    // Delta can return only the changed properties (e.g. isRead);
+                    // mapping that would blank the sender, subject, and date.
+                    partialIds.append(message.id)
+                } else {
+                    var header = Self.header(from: message, accountId: accountId)
+                    // Delta entries for read/flag changes can omit the folder; the
+                    // feed is per folder, so it's known.
+                    if header.labelIds.isEmpty { header.labelIds = [folderId] }
+                    headers.append(header)
+                }
+            }
+            if !partialIds.isEmpty {
+                for var header in try await fetchHeaders(ids: partialIds) {
+                    if header.labelIds.isEmpty { header.labelIds = [folderId] }
+                    headers.append(header)
+                }
+            }
+            if bootstrapping {
+                await onPage(headers, page.nextLink.map { SyncChanges.resumePrefix + $0 } ?? "")
+            } else {
+                changes.upserted += headers
+            }
+            if let link = page.nextLink, let url = URL(string: link) {
+                next = url
+            } else {
+                changes.cursor = page.deltaLink ?? changes.cursor
+                return changes
+            }
+        }
+    }
+
+    func fetchHeaders(ids: [String]) async throws -> [MessageHeader] {
+        var result: [MessageHeader] = []
+        for id in ids {
+            do {
+                let data = try await request("messages/\(id)", query: [
+                    URLQueryItem(name: "$select", value: Self.messageSelect),
+                    Self.lastVerbExpand,
+                ])
+                let message = try JSONDecoder().decode(GraphAPI.Message.self, from: data)
+                result.append(Self.header(from: message, accountId: accountId))
+            } catch MailError.api(404, _) {
+                continue
+            }
+        }
+        return result
+    }
+
+    func fetchContacts() async throws -> [MailAddress] {
+        var result: [MailAddress] = []
+        var next: URL? = nil
+        repeat {
+            let data: Data
+            if let next {
+                data = try await request("", absoluteURL: next, scopes: AppConfig.microsoftContactsScopes)
+            } else {
+                data = try await request("contacts", query: [
+                    URLQueryItem(name: "$select", value: "displayName,emailAddresses"),
+                    URLQueryItem(name: "$top", value: "500"),
+                ], scopes: AppConfig.microsoftContactsScopes)
+            }
+            let page = try JSONDecoder().decode(GraphAPI.ContactList.self, from: data)
+            for contact in page.value {
+                for email in contact.emailAddresses ?? [] {
+                    guard let address = email.address, address.contains("@") else { continue }
+                    let name = email.name.flatMap { $0 == address ? nil : $0 } ?? contact.displayName ?? ""
+                    result.append(MailAddress(name: name, email: address))
+                }
+            }
+            next = page.nextLink.flatMap { URL(string: $0) }
+        } while next != nil
+        return result
     }
 }

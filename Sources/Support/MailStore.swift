@@ -111,18 +111,90 @@ final class MailStore {
                 row.isFlagged = header.isFlagged
                 row.hasAttachments = header.hasAttachments
                 row.labelIdsRaw = labelsRaw
+                if !header.rfcMessageId.isEmpty { row.rfcMessageId = header.rfcMessageId }
             } else {
-                context.insert(CachedMessage(
+                let row = CachedMessage(
                     id: header.id, accountId: header.accountId, threadId: header.threadId,
                     fromName: header.from.name, fromEmail: header.from.email, toRaw: toRaw,
                     subject: header.subject, snippet: header.snippet, date: header.date,
                     isRead: header.isRead, isFlagged: header.isFlagged,
                     hasAttachments: header.hasAttachments, labelIdsRaw: labelsRaw
-                ))
+                )
+                row.rfcMessageId = header.rfcMessageId
+                context.insert(row)
             }
             byId.removeValue(forKey: header.id)
         }
         try? context.save()
+        recordReplyMarks(from: headers)
+    }
+
+    func setRfcMessageId(_ rfcMessageId: String, forId id: String) {
+        let rows = (try? context.fetch(
+            FetchDescriptor<CachedMessage>(predicate: #Predicate { $0.id == id })
+        )) ?? []
+        guard let row = rows.first else { return }
+        row.rfcMessageId = rfcMessageId
+        try? context.save()
+    }
+
+    // MARK: Replied / forwarded marks
+
+    /// Called with the marks that changed, keyed by `CachedReplyMark.key`.
+    var onReplyMarks: (([String: ReplyState]) -> Void)?
+
+    /// Every stored mark, keyed by `CachedReplyMark.key`.
+    func replyMarks() -> [String: ReplyState] {
+        let rows = (try? context.fetch(FetchDescriptor<CachedReplyMark>())) ?? []
+        var marks: [String: ReplyState] = [:]
+        for row in rows { marks[row.key] = ReplyState(rawValue: row.stateRaw) }
+        return marks
+    }
+
+    /// Derives marks from headers: a Gmail sent message marks the message it
+    /// answers, and a Graph message carries its own server-side state.
+    func recordReplyMarks(from headers: [MessageHeader]) {
+        var marks: [(accountId: String, rfcMessageId: String, state: ReplyState, date: Date?)] = []
+        for header in headers {
+            if !header.inReplyTo.isEmpty, header.labelIds.contains("SENT") {
+                marks.append((header.accountId, header.inReplyTo, ReplyState(sentSubject: header.subject), header.date))
+            }
+            if let state = header.serverReplyState, !header.rfcMessageId.isEmpty {
+                // The server's state is authoritative: nil date overwrites.
+                marks.append((header.accountId, header.rfcMessageId, state, nil))
+            }
+        }
+        recordReplyMarks(marks)
+    }
+
+    /// Upserts marks. A dated mark only replaces an older one (the latest reply or
+    /// forward wins); an undated mark always replaces.
+    func recordReplyMarks(_ marks: [(accountId: String, rfcMessageId: String, state: ReplyState, date: Date?)]) {
+        guard !marks.isEmpty else { return }
+        let keys = marks.map { CachedReplyMark.key(accountId: $0.accountId, rfcMessageId: $0.rfcMessageId) }
+        let existing = (try? context.fetch(
+            FetchDescriptor<CachedReplyMark>(predicate: #Predicate { keys.contains($0.key) })
+        )) ?? []
+        var byKey = Dictionary(existing.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+        var changed: [String: ReplyState] = [:]
+        for mark in marks {
+            let key = CachedReplyMark.key(accountId: mark.accountId, rfcMessageId: mark.rfcMessageId)
+            let date = mark.date ?? Date()
+            if let row = byKey[key] {
+                if let markDate = mark.date, markDate < row.date { continue }
+                row.date = date
+                guard row.stateRaw != mark.state.rawValue else { continue }
+                row.stateRaw = mark.state.rawValue
+            } else {
+                let row = CachedReplyMark(accountId: mark.accountId, rfcMessageId: mark.rfcMessageId,
+                                          stateRaw: mark.state.rawValue, date: date)
+                context.insert(row)
+                byKey[key] = row
+            }
+            changed[key] = mark.state
+        }
+        try? context.save()
+        if !changed.isEmpty { onReplyMarks?(changed) }
     }
 
     /// Reconciles the cache for a fully-loaded folder. When a folder is paged to the
@@ -154,6 +226,49 @@ final class MailStore {
         }
         deleteBodiesAndTranslations(ids: dropped)
         if changed { try? context.save() }
+    }
+
+    /// Takes messages out of one folder (a Graph delta removal): strips the
+    /// folder label, and drops a row left with no folder at all.
+    func removeFromFolder(ids: [String], folderId: String) {
+        guard !ids.isEmpty else { return }
+        let rows = (try? context.fetch(
+            FetchDescriptor<CachedMessage>(predicate: #Predicate { ids.contains($0.id) })
+        )) ?? []
+        var dropped: [String] = []
+        for row in rows {
+            var labels = row.labelIdsRaw.split(separator: ",").map(String.init)
+            labels.removeAll { $0 == folderId }
+            if labels.isEmpty {
+                dropped.append(row.id)
+                context.delete(row)
+            } else {
+                row.labelIdsRaw = "," + labels.joined(separator: ",") + ","
+            }
+        }
+        deleteBodiesAndTranslations(ids: dropped)
+        try? context.save()
+    }
+
+    /// Of `ids`, the ones already in the cache.
+    func existingIds(_ ids: [String]) -> Set<String> {
+        guard !ids.isEmpty else { return [] }
+        var descriptor = FetchDescriptor<CachedMessage>(predicate: #Predicate { ids.contains($0.id) })
+        descriptor.propertiesToFetch = [\.id]
+        return Set(((try? context.fetch(descriptor)) ?? []).map(\.id))
+    }
+
+    /// After a full Gmail bootstrap: drops cached rows of `accountId` dated on
+    /// or after `since` that the server no longer has (`keep` is everything it
+    /// listed). Older rows aren't covered by the bootstrap and are left alone.
+    func dropUnlisted(accountId: String, since: Date, keep: Set<String>) {
+        var descriptor = FetchDescriptor<CachedMessage>(
+            predicate: #Predicate { $0.accountId == accountId && $0.date >= since })
+        descriptor.propertiesToFetch = [\.id]
+        let stale = ((try? context.fetch(descriptor)) ?? [])
+            .map(\.id)
+            .filter { !keep.contains($0) && !$0.hasPrefix(Self.localDraftPrefix) }
+        deleteMessages(ids: stale)
     }
 
     func deleteMessages(ids: [String]) {
@@ -243,6 +358,41 @@ final class MailStore {
             .map(Self.header(from:))
     }
 
+    /// The newest `limit` Inbox messages carrying the label, oldest first — the
+    /// same rows as the tail of `headers(withLabel:accountId:since:)`, without
+    /// loading every labeled message ever cached. Scans the whole message table,
+    /// so it runs off the main thread in its own context.
+    nonisolated static func newestHeaders(withLabel labelId: String, accountId: String, limit: Int) async -> [MessageHeader] {
+        await Task.detached(priority: .utility) {
+            newestHeaders(in: ModelContext(Persistence.container), labelId: labelId, accountId: accountId, limit: limit)
+        }.value
+    }
+
+    private nonisolated static func newestHeaders(in context: ModelContext, labelId: String, accountId: String,
+                                                  limit: Int) -> [MessageHeader] {
+        let needle = ",\(labelId),"
+        var descriptor = FetchDescriptor<CachedMessage>(
+            predicate: #Predicate {
+                $0.accountId == accountId && $0.labelIdsRaw.contains(needle) && $0.labelIdsRaw.contains(",INBOX,")
+            },
+            sortBy: [SortDescriptor(\.date, order: .reverse)]
+        )
+        // Trash/Spam are checked after the fetch (see `headers(withLabel:)`), so
+        // read in pages until enough rows pass; normally the first page does.
+        let pageSize = limit * 2
+        descriptor.fetchLimit = pageSize
+        var result: [CachedMessage] = []
+        var offset = 0
+        while result.count < limit {
+            descriptor.fetchOffset = offset
+            let rows = (try? context.fetch(descriptor)) ?? []
+            result += rows.filter { !$0.labelIdsRaw.contains(",TRASH,") && !$0.labelIdsRaw.contains(",SPAM,") }
+            if rows.count < pageSize { break }
+            offset += pageSize
+        }
+        return result.prefix(limit).reversed().map(header(from:))
+    }
+
     private func mutate(ids: [String], _ change: (CachedMessage) -> Void) {
         guard !ids.isEmpty else { return }
         let rows = (try? context.fetch(
@@ -278,6 +428,187 @@ final class MailStore {
                                       attachmentsJSON: attachmentsJSON, ccRaw: ccRaw, isCalendar: isCalendar))
         }
         try? context.save()
+    }
+
+    /// Messages dated on or after `since` with no cached body yet, newest first —
+    /// the offline prefetch's work list. Local drafts are skipped (their body is
+    /// already stored). `skip` excludes ids that failed earlier this session.
+    /// Scans the whole sync window (tens of thousands of rows), so it runs off the
+    /// main thread in its own context instead of freezing the UI.
+    nonisolated static func messagesNeedingBodies(since: Date, skip: Set<String>, limit: Int) async -> [(id: String, accountId: String)] {
+        await Task.detached(priority: .utility) {
+            findMessagesNeedingBodies(in: ModelContext(Persistence.container), since: since, skip: skip, limit: limit)
+        }.value
+    }
+
+    private nonisolated static func findMessagesNeedingBodies(in context: ModelContext, since: Date, skip: Set<String>,
+                                                              limit: Int) -> [(id: String, accountId: String)] {
+        var bodyDescriptor = FetchDescriptor<CachedBody>()
+        bodyDescriptor.propertiesToFetch = [\.id]
+        let haveBody = Set(((try? context.fetch(bodyDescriptor)) ?? []).map(\.id))
+        var descriptor = FetchDescriptor<CachedMessage>(
+            predicate: #Predicate { $0.date >= since },
+            sortBy: [SortDescriptor(\.date, order: .reverse)]
+        )
+        descriptor.propertiesToFetch = [\.id, \.accountId, \.fromEmail]
+        var result: [(id: String, accountId: String)] = []
+        for row in (try? context.fetch(descriptor)) ?? [] {
+            guard !haveBody.contains(row.id), !skip.contains(row.id),
+                  !row.id.hasPrefix(Self.localDraftPrefix),
+                  !Self.isAutomatedSender(row.fromEmail) else { continue }
+            result.append((row.id, row.accountId))
+            if result.count == limit { break }
+        }
+        return result
+    }
+
+    /// Senders whose mail isn't downloaded ahead of time: CI, code-hosting and
+    /// monitoring notifications, which arrive by the thousand and are rarely
+    /// read offline. Their bodies still load when opened online.
+    private nonisolated static let automatedSenderPatterns = [
+        "cicd", "jenkins", "@github.com", "alerts@", "getsentry.com", "jira@",
+    ]
+
+    nonisolated static func isAutomatedSender(_ email: String) -> Bool {
+        let lower = email.lowercased()
+        return automatedSenderPatterns.contains { lower.contains($0) }
+    }
+
+    /// Deletes cached bodies and translations/summaries of messages dated
+    /// before `before`, keeping their headers. Returns the ids whose body was
+    /// dropped so the caller can delete their cached attachment files too.
+    /// Scans every message older than the window, so it runs off the main thread
+    /// in its own context.
+    @discardableResult
+    nonisolated static func pruneBodies(before: Date) async -> [String] {
+        await Task.detached(priority: .utility) {
+            pruneBodies(in: ModelContext(Persistence.container), before: before)
+        }.value
+    }
+
+    private nonisolated static func pruneBodies(in context: ModelContext, before: Date) -> [String] {
+        var descriptor = FetchDescriptor<CachedMessage>(predicate: #Predicate { $0.date < before })
+        descriptor.propertiesToFetch = [\.id]
+        let old = ((try? context.fetch(descriptor)) ?? []).map(\.id)
+        var pruned: [String] = []
+        // Chunked: an `IN` list with tens of thousands of ids is slow to build.
+        var index = 0
+        while index < old.count {
+            let chunk = Array(old[index..<min(index + 500, old.count)])
+            index += 500
+            for row in (try? context.fetch(FetchDescriptor<CachedBody>(predicate: #Predicate { chunk.contains($0.id) }))) ?? [] {
+                pruned.append(row.id)
+                context.delete(row)
+            }
+            for row in (try? context.fetch(FetchDescriptor<CachedTranslation>(predicate: #Predicate { chunk.contains($0.id) }))) ?? [] {
+                context.delete(row)
+            }
+        }
+        if !pruned.isEmpty { try? context.save() }
+        return pruned
+    }
+
+    // MARK: Local drafts
+
+    /// Id prefix of drafts saved on this Mac while offline (not yet on the server).
+    nonisolated static let localDraftPrefix = "local:"
+
+    /// Shows an offline-saved draft in the Drafts folder until it reaches the server.
+    func saveLocalDraft(id: String, accountId: String, draftsFolderId: String,
+                        to: [MailAddress], cc: [MailAddress], subject: String, html: String) {
+        let header = MessageHeader(
+            id: id, threadId: id, from: MailAddress(name: "", email: ""), to: to,
+            subject: subject.isEmpty ? "(no subject)" : subject,
+            snippet: Self.plainText(fromHTML: html).prefix(200).description, date: Date(),
+            isRead: true, isFlagged: false, hasAttachments: false,
+            labelIds: [draftsFolderId], accountId: accountId)
+        saveHeaders([header])
+        saveBody(MessageBody(headerId: id, html: html, plainText: Self.plainText(fromHTML: html),
+                             attachments: [], cc: cc))
+    }
+
+    private static func plainText(fromHTML html: String) -> String {
+        html.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "&nbsp;", with: " ")
+            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    // MARK: Local search
+
+    /// Searches cached mail. Plain words must all appear in the sender,
+    /// recipients, subject, preview or body. Understands `from:`, `to:`,
+    /// `subject:`, `is:unread`, `is:read`, `is:starred`, `has:attachment` and
+    /// quoted phrases; other operators (dates, labels, KQL) are ignored, so the
+    /// local result can be broader than the server's.
+    func localSearch(_ query: String, accountId: String, folderId: String?, limit: Int = 300) -> [MessageHeader] {
+        let q = LocalQuery(query)
+        let needle = folderId.map { ",\($0)," }
+        let hideTrashSpam = folderId != "TRASH" && folderId != "SPAM"
+
+        // Candidate rows: those matching the first text term in a header field
+        // or in the body. Flag-only queries scan the folder.
+        var candidates: [CachedMessage] = []
+        if let key = q.firstTerm {
+            var ids = Set<String>()
+            for row in fetchHeaderMatches(key, accountId: accountId) { ids.insert(row.id); candidates.append(row) }
+            var bodyDescriptor = FetchDescriptor<CachedBody>(
+                predicate: #Predicate { $0.plainText.localizedStandardContains(key) || $0.html.localizedStandardContains(key) })
+            bodyDescriptor.propertiesToFetch = [\.id]
+            let bodyIds = ((try? context.fetch(bodyDescriptor)) ?? []).map(\.id).filter { !ids.contains($0) }
+            if !bodyIds.isEmpty {
+                candidates += (try? context.fetch(FetchDescriptor<CachedMessage>(
+                    predicate: #Predicate { bodyIds.contains($0.id) && $0.accountId == accountId }))) ?? []
+            }
+        } else {
+            var descriptor = FetchDescriptor<CachedMessage>(
+                predicate: #Predicate { $0.accountId == accountId },
+                sortBy: [SortDescriptor(\.date, order: .reverse)])
+            descriptor.fetchLimit = 5000
+            candidates = (try? context.fetch(descriptor)) ?? []
+        }
+
+        let matches = candidates.filter { row in
+            if let needle, !row.labelIdsRaw.contains(needle) { return false }
+            if hideTrashSpam, row.labelIdsRaw.contains(",TRASH,") || row.labelIdsRaw.contains(",SPAM,") { return false }
+            if let unread = q.unread, row.isRead == unread { return false }
+            if q.starred, !row.isFlagged { return false }
+            if q.attachment, !row.hasAttachments { return false }
+            let from = (row.fromName + " " + row.fromEmail)
+            if !q.from.allSatisfy({ from.localizedStandardContains($0) }) { return false }
+            if !q.to.allSatisfy({ row.toRaw.localizedStandardContains($0) }) { return false }
+            if !q.subject.allSatisfy({ row.subject.localizedStandardContains($0) }) { return false }
+            guard !q.words.isEmpty else { return true }
+            let headerText = [from, row.toRaw, row.subject, row.snippet].joined(separator: " ")
+            let missing = q.words.filter { !headerText.localizedStandardContains($0) }
+            guard !missing.isEmpty else { return true }
+            guard let body = cachedBody(id: row.id) else { return false }
+            return missing.allSatisfy { body.plainText.localizedStandardContains($0) || body.html.localizedStandardContains($0) }
+        }
+        return matches
+            .sorted { $0.date > $1.date }
+            .prefix(limit)
+            .map(Self.header(from:))
+    }
+
+    /// Header rows of `accountId` containing `key` in a searchable field. Split
+    /// into one fetch per field: a single predicate OR-ing them all exceeds the
+    /// #Predicate macro's type-check budget.
+    private func fetchHeaderMatches(_ key: String, accountId: String) -> [CachedMessage] {
+        let predicates: [Predicate<CachedMessage>] = [
+            #Predicate { $0.accountId == accountId && $0.subject.localizedStandardContains(key) },
+            #Predicate { $0.accountId == accountId && $0.fromName.localizedStandardContains(key) },
+            #Predicate { $0.accountId == accountId && $0.fromEmail.localizedStandardContains(key) },
+            #Predicate { $0.accountId == accountId && $0.toRaw.localizedStandardContains(key) },
+            #Predicate { $0.accountId == accountId && $0.snippet.localizedStandardContains(key) },
+        ]
+        var seen = Set<String>()
+        var rows: [CachedMessage] = []
+        for predicate in predicates {
+            for row in (try? context.fetch(FetchDescriptor(predicate: predicate))) ?? [] where seen.insert(row.id).inserted {
+                rows.append(row)
+            }
+        }
+        return rows
     }
 
     // MARK: Translations
@@ -350,7 +681,7 @@ final class MailStore {
         }
     }
 
-    private static func header(from row: CachedMessage) -> MessageHeader {
+    private nonisolated static func header(from row: CachedMessage) -> MessageHeader {
         let to: [MailAddress] = row.toRaw.isEmpty ? [] : row.toRaw.split(separator: "‖").map {
             let parts = $0.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
             return MailAddress(name: String(parts.first ?? ""), email: parts.count > 1 ? String(parts[1]) : "")
@@ -363,7 +694,7 @@ final class MailStore {
             from: MailAddress(name: row.fromName, email: row.fromEmail),
             to: to, subject: row.subject, snippet: row.snippet, date: row.date,
             isRead: row.isRead, isFlagged: row.isFlagged, hasAttachments: row.hasAttachments,
-            labelIds: labels, accountId: row.accountId
+            labelIds: labels, accountId: row.accountId, rfcMessageId: row.rfcMessageId
         )
     }
 
@@ -375,5 +706,59 @@ final class MailStore {
             labels.removeAll { $0 == label }
         }
         return "," + labels.joined(separator: ",") + ","
+    }
+}
+
+/// A search string parsed for `MailStore.localSearch`.
+struct LocalQuery {
+    var words: [String] = []
+    var from: [String] = []
+    var to: [String] = []
+    var subject: [String] = []
+    var unread: Bool?
+    var starred = false
+    var attachment = false
+
+    /// The first text term, used to narrow the candidate rows.
+    var firstTerm: String? { (words + from + to + subject).first }
+
+    init(_ query: String) {
+        for token in Self.tokens(query) {
+            let lower = token.lowercased()
+            if let value = Self.value(lower, token, "from:") { from.append(value) }
+            else if let value = Self.value(lower, token, "to:") { to.append(value) }
+            else if let value = Self.value(lower, token, "subject:") { subject.append(value) }
+            else if lower == "is:unread" { unread = true }
+            else if lower == "is:read" { unread = false }
+            else if lower == "is:starred" || lower == "is:flagged" { starred = true }
+            else if lower == "has:attachment" || lower == "hasattachments:true" { attachment = true }
+            else if lower == "and" || lower == "or" || lower == "not" { continue }
+            else if token.contains(":") && !token.contains(" ") { continue }   // unsupported operator
+            else { words.append(token) }
+        }
+    }
+
+    private static func value(_ lower: String, _ token: String, _ prefix: String) -> String? {
+        guard lower.hasPrefix(prefix), token.count > prefix.count else { return nil }
+        return String(token.dropFirst(prefix.count)).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+    }
+
+    /// Splits on whitespace, keeping "quoted phrases" (and `from:"a b"`) whole.
+    private static func tokens(_ query: String) -> [String] {
+        var result: [String] = []
+        var current = ""
+        var inQuote = false
+        for ch in query {
+            if ch == "\"" {
+                inQuote.toggle()
+            } else if ch.isWhitespace && !inQuote {
+                if !current.isEmpty { result.append(current) }
+                current = ""
+            } else {
+                current.append(ch)
+            }
+        }
+        if !current.isEmpty { result.append(current) }
+        return result
     }
 }

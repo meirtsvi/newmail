@@ -33,37 +33,42 @@ struct MessagePreviewView: View {
     }
 
     var body: some View {
-        if let header = selectedHeader {
-            VStack(alignment: .leading, spacing: 0) {
-                headerBlock(header)
-                Divider()
-                if showFind {
-                    findBar
+        Group {
+            if let header = selectedHeader {
+                VStack(alignment: .leading, spacing: 0) {
+                    headerBlock(header)
                     Divider()
+                    if showFind {
+                        findBar
+                        Divider()
+                    }
+                    if let invite = inviteFor(header) {
+                        CalendarInviteView(invite: invite, messageId: header.id)
+                            .padding(.vertical, 10)
+                        Divider()
+                    }
+                    bodyBlock(header)
                 }
-                if let invite = inviteFor(header) {
-                    CalendarInviteView(invite: invite, messageId: header.id)
-                        .padding(.vertical, 10)
-                    Divider()
-                }
-                bodyBlock(header)
+                // Top-aligned: when the header (many To/Cc lines) plus the invite
+                // card outgrow the pane, SwiftUI centers oversized content, which
+                // clipped the subject/from rows behind the window toolbar. Anchor
+                // to the top so any overflow clips at the bottom instead.
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .background(zoomShortcuts)
+            } else {
+                ContentUnavailableView(
+                    vm.selection.count > 1 ? "\(vm.selection.count) messages selected" : "No message selected",
+                    systemImage: "envelope",
+                    description: Text("Select a message to read it here.")
+                )
             }
-            // Top-aligned: when the header (many To/Cc lines) plus the invite
-            // card outgrow the pane, SwiftUI centers oversized content, which
-            // clipped the subject/from rows behind the window toolbar. Anchor
-            // to the top so any overflow clips at the bottom instead.
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .background(zoomShortcuts)
-            .onChange(of: header.id) { _, _ in
-                translation.reset()
-                finder.status = ""
-            }
-        } else {
-            ContentUnavailableView(
-                vm.selection.count > 1 ? "\(vm.selection.count) messages selected" : "No message selected",
-                systemImage: "envelope",
-                description: Text("Select a message to read it here.")
-            )
+        }
+        // Outside the `if`: switching folders clears the selection, so the branch
+        // above is rebuilt and an onChange inside it would miss the new message,
+        // leaving the previous message's translation on screen.
+        .onChange(of: selectedHeader?.id) { _, _ in
+            translation.reset()
+            finder.status = ""
         }
     }
 
@@ -97,6 +102,15 @@ struct MessagePreviewView: View {
 
     private func headerBlock(_ header: MessageHeader) -> some View {
         VStack(alignment: .leading, spacing: 10) {
+            if let state = vm.replyState(of: header) {
+                Label(state == .forwarded ? "Forwarded" : "Replied",
+                      systemImage: state == .forwarded ? "arrowshape.turn.up.right.fill" : "arrowshape.turn.up.left.fill")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.quaternary, in: Capsule())
+            }
             HStack {
                 Text(header.subject).font(.title3.weight(.semibold))
                     .textSelection(.enabled)

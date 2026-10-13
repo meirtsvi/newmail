@@ -113,6 +113,16 @@ actor GoogleAuth {
         }
     }
 
+    /// Whether the token can read the address book (saved contacts and
+    /// "Other contacts") for compose autocomplete. Older sign-ins don't have it.
+    var hasContactsScope: Bool {
+        get throws {
+            let s = try loadIfNeeded().scopes ?? []
+            return s.contains { $0.hasSuffix("auth/contacts.readonly") }
+                && s.contains { $0.hasSuffix("auth/contacts.other.readonly") }
+        }
+    }
+
     var hasCalendarScope: Bool {
         get throws {
             let s = try loadIfNeeded().scopes ?? []

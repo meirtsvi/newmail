@@ -309,6 +309,10 @@ struct StatusBar: View {
         HStack(spacing: 6) {
             statusContent
             Spacer()
+            if !vm.isOnline || vm.pendingActionCount > 0 {
+                connectionStatus
+                Text("·").foregroundStyle(.tertiary)
+            }
             if vm.selection.count > 1 {
                 Text("\(vm.selection.count) selected")
                     .foregroundStyle(.secondary)
@@ -334,6 +338,25 @@ struct StatusBar: View {
         .padding(.horizontal, 12)
         .frame(height: 24)
         .background(.bar)
+    }
+
+    /// "Offline" and the number of changes waiting to reach the server.
+    private var connectionStatus: some View {
+        HStack(spacing: 4) {
+            if !vm.isOnline {
+                Image(systemName: "wifi.slash")
+                Text("Offline")
+            }
+            if vm.pendingActionCount > 0 {
+                if !vm.isOnline { Text("·").foregroundStyle(.tertiary) }
+                Text("\(vm.pendingActionCount) change\(vm.pendingActionCount == 1 ? "" : "s") waiting to sync")
+                    .monospacedDigit()
+            }
+        }
+        .foregroundStyle(.secondary)
+        .help(vm.isOnline
+              ? "Sending changes made while offline."
+              : "No connection. Mail saved on this Mac stays readable; your changes are sent when you’re back online.")
     }
 
     @ViewBuilder
@@ -386,6 +409,9 @@ struct StatusBar: View {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
             Text(summary).foregroundStyle(.secondary).lineLimit(1)
+        } else if let progress = vm.syncProgress {
+            ProgressView().controlSize(.small)
+            Text(progress).foregroundStyle(.secondary).lineLimit(1)
         } else if vm.isLoading {
             ProgressView().controlSize(.small)
             Text("Updating…").foregroundStyle(.secondary)

@@ -41,6 +41,32 @@ final class ContactStore {
         if changed { try? context.save() }
     }
 
+    /// Merges the server address book in: saved contacts are added (or marked
+    /// saved), and their name replaces one guessed from mail headers. A synced
+    /// contact counts as used at least once so it isn't ranked below strangers.
+    func saveSynced(_ addresses: [MailAddress]) {
+        guard !addresses.isEmpty else { return }
+        var known: [String: CachedContact] = [:]
+        for row in (try? context.fetch(FetchDescriptor<CachedContact>())) ?? [] {
+            known[row.email] = row
+        }
+        for addr in addresses {
+            let email = addr.email.lowercased().trimmingCharacters(in: .whitespaces)
+            guard email.contains("@") else { continue }
+            if let row = known[email] {
+                row.isSaved = true
+                row.useCount = max(row.useCount, 1)
+                if !addr.name.isEmpty { row.name = addr.name }
+            } else {
+                let row = CachedContact(email: email, name: addr.name, useCount: 1,
+                                        lastSeen: .distantPast, isSaved: true)
+                context.insert(row)
+                known[email] = row
+            }
+        }
+        try? context.save()
+    }
+
     /// Suggestions whose email or name contains the query. The match runs in the
     /// fetch (the address book is seeded from the whole message cache, so it's far
     /// too big to filter in memory on every keystroke) and the most-used candidates

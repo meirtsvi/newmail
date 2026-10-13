@@ -23,6 +23,10 @@ actor OAuthService {
         "https://mail.google.com/",
         "https://www.googleapis.com/auth/gmail.send",
         "https://www.googleapis.com/auth/calendar.events",
+        // Compose autocomplete from the address book: saved contacts and
+        // "Other contacts" (people you've emailed).
+        "https://www.googleapis.com/auth/contacts.readonly",
+        "https://www.googleapis.com/auth/contacts.other.readonly",
     ]
     private let authEndpoint = "https://accounts.google.com/o/oauth2/v2/auth"
     private let tokenEndpoint = "https://oauth2.googleapis.com/token"

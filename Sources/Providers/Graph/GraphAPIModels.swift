@@ -67,10 +67,47 @@ enum GraphAPI {
         var parentFolderId: String?
         var body: ItemBody?
         var internetMessageHeaders: [InternetMessageHeader]?
+        var internetMessageId: String?
+        /// MAPI properties requested via `$expand` (the last-verb property).
+        var singleValueExtendedProperties: [ExtendedProperty]?
+        /// Present (with a reason) on delta-query entries for messages that left
+        /// the folder; such entries carry nothing but the id.
+        var removed: Removed?
+
+        struct Removed: Codable { var reason: String? }
+
+        enum CodingKeys: String, CodingKey {
+            case id, conversationId, subject, bodyPreview, receivedDateTime, isRead, hasAttachments
+            case from, sender, toRecipients, ccRecipients, flag, parentFolderId, body
+            case internetMessageHeaders, internetMessageId, singleValueExtendedProperties
+            case removed = "@removed"
+        }
+    }
+
+    struct ExtendedProperty: Codable {
+        var id: String
+        var value: String?
     }
 
     struct MessageList: Codable {
         var value: [Message]
+        var nextLink: String?
+        /// Only on the last page of a delta query: where the next sync resumes.
+        var deltaLink: String?
+        enum CodingKeys: String, CodingKey {
+            case value
+            case nextLink = "@odata.nextLink"
+            case deltaLink = "@odata.deltaLink"
+        }
+    }
+
+    struct Contact: Codable {
+        var displayName: String?
+        var emailAddresses: [EmailAddress]?
+    }
+
+    struct ContactList: Codable {
+        var value: [Contact]
         var nextLink: String?
         enum CodingKeys: String, CodingKey {
             case value
