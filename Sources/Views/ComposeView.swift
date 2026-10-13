@@ -135,6 +135,8 @@ struct ComposeView: View {
             htmlEditor.onMentionKey = { handleMentionKey($0) }
             // A non-image file pasted or dropped into the body (e.g. a PDF) is
             // added as a real attachment rather than inlined as a picture.
+            rich.onEditLink = { editLink(text: $0, url: $1) }
+            htmlEditor.onEditLink = { editLink(text: $0, url: $1) }
             rich.onAttachFiles = { urls in attachments.append(contentsOf: urls) }
             // The quoted original is no longer dropped into the editor (the HTML
             // round-trip degraded its formatting). It's shown read-only below and
@@ -318,7 +320,7 @@ struct ComposeView: View {
                 await vm.sendComposed(
                     from: request.fromAccountId, to: request.to, cc: request.cc, subject: request.subject,
                     html: html, attachments: attachments, inlineImages: inlineImages, draftId: request.draftId,
-                    draftMessageId: request.draftMessageId, flagged: flagged
+                    draftMessageId: request.draftMessageId, flagged: flagged, reply: request.replyContext
                 )
                 // `sending` deliberately stays set: the window is closing, and
                 // clearing it would re-arm the 10-second autosave for the runloop
@@ -544,7 +546,8 @@ struct ComposeView: View {
             Button { rich.toggleUnderline() } label: { Image(systemName: "underline") }
                 .keyboardShortcut("u", modifiers: .command)
                 .help("Underline (⌘U)")
-            colorMenu
+            Button { rich.toggleSuperscript() } label: { Image(systemName: "textformat.superscript") }
+                .help("Superscript")
             Button { rich.pasteMatchingStyle() } label: { Image(systemName: "doc.on.clipboard") }
                 .keyboardShortcut("v", modifiers: [.command, .option, .shift])
                 .help("Paste and match style (⌥⇧⌘V)")
@@ -597,7 +600,8 @@ struct ComposeView: View {
             Button { htmlEditor.toggleUnderline() } label: { Image(systemName: "underline") }
                 .keyboardShortcut("u", modifiers: .command)
                 .help("Underline (⌘U)")
-            colorMenu
+            Button { htmlEditor.toggleSuperscript() } label: { Image(systemName: "textformat.superscript") }
+                .help("Superscript")
             Button { htmlEditor.pasteMatchingStyle() } label: { Image(systemName: "doc.on.clipboard") }
                 .keyboardShortcut("v", modifiers: [.command, .option, .shift])
                 .help("Paste and match style (⌥⇧⌘V)")
@@ -642,11 +646,16 @@ struct ComposeView: View {
     /// the HTML exporter as black, but which one you're looking at while composing
     /// isn't obvious, so plain "Black" is offered as the unambiguous choice.
     private static let textColors: [(name: String, color: NSColor)] = [
-        ("Automatic", .textColor), ("Black", .black),
+        ("Automatic", .textColor), ("Black", .black), ("White", .white),
         ("Gray", .systemGray), ("Red", .systemRed),
         ("Orange", .systemOrange), ("Green", .systemGreen),
         ("Blue", .systemBlue), ("Purple", .systemPurple),
     ]
+
+    /// The background-color palette: the text colors, with "None" (no highlight)
+    /// in place of "Automatic".
+    private static let backgroundColors: [(name: String, color: NSColor?)] =
+        [("None", nil)] + textColors.dropFirst().map { ($0.name, $0.color) }
 
     /// A simple menu of preset text colors; picking one applies it to the selected
     /// text (or to subsequent typing when nothing is selected).
@@ -667,11 +676,75 @@ struct ComposeView: View {
                 }
             }
         } label: {
-            Image(systemName: "textformat")
+            // Pre-colored image: menu labels drop SwiftUI tint like menu items do.
+            Image(nsImage: Self.textColorIcon())
         }
         .menuIndicator(.hidden)
         .frame(width: 28)
         .help("Text color")
+    }
+
+    /// Preset background (highlight) colors, applied like `colorMenu`.
+    private var backgroundColorMenu: some View {
+        Menu {
+            ForEach(Self.backgroundColors, id: \.name) { item in
+                Button {
+                    if request.kind == .edit { htmlEditor.setBackgroundColor(item.color) }
+                    else { rich.setBackgroundColor(item.color) }
+                } label: {
+                    if let color = item.color {
+                        Label {
+                            Text(item.name)
+                        } icon: {
+                            Image(nsImage: Self.colorSwatch(color))
+                        }
+                    } else {
+                        Text(item.name)
+                    }
+                }
+            }
+        } label: {
+            Image(nsImage: Self.backgroundColorIcon())
+        }
+        .menuIndicator(.hidden)
+        .frame(width: 28)
+        .help("Background color")
+    }
+
+    /// Text-color toolbar icon: an "A" over a red bar. Drawn on demand so the
+    /// letter follows light/dark mode; non-template so the bar keeps its color.
+    private static func textColorIcon() -> NSImage {
+        let image = NSImage(size: NSSize(width: 16, height: 16), flipped: true) { _ in
+            drawLetterA(in: NSRect(x: 0, y: -1, width: 16, height: 13), color: .labelColor)
+            NSColor.systemRed.setFill()
+            NSBezierPath(roundedRect: NSRect(x: 1, y: 12.5, width: 14, height: 3), xRadius: 1, yRadius: 1).fill()
+            return true
+        }
+        image.isTemplate = false
+        return image
+    }
+
+    /// Background-color toolbar icon: a black "A" on a yellow box, like a
+    /// highlighted letter.
+    private static func backgroundColorIcon() -> NSImage {
+        let image = NSImage(size: NSSize(width: 16, height: 16), flipped: true) { _ in
+            NSColor.systemYellow.setFill()
+            NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: 16, height: 16), xRadius: 3, yRadius: 3).fill()
+            drawLetterA(in: NSRect(x: 0, y: 1, width: 16, height: 14), color: .black)
+            return true
+        }
+        image.isTemplate = false
+        return image
+    }
+
+    private static func drawLetterA(in rect: NSRect, color: NSColor) {
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        NSAttributedString(string: "A", attributes: [
+            .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+            .foregroundColor: color,
+            .paragraphStyle: style,
+        ]).draw(in: rect)
     }
 
     /// Draws a small filled circle in `color` for use as a menu item icon.
@@ -680,13 +753,18 @@ struct ComposeView: View {
         let image = NSImage(size: size)
         image.lockFocus()
         color.setFill()
-        NSBezierPath(ovalIn: NSRect(origin: .zero, size: size)).fill()
+        let circle = NSBezierPath(ovalIn: NSRect(origin: .zero, size: size).insetBy(dx: 0.5, dy: 0.5))
+        circle.fill()
+        // Thin outline so light swatches (White) stay visible on a light menu.
+        NSColor.gray.withAlphaComponent(0.5).setStroke()
+        circle.lineWidth = 1
+        circle.stroke()
         image.unlockFocus()
         image.isTemplate = false
         return image
     }
 
-    /// Font-family and size pickers; selecting one applies it to the selected text
+    /// Font-family and size pickers and the color menus; selecting one applies it to the selected text
     /// (or to subsequent typing when nothing is selected).
     private var fontPickers: some View {
         HStack(spacing: 6) {
@@ -709,6 +787,9 @@ struct ComposeView: View {
                 if request.kind == .edit { htmlEditor.setFontSize(size) }
                 else { rich.setFontSize(size) }
             }
+
+            colorMenu
+            backgroundColorMenu
         }
         .font(.body)
     }
@@ -791,26 +872,56 @@ struct ComposeView: View {
         }
     }
 
+    /// Opens the link prompt for a link picked from its popup; the editor has
+    /// already selected it, so Add replaces it.
+    private func editLink(text: String, url: String) {
+        linkText = text
+        linkURL = url
+        showLinkPrompt = true
+    }
+
     private var linkPrompt: some View {
+        LinkPrompt(text: $linkText, url: $linkURL, onCancel: {
+            showLinkPrompt = false; linkURL = ""; linkText = ""
+        }, onAdd: {
+            let text = linkText.isEmpty ? linkURL : linkText
+            if request.kind == .edit { htmlEditor.insertLink(linkURL, text: text) }
+            else { rich.insertLink(linkURL, text: text) }
+            showLinkPrompt = false
+            linkURL = ""
+            linkText = ""
+        })
+    }
+}
+
+/// The Insert link sheet. Its own view, reading the fields through bindings, so
+/// Add is enabled when the sheet opens with a URL already filled in (editing an
+/// existing link) — read from the compose view, the disabled state stayed stale.
+private struct LinkPrompt: View {
+    @Binding var text: String
+    @Binding var url: String
+    let onCancel: () -> Void
+    let onAdd: () -> Void
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Insert link").font(.headline)
-            TextField("Text to display (optional)", text: $linkText)
-                .textFieldStyle(.roundedBorder)
-            TextField("https://…", text: $linkURL)
-                .textFieldStyle(.roundedBorder)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Text to display").font(.subheadline).foregroundStyle(.secondary)
+                TextField("Optional — defaults to the URL", text: $text)
+                    .textFieldStyle(.roundedBorder)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("URL").font(.subheadline).foregroundStyle(.secondary)
+                TextField("https://…", text: $url)
+                    .textFieldStyle(.roundedBorder)
+            }
             HStack {
                 Spacer()
-                Button("Cancel") { showLinkPrompt = false; linkURL = ""; linkText = "" }
-                Button("Add") {
-                    let text = linkText.isEmpty ? linkURL : linkText
-                    if request.kind == .edit { htmlEditor.insertLink(linkURL, text: text) }
-                    else { rich.insertLink(linkURL, text: text) }
-                    showLinkPrompt = false
-                    linkURL = ""
-                    linkText = ""
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(linkURL.isEmpty)
+                Button("Cancel", action: onCancel)
+                Button("Add", action: onAdd)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(url.isEmpty)
             }
         }
         .padding(20)

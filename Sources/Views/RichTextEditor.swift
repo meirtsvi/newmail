@@ -26,6 +26,13 @@ final class RichTextController: ObservableObject {
     /// when the popup took it, so the text view leaves it alone.
     var onMentionKey: ((MentionKey) -> Bool)?
 
+    /// Invoked when "Edit" is picked in a link's popup, with the link's text and
+    /// URL. The link is selected first, so inserting a link replaces it.
+    var onEditLink: ((_ text: String, _ url: String) -> Void)?
+
+    /// The Open/Edit popup shown when a link in the body is clicked.
+    private let linkPopover = LinkActionPopover()
+
     /// Images pasted or dropped into the body, in document order. Derived from the
     /// text storage so it stays in sync when an image is deleted in the editor.
     @Published private(set) var inlineImages: [ComposeInlineImage] = []
@@ -118,6 +125,25 @@ final class RichTextController: ObservableObject {
         ts.addAttribute(.underlineStyle,
                         value: allUnderlined ? 0 : NSUnderlineStyle.single.rawValue,
                         range: range)
+    }
+
+    /// Toggles superscript on the selection, or — with nothing selected — on the
+    /// typing attributes so what's typed next is (un)raised.
+    func toggleSuperscript() {
+        guard let tv = textView, let ts = tv.textStorage else { return }
+        let range = tv.selectedRange()
+        guard range.length > 0 else {
+            let current = (tv.typingAttributes[.superscript] as? Int) ?? 0
+            tv.typingAttributes[.superscript] = current > 0 ? 0 : 1
+            return
+        }
+        var allRaised = true
+        ts.enumerateAttribute(.superscript, in: range) { value, _, _ in
+            if (value as? Int ?? 0) <= 0 { allRaised = false }
+        }
+        guard tv.shouldChangeText(in: range, replacementString: nil) else { return }
+        ts.addAttribute(.superscript, value: allRaised ? 0 : 1, range: range)
+        tv.didChangeText()
     }
 
     /// Left-aligns the selected paragraphs (or the paragraph being typed). Uses
@@ -403,6 +429,22 @@ final class RichTextController: ObservableObject {
         tv.textStorage?.addAttribute(.foregroundColor, value: color, range: range)
     }
 
+    /// Changes the background (highlight) color of the selected text, or of new
+    /// typing when nothing is selected. A nil color removes the highlight.
+    func setBackgroundColor(_ color: NSColor?) {
+        guard let tv = textView else { return }
+        let range = tv.selectedRange()
+        if range.length == 0 {
+            tv.typingAttributes[.backgroundColor] = color
+            return
+        }
+        if let color {
+            tv.textStorage?.addAttribute(.backgroundColor, value: color, range: range)
+        } else {
+            tv.textStorage?.removeAttribute(.backgroundColor, range: range)
+        }
+    }
+
     /// Applies a font transform to the selection, or — when the selection is empty —
     /// to the typing attributes so the next characters typed pick it up.
     private func applyFont(_ transform: (NSFont) -> NSFont) {
@@ -463,6 +505,31 @@ final class RichTextController: ObservableObject {
         // So what's typed next isn't pulled into the anchor.
         tv.typingAttributes[.link] = nil
         refreshContentHeight()
+    }
+
+    // MARK: Link popup
+
+    /// Shows the Open/Edit popup above the link clicked at `charIndex`.
+    func showLinkPopover(for link: Any, at charIndex: Int) {
+        guard let tv = textView, let ts = tv.textStorage,
+              let lm = tv.layoutManager, let tc = tv.textContainer else { return }
+        let url = (link as? URL) ?? (link as? String).flatMap(URL.init(string:))
+        guard let url else { return }
+        var linkRange = NSRange()
+        guard ts.attribute(.link, at: charIndex, longestEffectiveRange: &linkRange,
+                           in: NSRange(location: 0, length: ts.length)) != nil else { return }
+        let glyphs = lm.glyphRange(forCharacterRange: linkRange, actualCharacterRange: nil)
+        var rect = lm.boundingRect(forGlyphRange: glyphs, in: tc)
+        rect.origin.x += tv.textContainerOrigin.x
+        rect.origin.y += tv.textContainerOrigin.y
+        linkPopover.show(relativeTo: rect, of: tv, onOpen: {
+            NSWorkspace.shared.open(url)
+        }, onEdit: { [weak self, weak tv] in
+            guard let self, let tv else { return }
+            tv.setSelectedRange(linkRange)
+            let text = (tv.string as NSString).substring(with: linkRange)
+            self.onEditLink?(text, url.absoluteString)
+        })
     }
 
     // MARK: Mentions
@@ -730,6 +797,26 @@ final class InlineImageAttachment: NSTextAttachment {
 final class ComposeTextView: NSTextView {
     var onImage: ((Data) -> Void)?
     var onFiles: (([URL]) -> Void)?
+    /// A plain click on a link, with the link and its character index.
+    var onLinkClick: ((Any, Int) -> Void)?
+
+    /// An editable text view only places the caret when a link is clicked, so a
+    /// single click that lands on link text (and doesn't drag out a selection) is
+    /// reported here once the click finishes.
+    override func mouseDown(with event: NSEvent) {
+        super.mouseDown(with: event)
+        guard event.clickCount == 1, selectedRange().length == 0,
+              let lm = layoutManager, let tc = textContainer, let ts = textStorage, ts.length > 0
+        else { return }
+        var point = convert(event.locationInWindow, from: nil)
+        point.x -= textContainerOrigin.x
+        point.y -= textContainerOrigin.y
+        let glyph = lm.glyphIndex(for: point, in: tc)
+        guard lm.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: tc).contains(point) else { return }
+        let index = lm.characterIndexForGlyph(at: glyph)
+        guard index < ts.length, let link = ts.attribute(.link, at: index, effectiveRange: nil) else { return }
+        onLinkClick?(link, index)
+    }
 
     override func paste(_ sender: Any?) {
         let pb = NSPasteboard.general
@@ -840,6 +927,8 @@ struct RichTextEditor: NSViewRepresentable {
         textView.textContainerInset = NSSize(width: 8, height: 8)
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
+        // Typed or pasted URLs become links.
+        textView.isAutomaticLinkDetectionEnabled = true
         // Red-underline misspellings as you type; the language (English, Hebrew, …)
         // is auto-detected per word, and right-click offers corrections and
         // "Learn Spelling" to add a word to the user dictionary.
@@ -852,6 +941,9 @@ struct RichTextEditor: NSViewRepresentable {
         }
         textView.onFiles = { [weak controller] urls in
             MainActor.assumeIsolated { controller?.onAttachFiles?(urls) }
+        }
+        textView.onLinkClick = { [weak controller] link, index in
+            MainActor.assumeIsolated { controller?.showLinkPopover(for: link, at: index) }
         }
 
         scrollView.documentView = textView
@@ -899,6 +991,12 @@ struct RichTextEditor: NSViewRepresentable {
             return false
         }
 
+        /// Links aren't followed on click; `ComposeTextView` shows the Open/Edit
+        /// popup instead.
+        func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+            true
+        }
+
         func textDidChange(_ notification: Notification) {
             controller.refreshInlineImages()
             controller.refreshContentHeight()
@@ -910,5 +1008,32 @@ struct RichTextEditor: NSViewRepresentable {
         func textViewDidChangeSelection(_ notification: Notification) {
             controller.refreshMention()
         }
+    }
+}
+
+/// The small popup shown above a clicked link in either compose editor, offering
+/// to open the link in the browser or edit it.
+@MainActor
+final class LinkActionPopover {
+    private var popover: NSPopover?
+
+    /// Shows the popup above `rect` (in `view`'s coordinates).
+    func show(relativeTo rect: NSRect, of view: NSView,
+              onOpen: @escaping () -> Void, onEdit: @escaping () -> Void) {
+        popover?.close()
+        let popover = NSPopover()
+        popover.behavior = .transient
+        let content = HStack(spacing: 4) {
+            Button("Open") { [weak popover] in popover?.close(); onOpen() }
+            Button("Edit") { [weak popover] in popover?.close(); onEdit() }
+        }
+        .padding(6)
+        let host = NSHostingController(rootView: content)
+        // Sized up front: a zero-sized SwiftUI host makes the popover misplace itself.
+        popover.contentSize = host.view.fittingSize
+        popover.contentViewController = host
+        self.popover = popover
+        // In a flipped view the top edge is minY.
+        popover.show(relativeTo: rect, of: view, preferredEdge: view.isFlipped ? .minY : .maxY)
     }
 }

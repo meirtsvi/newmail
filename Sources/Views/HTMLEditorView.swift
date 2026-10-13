@@ -18,6 +18,13 @@ final class HTMLEditorController: ObservableObject {
     /// popup took it.
     var onMentionKey: ((MentionKey) -> Bool)?
 
+    /// Invoked when "Edit" is picked in a link's popup, mirroring
+    /// `RichTextController.onEditLink`.
+    var onEditLink: ((_ text: String, _ url: String) -> Void)?
+
+    /// The Open/Edit popup shown when a link in the body is clicked.
+    private let linkPopover = LinkActionPopover()
+
     /// Moves keyboard focus into the body editor (used to jump straight from the
     /// Subject field to the body). Makes the WebView first responder, then focuses
     /// the editable document body.
@@ -45,6 +52,7 @@ final class HTMLEditorController: ObservableObject {
     func toggleBold() { exec("bold") }
     func toggleItalic() { exec("italic") }
     func toggleUnderline() { exec("underline") }
+    func toggleSuperscript() { exec("superscript") }
     func toggleBulletList() { exec("insertUnorderedList") }
     func toggleNumberedList() { exec("insertOrderedList") }
     func alignLeft() { exec("justifyLeft") }
@@ -81,16 +89,25 @@ final class HTMLEditorController: ObservableObject {
     /// baking the dark-mode white into the message — the same choice the rich-text
     /// HTML exporter makes.
     func setFontColor(_ color: NSColor) {
+        exec("foreColor", value: Self.hex(color), styleWithCSS: true)
+    }
+
+    /// Changes the background (highlight) color of the selected text; nil clears it.
+    func setBackgroundColor(_ color: NSColor?) {
+        exec("hiliteColor", value: color.map(Self.hex) ?? "transparent", styleWithCSS: true)
+    }
+
+    /// `color` as a CSS hex string, resolved in the light appearance.
+    private static func hex(_ color: NSColor) -> String {
         var resolved = NSColor.black
         let light = NSAppearance(named: .aqua) ?? NSAppearance.currentDrawing()
         light.performAsCurrentDrawingAppearance {
             resolved = color.usingColorSpace(.sRGB) ?? .black
         }
-        let hex = String(format: "#%02X%02X%02X",
-                         Int((resolved.redComponent * 255).rounded()),
-                         Int((resolved.greenComponent * 255).rounded()),
-                         Int((resolved.blueComponent * 255).rounded()))
-        exec("foreColor", value: hex, styleWithCSS: true)
+        return String(format: "#%02X%02X%02X",
+                      Int((resolved.redComponent * 255).rounded()),
+                      Int((resolved.greenComponent * 255).rounded()),
+                      Int((resolved.blueComponent * 255).rounded()))
     }
 
     /// Changes the family of the selected text. "System" maps to the same font stack
@@ -135,6 +152,34 @@ final class HTMLEditorController: ObservableObject {
           block.style.textAlign = '';
         }
         """)
+    }
+
+    // MARK: - Link popup
+
+    /// Shows the Open/Edit popup above a clicked link. `rect` is the link's box
+    /// in CSS pixels, viewport space; the page keeps the anchor as
+    /// `window.__nmClickedLink` so Edit can select it.
+    fileprivate func showLinkPopover(href: String, text: String, rect: CGRect) {
+        guard let webView, let url = URL(string: href) else { return }
+        let scale = webView.pageZoom
+        var anchor = CGRect(x: rect.minX * scale, y: rect.minY * scale,
+                            width: rect.width * scale, height: rect.height * scale)
+        if !webView.isFlipped { anchor.origin.y = webView.bounds.height - anchor.maxY }
+        linkPopover.show(relativeTo: anchor, of: webView, onOpen: {
+            NSWorkspace.shared.open(url)
+        }, onEdit: { [weak self] in
+            guard let self else { return }
+            self.run("""
+            var a = window.__nmClickedLink;
+            if (!a || !a.isConnected) return;
+            var range = document.createRange();
+            range.selectNode(a);
+            var selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            """)
+            self.onEditLink?(text, href)
+        })
     }
 
     // MARK: - Mentions
@@ -228,6 +273,7 @@ struct HTMLEditorView: NSViewRepresentable {
         // "mention" carries the `@name` being typed and the keys its popup claims.
         config.userContentController.add(context.coordinator, name: "shiftTab")
         config.userContentController.add(context.coordinator, name: "mention")
+        config.userContentController.add(context.coordinator, name: "link")
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
@@ -313,7 +359,67 @@ struct HTMLEditorView: NSViewRepresentable {
             """
             webView.evaluateJavaScript(js)
             webView.evaluateJavaScript(Self.mentionScript)
+            webView.evaluateJavaScript(Self.linkScript)
         }
+
+        /// Turns typed and pasted URLs into links, and reports clicks on links so
+        /// native code can show the Open/Edit popup (designMode never follows them).
+        /// A typed URL is linked once the whitespace or line break after it goes in.
+        private static let linkScript = """
+        window.__nmLinkifyBeforeCaret = function () {
+          var sel = window.getSelection();
+          if (!sel || !sel.rangeCount || !sel.isCollapsed) return;
+          sel.modify('move', 'backward', 'character');
+          var r = sel.getRangeAt(0);
+          var node = r.endContainer;
+          if (node.nodeType === 3 && !(node.parentElement && node.parentElement.closest('a'))) {
+            var text = node.data.substring(0, r.endOffset);
+            var m = /(?:https?:\\/\\/|www\\.)[^\\s<>"]+$/i.exec(text);
+            if (m && (m.index === 0 || /\\s/.test(text.charAt(m.index - 1)))) {
+              // Trailing punctuation ends the sentence, not the URL.
+              var url = m[0].replace(/[.,;:!?)\\]]+$/, '');
+              var range = document.createRange();
+              range.setStart(node, m.index);
+              range.setEnd(node, m.index + url.length);
+              sel.removeAllRanges();
+              sel.addRange(range);
+              document.execCommand('createLink', false, /^www\\./i.test(url) ? 'http://' + url : url);
+              sel.collapseToEnd();
+              for (var i = 0; i <= m[0].length - url.length; i++) sel.modify('move', 'forward', 'character');
+              return;
+            }
+          }
+          sel.modify('move', 'forward', 'character');
+        };
+        document.addEventListener('input', function (e) {
+          if ((e.inputType === 'insertText' && e.data && /\\s/.test(e.data)) ||
+              e.inputType === 'insertParagraph' || e.inputType === 'insertLineBreak') {
+            window.__nmLinkifyBeforeCaret();
+          }
+        }, true);
+        document.addEventListener('paste', function (e) {
+          var data = e.clipboardData;
+          if (!data || Array.prototype.indexOf.call(data.types || [], 'text/html') >= 0) return;
+          var text = (data.getData('text/plain') || '').trim();
+          if (!/^(?:https?:\\/\\/|www\\.)[^\\s<>"]+$/i.test(text)) return;
+          e.preventDefault();
+          var link = document.createElement('a');
+          link.href = /^www\\./i.test(text) ? 'http://' + text : text;
+          link.textContent = text;
+          document.execCommand('insertHTML', false, link.outerHTML);
+        }, true);
+        document.addEventListener('click', function (e) {
+          var a = e.target && e.target.closest && e.target.closest('a[href]');
+          if (!a) return;
+          e.preventDefault();
+          window.__nmClickedLink = a;
+          var rect = a.getBoundingClientRect();
+          window.webkit.messageHandlers.link.postMessage({
+            href: a.getAttribute('href'), text: a.textContent,
+            x: rect.left, y: rect.top, width: rect.width, height: rect.height
+          });
+        }, true);
+        """
 
         /// Finds the `@name` at the caret and reports it (with the `@`'s on-screen
         /// box) whenever it changes. `__nmMentionToken` is left on `window` so
@@ -365,6 +471,13 @@ struct HTMLEditorView: NSViewRepresentable {
         func userContentController(_ userContentController: WKUserContentController,
                                    didReceive message: WKScriptMessage) {
             if message.name == "shiftTab" { controller.onShiftTab?() }
+            if message.name == "link", let body = message.body as? [String: Any],
+               let href = body["href"] as? String {
+                let rect = CGRect(x: body["x"] as? Double ?? 0, y: body["y"] as? Double ?? 0,
+                                  width: body["width"] as? Double ?? 0, height: body["height"] as? Double ?? 0)
+                controller.showLinkPopover(href: href, text: body["text"] as? String ?? "", rect: rect)
+                return
+            }
             guard message.name == "mention", let body = message.body as? [String: Any] else { return }
             if let key = body["key"] as? String {
                 if let mention = Self.mentionKeys[key] { _ = controller.onMentionKey?(mention) }
