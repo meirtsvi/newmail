@@ -736,8 +736,29 @@ final class TableLocator {
         // Reapply synchronously, inside SwiftUI's own update, so the reset
         // height is never laid out or drawn — deferring it made the rows
         // visibly jump each time hover re-rendered the cells.
-        rowHeightObservation = table.observe(\.rowHeight) { _, _ in
-            MainActor.assumeIsolated { apply() }
+        // The reset briefly shrinks the table, and when scrolled to the bottom the
+        // clip view clamps its offset to the shorter height — so after reapplying,
+        // the list sits a page higher. Save the offset before the reset and put it
+        // back. `reapplying` ignores the nested notifications from our own set.
+        var savedOrigin: NSPoint?
+        var reapplying = false
+        rowHeightObservation = table.observe(\.rowHeight, options: [.prior]) { table, change in
+            MainActor.assumeIsolated {
+                guard !reapplying else { return }
+                let clip = table.enclosingScrollView?.contentView
+                if change.isPrior {
+                    savedOrigin = clip?.bounds.origin
+                    return
+                }
+                reapplying = true
+                apply()
+                reapplying = false
+                if let clip, let origin = savedOrigin, clip.bounds.origin != origin {
+                    clip.scroll(to: origin)
+                    table.enclosingScrollView?.reflectScrolledClipView(clip)
+                }
+                savedOrigin = nil
+            }
         }
     }
 
