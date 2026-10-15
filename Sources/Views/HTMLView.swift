@@ -237,8 +237,13 @@ struct HTMLView: NSViewRepresentable {
             font-family: -apple-system, "SF Pro Text", Helvetica, Arial, sans-serif;
             margin: 0; line-height: 1.5; word-wrap: break-word;
           }
-          img { max-width: 100%; height: auto; }
+          img { max-width: 100% !important; height: auto !important; }
           table { max-width: 100%; }
+          /* Fixed-width tables (e.g. width="1000", style="width:920px") would
+             otherwise force the page wider than the pane; let them shrink so
+             text wraps. Percentage-width tables keep their width. */
+          table[width], table[style*="width"] { width: auto !important; max-width: 100% !important; }
+          table[width="100%"], table[style*="width:100%"], table[style*="width: 100%"] { width: 100% !important; }
           a { color: #0a66c2; }
           pre { white-space: pre-wrap; }
         </style></head><body><div style="padding: 16px \(horizontalMargin)px;">\(body)</div></body></html>
