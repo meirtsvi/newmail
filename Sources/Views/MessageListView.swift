@@ -67,10 +67,12 @@ struct MessageListView: View {
 
     /// Footer shown while the current folder has more pages on the server. The
     /// initial open auto-pages up to a target (see `loadMessages`); this lets the
-    /// user pull the rest in on demand.
+    /// user pull the rest in on demand. An Inbox listing hides it until it holds
+    /// at least 200 messages.
     @ViewBuilder
     private var loadOlderFooter: some View {
-        if vm.canLoadMore {
+        if vm.canLoadMore,
+           vm.isSearching || vm.currentFolder?.kind != .inbox || vm.displayedMessages.count >= 200 {
             Divider()
             Button {
                 Task { await vm.loadMore() }
