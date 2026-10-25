@@ -9,15 +9,26 @@ enum MessageDragPayload {
         NSItemProvider(object: ids.joined(separator: "\n") as NSString)
     }
 
-    /// Loads ids from dropped providers and hands them to `completion` on the
-    /// main actor. Returns whether a provider was accepted.
+    /// Loads ids from every dropped provider (a multi-row drag carries one per
+    /// row) and hands them to `completion` once, on the main actor. Returns
+    /// whether a provider was accepted.
     static func load(_ providers: [NSItemProvider], _ completion: @escaping ([String]) -> Void) -> Bool {
-        guard let provider = providers.first else { return false }
-        provider.loadObject(ofClass: NSString.self) { obj, _ in
-            guard let string = obj as? String else { return }
-            let ids = string.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+        guard !providers.isEmpty else { return false }
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var ids: [String] = []
+        for provider in providers {
+            group.enter()
+            _ = provider.loadObject(ofClass: NSString.self) { obj, _ in
+                defer { group.leave() }
+                guard let string = obj as? String else { return }
+                let found = string.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+                lock.withLock { ids.append(contentsOf: found) }
+            }
+        }
+        group.notify(queue: .main) {
             guard !ids.isEmpty else { return }
-            Task { @MainActor in completion(ids) }
+            completion(ids)
         }
         return true
     }

@@ -18,12 +18,7 @@ import AppKit
 struct MessageListView: View {
     @Environment(MailboxViewModel.self) private var vm
     @State private var hover = RowHoverModel()
-    /// Anchor row for ⇧-click range selection (the last plainly/⌘-clicked row).
-    @State private var selectionAnchor: String?
-    /// Drives keyboard focus onto the table. Because selection is set manually (the
-    /// cell-wide `.onDrag` swallows the mouse-down the Table would use to select and
-    /// focus itself), a click leaves the list unfocused — the row highlights gray and
-    /// arrow keys do nothing. Setting this on every click restores focus.
+    /// Drives keyboard focus onto the table (see the folder-change handler below).
     @FocusState private var tableFocused: Bool
     @State private var columnCustomization = TableColumnCustomization<MessageHeader>()
     /// Finds the backing NSTableView for palette scroll-to-row (see `scrollToMessage`).
@@ -135,19 +130,22 @@ struct MessageListView: View {
 
     private var table: some View {
         @Bindable var vm = vm
-        // Every cell fills its row and is a drag source (see `rowInteraction`), so a
-        // press-drag anywhere on a row moves the message(s) — single or multi — and the
-        // Table never falls back to its rubber-band multi-row selection. The price of a
-        // cell-wide `.onDrag` is that it eats the mouse-down the Table would use to
-        // select the row, so selection is driven manually in `handleClick`. Row order
-        // matches `displayedMessages`, already sorted by the view model.
+        // Rows are native drag sources (`itemProvider`), so the table keeps its own
+        // click, ⌘/⇧-click selection and drag handling. Per-cell SwiftUI drag and tap
+        // gestures were left stuck after a drop (the drag session takes the mouse-up),
+        // which swallowed later clicks and froze the sidebar. Row order matches
+        // `displayedMessages`, already sorted by the view model.
         return Table(
-            vm.displayedMessages,
+            of: MessageHeader.self,
             selection: $vm.selection,
             sortOrder: $vm.sortOrder,
             columnCustomization: $columnCustomization
         ) {
             columns
+        } rows: {
+            ForEach(vm.displayedMessages) { msg in
+                TableRow(msg).itemProvider { MessageDragPayload.itemProvider(ids: [msg.id]) }
+            }
         }
         .focused($tableFocused)
         // Reliable row hover: one tracker over the whole table (not per cell), so it
@@ -178,18 +176,13 @@ struct MessageListView: View {
             }
         }
         .contextMenu(forSelectionType: String.self) { ids in
-            MessageContextMenu(vm: vm, ids: contextTargets(clicked: ids))
+            MessageContextMenu(vm: vm, ids: ids.isEmpty ? Array(vm.selection) : Array(ids))
         } primaryAction: { ids in
             // Double-click (or Return) opens the message in its own window.
             if let id = ids.first { vm.openInWindow(id) }
         }
         .onChange(of: vm.selection) { _, sel in
             if sel.count == 1, let id = sel.first {
-                // Keep the ⇧-click anchor in sync no matter how the row was
-                // selected — native table click (row gaps the cell gestures
-                // don't cover), arrow keys, Home/End, or the ⌘K palette —
-                // otherwise a later ⇧-click extends from a stale/nil anchor.
-                selectionAnchor = id
                 Task { await vm.openMessage(id) }
             }
         }
@@ -352,71 +345,11 @@ struct MessageListView: View {
         }
     }
 
-    /// Drag payload for a row: the whole selection if this message is part of it,
-    /// otherwise just this message. `rowInteraction` puts this on every cell so the
-    /// entire row is a drag source.
-    private func rowDrag(_ msg: MessageHeader) -> NSItemProvider {
-        let ids = vm.selection.contains(msg.id) ? Array(vm.selection) : [msg.id]
-        return MessageDragPayload.itemProvider(ids: ids)
-    }
-
-    /// Shared per-cell treatment: fill the row, drag the message(s) from anywhere,
-    /// and select on click. Selection is manual because the cell-wide `.onDrag`
-    /// swallows the click the Table would otherwise use to select the row.
-    private func rowInteraction(_ msg: MessageHeader) -> RowInteraction {
-        RowInteraction(
-            onDrag: { rowDrag(msg) },
-            onClick: { handleClick(msg) },
-            onOpen: { vm.openInWindow(msg.id) }
-        )
-    }
-
-    /// Click-to-select, mirroring the usual list behaviour: a plain click selects
-    /// one row, ⌘ toggles it, ⇧ extends a range from the anchor (last plain/⌘ click).
-    private func handleClick(_ msg: MessageHeader) {
-        let flags = NSEvent.modifierFlags
-        if flags.contains(.command) {
-            if vm.selection.contains(msg.id) { vm.selection.remove(msg.id) }
-            else { vm.selection.insert(msg.id) }
-            selectionAnchor = msg.id
-        } else if flags.contains(.shift), let anchor = selectionAnchor {
-            vm.selection = Set(rangeIds(from: anchor, to: msg.id))
-        } else {
-            vm.selection = [msg.id]
-            selectionAnchor = msg.id
-        }
-        // Take keyboard focus so the selection highlights blue and arrow keys work.
-        tableFocused = true
-    }
-
-    /// Messages a right-click acts on. Right-click never updates the manual selection
-    /// (the cell-wide `.onDrag` owns the mouse-down), so SwiftUI hands the menu the
-    /// clicked row *unioned* with the stale selection — which silently drops the
-    /// single-message actions (Edit / Open All Links) whenever you right-click a row
-    /// you didn't left-click first (common when scanning a non-date sort like title).
-    /// The hover tracker already knows the exact row under the cursor, so target that:
-    /// right-clicking inside the selection acts on the whole selection, anything else
-    /// acts on just that row.
-    private func contextTargets(clicked ids: Set<String>) -> [String] {
-        if let target = hover.id {
-            return vm.selection.contains(target) ? Array(vm.selection) : [target]
-        }
-        return ids.isEmpty ? Array(vm.selection) : Array(ids)
-    }
-
-    /// Ids of the displayed rows between two messages, inclusive (order-independent).
-    private func rangeIds(from: String, to: String) -> [String] {
-        let ids = vm.displayedMessages.map(\.id)
-        guard let a = ids.firstIndex(of: from), let b = ids.firstIndex(of: to) else { return [to] }
-        return Array(ids[min(a, b)...max(a, b)])
-    }
-
     @ViewBuilder
     private func unreadCell(_ msg: MessageHeader) -> some View {
         Circle()
             .fill(msg.isRead ? Color.clear : Color.accentColor)
             .frame(width: 8, height: 8)
-            .modifier(rowInteraction(msg))
     }
 
     private func flagCell(_ msg: MessageHeader) -> some View {
@@ -425,7 +358,6 @@ struct MessageListView: View {
                 Image(systemName: "flag.fill").font(.caption).foregroundStyle(.red).help("Flagged")
             }
         }
-        .modifier(rowInteraction(msg))
     }
 
     private func attachmentCell(_ msg: MessageHeader) -> some View {
@@ -434,7 +366,6 @@ struct MessageListView: View {
                 Image(systemName: "paperclip").font(.caption).foregroundStyle(.secondary).help("Has attachment")
             }
         }
-        .modifier(rowInteraction(msg))
     }
 
     /// Category column: calendar events keep their icon, newsletters get theirs,
@@ -447,7 +378,6 @@ struct MessageListView: View {
                 Image(systemName: "newspaper").font(.caption).foregroundStyle(.secondary).help("Newsletter")
             }
         }
-        .modifier(rowInteraction(msg))
     }
 
     private func dateCell(_ msg: MessageHeader) -> some View {
@@ -466,7 +396,6 @@ struct MessageListView: View {
                         .transition(.opacity)
                 }
             }
-            .modifier(rowInteraction(msg))
     }
 
     /// Set by `TableHoverTracker` to the row currently under the cursor (nil when off
@@ -486,7 +415,6 @@ struct MessageListView: View {
                 Text("—").foregroundStyle(.tertiary)
             }
         }
-        .modifier(rowInteraction(msg))
     }
 
     private func fromCell(_ msg: MessageHeader) -> some View {
@@ -497,7 +425,6 @@ struct MessageListView: View {
                 .lineLimit(1)
             Spacer(minLength: 4)
         }
-        .modifier(rowInteraction(msg))
     }
 
     /// Sent-folder replacement for `fromCell`: the recipients, with the first
@@ -510,36 +437,12 @@ struct MessageListView: View {
                 .lineLimit(1)
             Spacer(minLength: 4)
         }
-        .modifier(rowInteraction(msg))
     }
 
     private func subjectCell(_ msg: MessageHeader) -> some View {
         Text(msg.subject)
             .font(msg.isRead ? .body : .body.weight(.semibold))
             .lineLimit(1)
-            .modifier(rowInteraction(msg))
-    }
-}
-
-/// Per-cell interaction shared by every column: fill the row, drag the message(s)
-/// from anywhere in the row, open on double-click, and route single-clicks to
-/// manual selection. A cell-wide `.onDrag` eats the click the Table would use for
-/// native selection, so `onClick` re-implements it. `simultaneousGesture` lets the
-/// tap and the drag coexist — a stationary click selects, a press-drag drags.
-/// Hover is NOT handled here — see `TableHoverTracker` on the Table itself, because
-/// SwiftUI's `.onHover` (and any per-cell tracking) fights `Table`'s cell recycling.
-private struct RowInteraction: ViewModifier {
-    let onDrag: () -> NSItemProvider
-    let onClick: () -> Void
-    let onOpen: () -> Void
-
-    func body(content: Content) -> some View {
-        content
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .onDrag(onDrag)
-            .simultaneousGesture(TapGesture(count: 2).onEnded(onOpen))
-            .simultaneousGesture(TapGesture(count: 1).onEnded(onClick))
     }
 }
 
