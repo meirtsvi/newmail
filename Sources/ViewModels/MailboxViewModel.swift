@@ -1032,9 +1032,23 @@ final class MailboxViewModel {
 
     // MARK: - Quick-move bar
 
-    /// Quick-move targets for the current account (moves stay within a provider).
+    /// Quick-move targets for the current account: its own folders plus those of an
+    /// account it can move across to (Outlook ↔ Gmail). The open folder is left out.
     var quickMoveForCurrentAccount: [MailFolder] {
-        quickMoveFolders.filter { $0.accountId == currentAccountId }
+        quickMoveFolders.filter {
+            $0.compositeId != currentFolder?.compositeId
+                && ($0.accountId == currentAccountId || canMoveAcross(toAccountId: $0.accountId))
+        }
+    }
+
+    /// The owning account's email when another quick-move folder shares this
+    /// folder's name (e.g. "Inbox" on both accounts), so the two can be told apart.
+    func quickMoveSuffix(_ folder: MailFolder) -> String? {
+        let collides = quickMoveFolders.contains {
+            $0.compositeId != folder.compositeId && $0.name == folder.name
+        }
+        guard collides else { return nil }
+        return sessions.first { $0.account.id == folder.accountId }?.account.email
     }
 
     /// Quick-move targets for a specific account — used by a new-mail popup, whose

@@ -79,9 +79,10 @@ struct MoveMenu: View {
     var body: some View {
         ForEach(folders, id: \.compositeId) { folder in
             Button {
-                Task { await vm.move(ids, to: folder) }
+                Task { await vm.moveDropped(ids, to: folder) }
             } label: {
-                Label(folder.name, systemImage: folder.kind.icon)
+                let suffix = quickOnly ? vm.quickMoveSuffix(folder) : nil
+                Label(suffix.map { "\(folder.name) (\($0))" } ?? folder.name, systemImage: folder.kind.icon)
             }
         }
     }

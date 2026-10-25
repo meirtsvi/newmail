@@ -138,12 +138,20 @@ struct MoveBarView: View {
     }
 
     private func chip(_ folder: MailFolder) -> some View {
-        Button {
+        let suffix = vm.quickMoveSuffix(folder)
+        return Button {
             Task { await vm.moveDropped(Array(vm.selection), to: folder) }
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: folder.kind.icon)
-                Text(Self.wrappedName(folder.name))
+                // Same-named folders on two accounts show the account on a second line.
+                Group {
+                    if let suffix {
+                        Text(folder.name) + Text("\n" + suffix).foregroundStyle(.secondary)
+                    } else {
+                        Text(Self.wrappedName(folder.name))
+                    }
+                }
                     .multilineTextAlignment(.leading)
                     .lineLimit(2)
                 Spacer(minLength: 0)
@@ -160,7 +168,7 @@ struct MoveBarView: View {
             .overlay(Self.chipShape.stroke(.quaternary))
         }
         .buttonStyle(.plain)
-        .help("Move \(vm.selection.count) selected to \(folder.name)")
+        .help("Move \(vm.selection.count) selected to \(folder.name)\(suffix.map { " (\($0))" } ?? "")")
         .modifier(FolderDropTarget(vm: vm, folder: folder))
     }
 
@@ -276,11 +284,10 @@ struct QuickMoveConfigView: View {
         .frame(width: 360, height: 460)
     }
 
-    /// Folders offered as move targets: everything except the Inbox, system
-    /// folders first (by kind) then custom folders alphabetically.
+    /// Folders offered as move targets: system folders first (by kind) then
+    /// custom folders alphabetically.
     private func folders(for accountId: String) -> [MailFolder] {
         (vm.foldersByAccount[accountId] ?? [])
-            .filter { $0.kind != .inbox }
             .sorted { ($0.kind.sortWeight, $0.name) < ($1.kind.sortWeight, $1.name) }
     }
 }
