@@ -1110,6 +1110,10 @@ struct RichTextEditor: NSViewRepresentable {
         textView.font = RichTextController.defaultFont
         textView.typingAttributes[.font] = RichTextController.defaultFont
         textView.textContainerInset = NSSize(width: 8, height: 8)
+        // AppKit draws selected text in the system selected-text color, so a color
+        // applied to the selection stayed invisible until it was deselected. Only
+        // the selection background is drawn; the text keeps its own color.
+        textView.selectedTextAttributes = [.backgroundColor: NSColor.selectedTextBackgroundColor]
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         // Typed or pasted URLs become links.
