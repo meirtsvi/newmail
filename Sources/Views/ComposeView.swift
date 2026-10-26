@@ -12,6 +12,8 @@ struct ComposeView: View {
     let onClose: () -> Void
 
     @StateObject private var rich = RichTextController()
+    /// The reading pane's persisted body zoom (⌘+ / ⌘- there).
+    @AppStorage("messageZoom") private var messageZoom: Double = 1.0
     /// WebView-based editor used only for "Edit message", where the original HTML's
     /// formatting (fonts, sizes, bold, spacing, inline images) must survive intact —
     /// the NSAttributedString round-trip behind `rich` would degrade it.
@@ -893,7 +895,8 @@ struct ComposeView: View {
             Text(request.kind == .forward ? "Forwarded message" : "Original message")
                 .font(.caption).foregroundStyle(.secondary)
                 .padding(.horizontal, 12).padding(.top, 6)
-            HTMLView(html: request.quotedHTML)
+            // The reading pane's zoom, so the original reads at the size it did there.
+            HTMLView(html: request.quotedHTML, zoom: messageZoom)
                 .frame(maxHeight: .infinity)
         }
     }
