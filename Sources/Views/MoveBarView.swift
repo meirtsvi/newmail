@@ -65,6 +65,11 @@ struct MoveBarView: View {
     @Environment(MailboxViewModel.self) private var vm
     @State private var showConfig = false
     @State private var showSweepRules = false
+    /// Each chip's frame in the strip's own (unscrolled) coordinates, and the
+    /// strip's width: together they say which chips are cut off right now.
+    @State private var chipFrames: [String: CGRect] = [:]
+    @State private var stripWidth: CGFloat = 0
+    fileprivate static let strip = "moveStrip"
 
     var body: some View {
         HStack(spacing: 8) {
@@ -78,20 +83,26 @@ struct MoveBarView: View {
                 .buttonStyle(.borderless)
                 Spacer()
             } else {
-                // An even grid of same-sized cells that wraps onto as many rows as
-                // it takes, so no chip is ever clipped off the right edge — the bar
-                // grows taller instead.
-                ChipGridLayout(spacing: 6, rowSpacing: 4) {
-                    ForEach(rules) { rule in
-                        sweepChip(rule)
-                    }
-                    ForEach(folders, id: \.compositeId) { folder in
-                        chip(folder)
+                // One line of chips, each as wide as its name, that scrolls
+                // sideways when they don't all fit — the bar stays one chip tall
+                // however many folders are configured.
+                // No indicator: the chip cut off at the edge already says it scrolls,
+                // and the knob sat on top of the chips.
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(rules) { rule in
+                            sweepChip(rule).modifier(TrackFrame(id: Self.key(rule), frames: $chipFrames))
+                        }
+                        ForEach(folders, id: \.compositeId) { folder in
+                            chip(folder).modifier(TrackFrame(id: folder.compositeId, frames: $chipFrames))
+                        }
                     }
                 }
-                // Claim the row's leftover width (and no more), so the layout
-                // wraps to it instead of running past the right edge.
+                .coordinateSpace(name: Self.strip)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { stripWidth = $0 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                overflowMenu(rules: rules.filter { isHidden(Self.key($0)) },
+                             folders: folders.filter { isHidden($0.compositeId) })
             }
             Menu {
                 Button("Quick-Move Folders…") { showConfig = true }
@@ -117,6 +128,49 @@ struct MoveBarView: View {
         .sheet(isPresented: $showConfig) { QuickMoveConfigView() }
     }
 
+    private static func key(_ rule: SweepRule) -> String { "rule:" + rule.id.uuidString }
+
+    /// True when the chip isn't wholly inside the strip (scrolled past either edge).
+    private func isHidden(_ id: String) -> Bool {
+        guard let frame = chipFrames[id], stripWidth > 0 else { return false }
+        return frame.minX < -0.5 || frame.maxX > stripWidth + 0.5
+    }
+
+    /// "»" at the end of the strip, offering the chips that are cut off or
+    /// scrolled out of sight; shown only while there are some.
+    @ViewBuilder
+    private func overflowMenu(rules: [SweepRule], folders: [MailFolder]) -> some View {
+        if !rules.isEmpty || !folders.isEmpty {
+            Menu {
+                ForEach(rules) { rule in
+                    let count = vm.sweepMatches(rule).count
+                    Button {
+                        Task { await vm.runSweep(rule) }
+                    } label: {
+                        Label("\(rule.name.isEmpty ? vm.sweepTarget(rule)?.name ?? "" : rule.name) (\(count))",
+                              systemImage: "wand.and.stars")
+                    }
+                    .disabled(count == 0)
+                }
+                ForEach(folders, id: \.compositeId) { folder in
+                    let suffix = vm.quickMoveSuffix(folder)
+                    Button {
+                        Task { await vm.moveDropped(Array(vm.selection), to: folder) }
+                    } label: {
+                        Label(folder.name + (suffix.map { " · " + $0 } ?? ""), systemImage: folder.kind.icon)
+                    }
+                }
+            } label: {
+                Image(systemName: "chevron.right.2")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .layoutPriority(1)
+            .help("\(rules.count + folders.count) more quick-move folder\(rules.count + folders.count == 1 ? "" : "s")")
+        }
+    }
+
     /// A rule chip: moves every loaded message from the rule's senders at once.
     private func sweepChip(_ rule: SweepRule) -> some View {
         let count = vm.sweepMatches(rule).count
@@ -126,10 +180,8 @@ struct MoveBarView: View {
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: "wand.and.stars")
-                Text(Self.wrappedName(rule.name.isEmpty ? folderName : rule.name))
-                    .multilineTextAlignment(.leading)
-                    .lineLimit(2)
-                Spacer(minLength: 0)
+                Text(rule.name.isEmpty ? folderName : rule.name)
+                    .lineLimit(1)
                 if count > 0 {
                     Text("\(count)").monospacedDigit().foregroundStyle(.secondary)
                 }
@@ -138,7 +190,7 @@ struct MoveBarView: View {
             .foregroundStyle(Color(nsColor: .textColor))
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .fixedSize()
             .background(Color(nsColor: .textBackgroundColor), in: Self.chipShape)
             .overlay(Self.chipShape.stroke(Color.accentColor.opacity(0.7)))
         }
@@ -155,17 +207,9 @@ struct MoveBarView: View {
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: folder.kind.icon)
-                // Same-named folders on two accounts show the account on a second line.
-                Group {
-                    if let suffix {
-                        Text(folder.name) + Text("\n" + suffix).foregroundStyle(.secondary)
-                    } else {
-                        Text(Self.wrappedName(folder.name))
-                    }
-                }
-                    .multilineTextAlignment(.leading)
-                    .lineLimit(2)
-                Spacer(minLength: 0)
+                // Same-named folders on two accounts show the account after the name.
+                (Text(folder.name) + Text(suffix.map { " · " + $0 } ?? "").foregroundStyle(.secondary))
+                    .lineLimit(1)
             }
             .font(.caption)
             // The editor's own colours: white card with black text in light mode,
@@ -173,8 +217,7 @@ struct MoveBarView: View {
             .foregroundStyle(Color(nsColor: .textColor))
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            // Fill the cell the grid hands out, so every chip is the same size.
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .fixedSize()
             .background(Color(nsColor: .textBackgroundColor), in: Self.chipShape)
             .overlay(Self.chipShape.stroke(.quaternary))
         }
@@ -184,82 +227,17 @@ struct MoveBarView: View {
     }
 
     private static let chipShape = RoundedRectangle(cornerRadius: 5)
-
-    /// Breaks a multi-word folder name over two lines so its chip stays narrow
-    /// enough to sit alongside the others. The split point is the word boundary
-    /// closest to the middle of the name, which keeps the two lines even.
-    static func wrappedName(_ name: String) -> String {
-        let words = name.split(separator: " ").map(String.init)
-        guard words.count > 1 else { return name }
-        let half = name.count / 2
-        var best = 1
-        var bestDistance = Int.max
-        var prefixLength = 0
-        for index in 0..<(words.count - 1) {
-            prefixLength += words[index].count + (index > 0 ? 1 : 0)
-            let distance = abs(prefixLength - half)
-            if distance < bestDistance {
-                bestDistance = distance
-                best = index + 1
-            }
-        }
-        return words[..<best].joined(separator: " ") + "\n" + words[best...].joined(separator: " ")
-    }
 }
 
-/// Lays subviews out as a grid of identically-sized cells — the cell is as big as
-/// the largest subview — fitting as many columns as the proposed width allows and
-/// wrapping onto further rows. Uniform cells keep the bar symmetric no matter how
-/// uneven the folder names are.
-struct ChipGridLayout: Layout {
-    var spacing: CGFloat = 6
-    var rowSpacing: CGFloat = 4
+/// Records a chip's frame in the move strip's coordinate space under `id`.
+private struct TrackFrame: ViewModifier {
+    let id: String
+    @Binding var frames: [String: CGRect]
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        guard !subviews.isEmpty else { return .zero }
-        let cell = cellSize(subviews)
-        let available = proposal.width ?? .infinity
-        let columns = columnCount(width: available, cell: cell.width, count: subviews.count)
-        let rows = (subviews.count + columns - 1) / columns
-        let packed = CGFloat(columns) * cell.width + CGFloat(columns - 1) * spacing
-        return CGSize(
-            // Claim the whole row when one is offered, so `placeSubviews` gets the
-            // real width to spread the columns across.
-            width: available.isFinite ? max(available, cell.width) : packed,
-            height: CGFloat(rows) * cell.height + CGFloat(rows - 1) * rowSpacing
-        )
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        guard !subviews.isEmpty else { return }
-        var cell = cellSize(subviews)
-        let columns = columnCount(width: bounds.width, cell: cell.width, count: subviews.count)
-        // Share out the width left over by the last whole column, so the grid ends
-        // flush with the bar instead of trailing an uneven gap.
-        if bounds.width.isFinite, columns > 1 || bounds.width > cell.width {
-            cell.width = max(cell.width, (bounds.width - spacing * CGFloat(columns - 1)) / CGFloat(columns))
-        }
-        for index in subviews.indices {
-            let origin = CGPoint(
-                x: bounds.minX + CGFloat(index % columns) * (cell.width + spacing),
-                y: bounds.minY + CGFloat(index / columns) * (cell.height + rowSpacing)
-            )
-            subviews[index].place(at: origin, anchor: .topLeading, proposal: ProposedViewSize(cell))
-        }
-    }
-
-    /// The largest subview's size — every cell gets this one.
-    private func cellSize(_ subviews: Subviews) -> CGSize {
-        subviews.reduce(into: CGSize.zero) { size, subview in
-            let ideal = subview.sizeThatFits(.unspecified)
-            size.width = max(size.width, ideal.width)
-            size.height = max(size.height, ideal.height)
-        }
-    }
-
-    private func columnCount(width: CGFloat, cell: CGFloat, count: Int) -> Int {
-        guard cell > 0, width.isFinite else { return max(1, count) }
-        return max(1, min(count, Int((width + spacing) / (cell + spacing))))
+    func body(content: Content) -> some View {
+        content.onGeometryChange(for: CGRect.self) {
+            $0.frame(in: .named(MoveBarView.strip))
+        } action: { frames[id] = $0 }
     }
 }
 
