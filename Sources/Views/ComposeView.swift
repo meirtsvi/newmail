@@ -25,8 +25,6 @@ struct ComposeView: View {
     @State private var showLinkPrompt = false
     @State private var linkURL = ""
     @State private var linkText = ""
-    @State private var fontFamily = RichTextController.defaultFamily
-    @State private var fontSize: CGFloat = RichTextController.defaultSize
     /// Snapshot of the fields at the last successful draft save, so the 10-second
     /// autosave skips when nothing has changed.
     @State private var lastSavedSnapshot = ""
@@ -540,14 +538,20 @@ struct ComposeView: View {
             Button { rich.toggleBold() } label: { Image(systemName: "bold") }
                 .keyboardShortcut("b", modifiers: .command)
                 .help("Bold (⌘B)")
+                .modifier(ActiveHighlight(isOn: rich.format.bold))
             Button { rich.toggleItalic() } label: { Image(systemName: "italic") }
                 .keyboardShortcut("i", modifiers: .command)
                 .help("Italic (⌘I)")
+                .modifier(ActiveHighlight(isOn: rich.format.italic))
             Button { rich.toggleUnderline() } label: { Image(systemName: "underline") }
                 .keyboardShortcut("u", modifiers: .command)
                 .help("Underline (⌘U)")
+                .modifier(ActiveHighlight(isOn: rich.format.underline))
             Button { rich.toggleSuperscript() } label: { Image(systemName: "textformat.superscript") }
                 .help("Superscript")
+            Button { rich.togglePainter() } label: { Image(systemName: "paintbrush") }
+                .help(Self.painterHelp)
+                .modifier(ActiveHighlight(isOn: rich.isPainting))
             Button { rich.pasteMatchingStyle() } label: { Image(systemName: "doc.on.clipboard") }
                 .keyboardShortcut("v", modifiers: [.command, .option, .shift])
                 .help("Paste and match style (⌥⇧⌘V)")
@@ -594,14 +598,20 @@ struct ComposeView: View {
             Button { htmlEditor.toggleBold() } label: { Image(systemName: "bold") }
                 .keyboardShortcut("b", modifiers: .command)
                 .help("Bold (⌘B)")
+                .modifier(ActiveHighlight(isOn: htmlEditor.format.bold))
             Button { htmlEditor.toggleItalic() } label: { Image(systemName: "italic") }
                 .keyboardShortcut("i", modifiers: .command)
                 .help("Italic (⌘I)")
+                .modifier(ActiveHighlight(isOn: htmlEditor.format.italic))
             Button { htmlEditor.toggleUnderline() } label: { Image(systemName: "underline") }
                 .keyboardShortcut("u", modifiers: .command)
                 .help("Underline (⌘U)")
+                .modifier(ActiveHighlight(isOn: htmlEditor.format.underline))
             Button { htmlEditor.toggleSuperscript() } label: { Image(systemName: "textformat.superscript") }
                 .help("Superscript")
+            Button { htmlEditor.togglePainter() } label: { Image(systemName: "paintbrush") }
+                .help(Self.painterHelp)
+                .modifier(ActiveHighlight(isOn: htmlEditor.isPainting))
             Button { htmlEditor.pasteMatchingStyle() } label: { Image(systemName: "doc.on.clipboard") }
                 .keyboardShortcut("v", modifiers: [.command, .option, .shift])
                 .help("Paste and match style (⌥⇧⌘V)")
@@ -640,6 +650,28 @@ struct ComposeView: View {
         .padding(.vertical, 6)
     }
 
+    /// The formatting at the caret in whichever editor this window uses.
+    private var caretFormat: CaretFormat {
+        request.kind == .edit ? htmlEditor.format : rich.format
+    }
+
+    /// The listed families, plus the caret's own when it isn't one of them (text
+    /// pasted or quoted in another font), so the picker can show it.
+    private var familyChoices: [String] {
+        let listed = RichTextController.fontFamilies
+        return listed.contains(caretFormat.family) ? listed : listed + [caretFormat.family]
+    }
+
+    /// The listed sizes, plus the caret's own when it isn't one of them.
+    private var sizeChoices: [CGFloat] {
+        let size = caretFormat.size.rounded()
+        let listed = RichTextController.fontSizes
+        return listed.contains(size) ? listed : (listed + [size]).sorted()
+    }
+
+    private static let painterHelp =
+        "Copy formatting: place the cursor on formatted text, click, then select text to apply it to"
+
     /// A short palette of text colors offered in the compose toolbar. "Automatic"
     /// is the editor's own text color, so on screen it follows the app's light/dark
     /// setting — white on a dark background, black on a light one. It always leaves
@@ -677,7 +709,7 @@ struct ComposeView: View {
             }
         } label: {
             // Pre-colored image: menu labels drop SwiftUI tint like menu items do.
-            Image(nsImage: Self.textColorIcon())
+            Image(nsImage: Self.textColorIcon(caretFormat.color ?? .textColor))
         }
         .menuIndicator(.hidden)
         .frame(width: 28)
@@ -704,19 +736,20 @@ struct ComposeView: View {
                 }
             }
         } label: {
-            Image(nsImage: Self.backgroundColorIcon())
+            Image(nsImage: Self.backgroundColorIcon(caretFormat.background))
         }
         .menuIndicator(.hidden)
         .frame(width: 28)
         .help("Background color")
     }
 
-    /// Text-color toolbar icon: an "A" over a red bar. Drawn on demand so the
-    /// letter follows light/dark mode; non-template so the bar keeps its color.
-    private static func textColorIcon() -> NSImage {
+    /// Text-color toolbar icon: an "A" over a bar in the caret's text color. Drawn
+    /// on demand so the letter follows light/dark mode; non-template so the bar
+    /// keeps its color.
+    private static func textColorIcon(_ color: NSColor) -> NSImage {
         let image = NSImage(size: NSSize(width: 16, height: 16), flipped: true) { _ in
             drawLetterA(in: NSRect(x: 0, y: -1, width: 16, height: 13), color: .labelColor)
-            NSColor.systemRed.setFill()
+            color.setFill()
             NSBezierPath(roundedRect: NSRect(x: 1, y: 12.5, width: 14, height: 3), xRadius: 1, yRadius: 1).fill()
             return true
         }
@@ -724,13 +757,19 @@ struct ComposeView: View {
         return image
     }
 
-    /// Background-color toolbar icon: a black "A" on a yellow box, like a
-    /// highlighted letter.
-    private static func backgroundColorIcon() -> NSImage {
+    /// Background-color toolbar icon: an "A" on a box in the caret's highlight
+    /// color, like a highlighted letter — an outlined box when there's none.
+    private static func backgroundColorIcon(_ color: NSColor?) -> NSImage {
         let image = NSImage(size: NSSize(width: 16, height: 16), flipped: true) { _ in
-            NSColor.systemYellow.setFill()
-            NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: 16, height: 16), xRadius: 3, yRadius: 3).fill()
-            drawLetterA(in: NSRect(x: 0, y: 1, width: 16, height: 14), color: .black)
+            let box = NSBezierPath(roundedRect: NSRect(x: 0.5, y: 0.5, width: 15, height: 15), xRadius: 3, yRadius: 3)
+            if let color {
+                color.setFill()
+                box.fill()
+            } else {
+                NSColor.secondaryLabelColor.setStroke()
+                box.stroke()
+            }
+            drawLetterA(in: NSRect(x: 0, y: 1, width: 16, height: 14), color: color == nil ? .labelColor : .black)
             return true
         }
         image.isTemplate = false
@@ -768,25 +807,31 @@ struct ComposeView: View {
     /// (or to subsequent typing when nothing is selected).
     private var fontPickers: some View {
         HStack(spacing: 6) {
-            Picker("Font", selection: $fontFamily) {
-                ForEach(RichTextController.fontFamilies, id: \.self) { Text($0).tag($0) }
+            // The pickers show the caret's font; only a pick made in them applies,
+            // so the caret moving never reformats anything.
+            Picker("Font", selection: Binding(
+                get: { caretFormat.family },
+                set: { family in
+                    if request.kind == .edit { htmlEditor.setFontFamily(family) }
+                    else { rich.setFontFamily(family) }
+                }
+            )) {
+                ForEach(familyChoices, id: \.self) { Text($0).tag($0) }
             }
             .labelsHidden()
             .frame(width: 130)
-            .onChange(of: fontFamily) { _, family in
-                if request.kind == .edit { htmlEditor.setFontFamily(family) }
-                else { rich.setFontFamily(family) }
-            }
 
-            Picker("Size", selection: $fontSize) {
-                ForEach(RichTextController.fontSizes, id: \.self) { Text("\(Int($0))").tag($0) }
+            Picker("Size", selection: Binding(
+                get: { caretFormat.size.rounded() },
+                set: { size in
+                    if request.kind == .edit { htmlEditor.setFontSize(size) }
+                    else { rich.setFontSize(size) }
+                }
+            )) {
+                ForEach(sizeChoices, id: \.self) { Text("\(Int($0))").tag($0) }
             }
             .labelsHidden()
             .frame(width: 60)
-            .onChange(of: fontSize) { _, size in
-                if request.kind == .edit { htmlEditor.setFontSize(size) }
-                else { rich.setFontSize(size) }
-            }
 
             colorMenu
             backgroundColorMenu
@@ -926,5 +971,18 @@ private struct LinkPrompt: View {
         }
         .padding(20)
         .frame(width: 360)
+    }
+}
+
+/// Marks a toolbar toggle that's on — the caret's text is bold, the format
+/// painter is armed — with a tinted rounded background.
+private struct ActiveHighlight: ViewModifier {
+    let isOn: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .padding(2)
+            .background(isOn ? Color.accentColor.opacity(0.25) : .clear,
+                        in: RoundedRectangle(cornerRadius: 4))
     }
 }

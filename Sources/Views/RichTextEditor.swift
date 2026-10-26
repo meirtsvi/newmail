@@ -2,6 +2,75 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+/// The character formatting at the caret (or at the start of the selection),
+/// which the compose toolbar shows. Shared by both compose editors.
+struct CaretFormat: Equatable {
+    var family: String
+    var size: CGFloat
+    /// nil: the editor's default text color.
+    var color: NSColor?
+    /// nil: no highlight.
+    var background: NSColor?
+    var bold = false
+    var italic = false
+    var underline = false
+}
+
+/// The mouse cursor shown over a compose body while the format painter is
+/// armed: a paintbrush whose tip is the hot spot, outlined in white so it reads
+/// on any background. Shared by both compose editors.
+enum PaintCursor {
+    static let cursor: NSCursor = {
+        let (image, hotSpot) = makeImage()
+        return NSCursor(image: image, hotSpot: hotSpot)
+    }()
+
+    /// The cursor as a 2x PNG, for the WebView editor's CSS `cursor`.
+    static let png2x: Data? = {
+        let image = cursor.image
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: Int(image.size.width * 2), pixelsHigh: Int(image.size.height * 2),
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        ) else { return nil }
+        rep.size = image.size
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        image.draw(in: NSRect(origin: .zero, size: image.size))
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.representation(using: .png, properties: [:])
+    }()
+
+    static var hotSpot: NSPoint { cursor.hotSpot }
+
+    private static func makeImage() -> (NSImage, NSPoint) {
+        let size = NSSize(width: 24, height: 24)
+        let sizing = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
+        func symbol(_ color: NSColor) -> NSImage? {
+            NSImage(systemSymbolName: "paintbrush.pointed.fill", accessibilityDescription: nil)?
+                .withSymbolConfiguration(sizing.applying(.init(paletteColors: [color])))
+        }
+        guard let black = symbol(.black), let white = symbol(.white) else {
+            return (NSCursor.iBeam.image, NSCursor.iBeam.hotSpot)
+        }
+        let origin = NSPoint(x: ((size.width - black.size.width) / 2).rounded(),
+                             y: ((size.height - black.size.height) / 2).rounded())
+        let image = NSImage(size: size, flipped: false) { _ in
+            for dx in [-1.0, 0, 1] {
+                for dy in [-1.0, 0, 1] where dx != 0 || dy != 0 {
+                    white.draw(at: NSPoint(x: origin.x + dx, y: origin.y + dy), from: .zero,
+                               operation: .sourceOver, fraction: 1)
+                }
+            }
+            black.draw(at: origin, from: .zero, operation: .sourceOver, fraction: 1)
+            return true
+        }
+        // The brush points down-left, so its tip is the symbol's bottom-left
+        // corner; the hot spot is measured from the image's top-left.
+        return (image, NSPoint(x: origin.x + 1, y: size.height - origin.y - 1))
+    }
+}
+
 /// Controls a rich-text NSTextView: applies formatting from the SwiftUI toolbar
 /// and exports the content as HTML for sending.
 @MainActor
@@ -381,6 +450,87 @@ final class RichTextController: ObservableObject {
         // affected paragraph on (or off) the list.
         tv.typingAttributes[.paragraphStyle] = lastStyle
         refreshContentHeight()
+    }
+
+    // MARK: Caret format & format painter
+
+    /// The formatting at the caret, kept current as the caret moves and as
+    /// formatting is applied, so the toolbar reflects the letter being edited.
+    @Published private(set) var format = CaretFormat(family: defaultFamily, size: defaultSize)
+
+    /// Re-reads `format` from the caret. With a selection it's the selection's
+    /// first character; with a bare caret it's the typing attributes, which is
+    /// what the next character typed will get.
+    func refreshFormat() {
+        guard let tv = textView else { return }
+        let attrs = caretAttributes(tv)
+        let font = (attrs[.font] as? NSFont) ?? Self.defaultFont
+        let traits = NSFontManager.shared.traits(of: font)
+        // The system font's family is a private ".AppleSystemUIFont"-style name.
+        let family = font.familyName.map { $0.hasPrefix(".") ? Self.systemFamily : $0 } ?? Self.systemFamily
+        let updated = CaretFormat(
+            family: family, size: font.pointSize,
+            color: attrs[.foregroundColor] as? NSColor,
+            background: attrs[.backgroundColor] as? NSColor,
+            bold: traits.contains(.boldFontMask),
+            italic: traits.contains(.italicFontMask),
+            underline: ((attrs[.underlineStyle] as? Int) ?? 0) != 0
+        )
+        if updated != format { format = updated }
+    }
+
+    private func caretAttributes(_ tv: NSTextView) -> [NSAttributedString.Key: Any] {
+        let range = tv.selectedRange()
+        if range.length > 0, let ts = tv.textStorage, range.location < ts.length {
+            return ts.attributes(at: range.location, effectiveRange: nil)
+        }
+        return tv.typingAttributes
+    }
+
+    /// The character attributes the format painter copies: everything about how a
+    /// letter looks, nothing about its paragraph or what it links to.
+    private static let paintedKeys: [NSAttributedString.Key] = [
+        .font, .foregroundColor, .backgroundColor, .underlineStyle, .superscript,
+    ]
+
+    /// True while the format painter holds copied formatting, waiting for the
+    /// next mouse selection to apply it to.
+    @Published private(set) var isPainting = false {
+        didSet { (textView as? ComposeTextView)?.overrideCursor = isPainting ? PaintCursor.cursor : nil }
+    }
+    private var paintAttributes: [NSAttributedString.Key: Any] = [:]
+
+    /// Copies the formatting at the caret, or cancels a pending paint.
+    func togglePainter() {
+        guard let tv = textView else { return }
+        if isPainting {
+            isPainting = false
+            return
+        }
+        var attrs = caretAttributes(tv).filter { Self.paintedKeys.contains($0.key) }
+        if attrs[.font] == nil { attrs[.font] = Self.defaultFont }
+        paintAttributes = attrs
+        isPainting = true
+        tv.window?.makeFirstResponder(tv)
+    }
+
+    /// Applies the copied formatting to the selection a mouse drag (or a
+    /// double-click) just made. One-shot: the painter disarms once used. A click
+    /// that leaves no selection keeps it armed.
+    func applyPainterToSelection() {
+        guard isPainting, let tv = textView, let ts = tv.textStorage else { return }
+        let range = tv.selectedRange()
+        guard range.length > 0, tv.shouldChangeText(in: range, replacementString: nil) else { return }
+        for key in Self.paintedKeys {
+            if let value = paintAttributes[key] {
+                ts.addAttribute(key, value: value, range: range)
+            } else {
+                ts.removeAttribute(key, range: range)
+            }
+        }
+        tv.didChangeText()
+        isPainting = false
+        refreshFormat()
     }
 
     /// The label used for the default UI/system font in the family picker; it has no
@@ -799,12 +949,47 @@ final class ComposeTextView: NSTextView {
     var onFiles: (([URL]) -> Void)?
     /// A plain click on a link, with the link and its character index.
     var onLinkClick: ((Any, Int) -> Void)?
+    /// A mouse click or drag has finished (the selection is final).
+    var onMouseUp: (() -> Void)?
+    /// The typing attributes changed — e.g. ⌘B with no selection — which moves
+    /// neither the selection nor the text, so nothing else reports it.
+    var onTypingAttributesChange: (() -> Void)?
+
+    override var typingAttributes: [NSAttributedString.Key: Any] {
+        didSet { onTypingAttributesChange?() }
+    }
+
+    /// Shown over the text in place of the I-beam (the format painter's brush).
+    var overrideCursor: NSCursor? {
+        didSet { window?.invalidateCursorRects(for: self) }
+    }
+
+    override func resetCursorRects() {
+        if let overrideCursor {
+            addCursorRect(visibleRect, cursor: overrideCursor)
+        } else {
+            super.resetCursorRects()
+        }
+    }
+
+    // NSTextView also sets the I-beam itself as the mouse moves, not only
+    // through cursor rects.
+    override func mouseMoved(with event: NSEvent) {
+        if let overrideCursor { overrideCursor.set() } else { super.mouseMoved(with: event) }
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        if let overrideCursor { overrideCursor.set() } else { super.cursorUpdate(with: event) }
+    }
 
     /// An editable text view only places the caret when a link is clicked, so a
     /// single click that lands on link text (and doesn't drag out a selection) is
     /// reported here once the click finishes.
     override func mouseDown(with event: NSEvent) {
+        // Selecting with the brush keeps the brush, not the I-beam, during the drag.
+        overrideCursor?.set()
         super.mouseDown(with: event)
+        onMouseUp?()
         guard event.clickCount == 1, selectedRange().length == 0,
               let lm = layoutManager, let tc = textContainer, let ts = textStorage, ts.length > 0
         else { return }
@@ -945,6 +1130,15 @@ struct RichTextEditor: NSViewRepresentable {
         textView.onLinkClick = { [weak controller] link, index in
             MainActor.assumeIsolated { controller?.showLinkPopover(for: link, at: index) }
         }
+        textView.onMouseUp = { [weak controller] in
+            MainActor.assumeIsolated { controller?.applyPainterToSelection() }
+        }
+        textView.onTypingAttributesChange = { [weak controller] in
+            MainActor.assumeIsolated { controller?.refreshFormat() }
+        }
+        // Formatting applied to a selection edits the storage's attributes without
+        // a text change; the storage delegate is what sees it.
+        textStorage.delegate = context.coordinator
 
         scrollView.documentView = textView
         controller.textView = textView
@@ -958,7 +1152,7 @@ struct RichTextEditor: NSViewRepresentable {
     /// back to the Subject field instead of inserting a back-tab, and keeps the
     /// inline-image list in sync as the body is edited.
     @MainActor
-    final class Coordinator: NSObject, NSTextViewDelegate {
+    final class Coordinator: NSObject, NSTextViewDelegate, NSTextStorageDelegate {
         let controller: RichTextController
         init(controller: RichTextController) { self.controller = controller }
 
@@ -1007,6 +1201,16 @@ struct RichTextEditor: NSViewRepresentable {
         /// just as typing can, so the popup is re-evaluated here too.
         func textViewDidChangeSelection(_ notification: Notification) {
             controller.refreshMention()
+            controller.refreshFormat()
+        }
+
+        /// Re-reads the caret format once the storage has finished processing an
+        /// attribute change (reading it mid-edit could see a half-applied run).
+        nonisolated func textStorage(_ textStorage: NSTextStorage,
+                                     didProcessEditing editedMask: NSTextStorageEditActions,
+                                     range editedRange: NSRange, changeInLength delta: Int) {
+            guard editedMask.contains(.editedAttributes) else { return }
+            Task { @MainActor [weak self] in self?.controller.refreshFormat() }
         }
     }
 }

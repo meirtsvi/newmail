@@ -119,23 +119,76 @@ final class HTMLEditorController: ObservableObject {
         exec("fontName", value: css, styleWithCSS: true)
     }
 
-    /// Changes the size of the selected text. `execCommand('fontSize')` only speaks
-    /// the legacy 1–7 scale, so the selection is stamped with size 7 and those tags
-    /// are rewritten to the exact pixel size; any size-7 font tags the original
-    /// message already had are marked first so they're left alone.
+    /// Changes the size of the selected text (`__nmSetFontSize` in `formatScript`).
     func setFontSize(_ size: CGFloat) {
-        run("""
-        var existing = document.querySelectorAll('font[size="7"]');
-        for (var i = 0; i < existing.length; i++) existing[i].setAttribute('data-nm-keep', '');
-        document.execCommand('styleWithCSS', false, false);
-        document.execCommand('fontSize', false, '7');
-        var made = document.querySelectorAll('font[size="7"]:not([data-nm-keep])');
-        for (var j = 0; j < made.length; j++) {
-          made[j].removeAttribute('size');
-          made[j].style.fontSize = '\(Int(size))px';
+        run("window.__nmSetFontSize(\(Int(size)));")
+    }
+
+    // MARK: - Caret format & format painter
+
+    /// The formatting at the caret, reported by the page as the caret moves or
+    /// the document changes, so the toolbar reflects the letter being edited.
+    @Published private(set) var format = CaretFormat(family: RichTextController.systemFamily,
+                                                     size: RichTextController.defaultSize)
+
+    /// True while the format painter holds copied formatting; the page applies it
+    /// to the next mouse selection and reports back.
+    @Published private(set) var isPainting = false
+
+    /// Copies the formatting at the caret, or cancels a pending paint.
+    func togglePainter() {
+        isPainting.toggle()
+        run(isPainting
+            ? "window.__nmPainter = window.__nmFormat(); window.__nmPainterCursor(\(Self.jsString(Self.paintCursorCSS)));"
+            : "window.__nmPainter = null; window.__nmPainterCursor(null);")
+    }
+
+    /// The paintbrush cursor as a CSS `cursor` value, falling back to the I-beam.
+    private static let paintCursorCSS: String = {
+        guard let png = PaintCursor.png2x else { return "text" }
+        let hot = PaintCursor.hotSpot
+        return "-webkit-image-set(url(\"data:image/png;base64,\(png.base64EncodedString())\") 2x) "
+            + "\(Int(hot.x)) \(Int(hot.y)), text"
+    }()
+
+    fileprivate func painterApplied() { isPainting = false }
+
+    /// Takes the page's computed style for the caret: `family` is a CSS font
+    /// stack, the colors are `rgb()`/`rgba()` strings, `size` is in pixels.
+    fileprivate func updateFormat(_ body: [String: Any]) {
+        let updated = CaretFormat(
+            family: Self.pickerFamily(fromStack: body["family"] as? String ?? ""),
+            size: CGFloat(body["size"] as? Double ?? Double(RichTextController.defaultSize)),
+            color: Self.color(fromCSS: body["color"] as? String ?? ""),
+            background: Self.color(fromCSS: body["background"] as? String ?? ""),
+            bold: body["bold"] as? Bool ?? false,
+            italic: body["italic"] as? Bool ?? false,
+            underline: body["underline"] as? Bool ?? false
+        )
+        if updated != format { format = updated }
+    }
+
+    /// The first family of a CSS font stack, as the toolbar's picker names it: the
+    /// system stack maps to "System", a listed family to its listed spelling.
+    private static func pickerFamily(fromStack stack: String) -> String {
+        let first = (stack.split(separator: ",").first.map(String.init) ?? "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
+        if first.isEmpty || first == "-apple-system" || first == "system-ui" || first == "SF Pro Text" {
+            return RichTextController.systemFamily
         }
-        for (var k = 0; k < existing.length; k++) existing[k].removeAttribute('data-nm-keep');
-        """)
+        return RichTextController.fontFamilies.first { $0.caseInsensitiveCompare(first) == .orderedSame } ?? first
+    }
+
+    /// Parses a computed `rgb(r, g, b)` / `rgba(r, g, b, a)`; nil for an empty or
+    /// fully transparent color.
+    private static func color(fromCSS css: String) -> NSColor? {
+        guard let open = css.firstIndex(of: "("), let close = css.lastIndex(of: ")") else { return nil }
+        let parts = css[css.index(after: open)..<close].split(separator: ",")
+            .compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+        guard parts.count >= 3 else { return nil }
+        let alpha = parts.count > 3 ? parts[3] : 1
+        guard alpha > 0 else { return nil }
+        return NSColor(srgbRed: parts[0] / 255, green: parts[1] / 255, blue: parts[2] / 255, alpha: alpha)
     }
 
     /// Sets the writing direction of the block holding the selection. Any inline
@@ -247,6 +300,8 @@ final class HTMLEditorController: ObservableObject {
         (function () {
           var s = document.getElementById('nm-editor-only');
           if (s) s.remove();
+          var c = document.getElementById('nm-painter-cursor');
+          if (c) c.remove();
           document.designMode = 'off';
           return '<!DOCTYPE html>\\n' + document.documentElement.outerHTML;
         })()
@@ -274,6 +329,7 @@ struct HTMLEditorView: NSViewRepresentable {
         config.userContentController.add(context.coordinator, name: "shiftTab")
         config.userContentController.add(context.coordinator, name: "mention")
         config.userContentController.add(context.coordinator, name: "link")
+        config.userContentController.add(context.coordinator, name: "format")
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
@@ -360,7 +416,100 @@ struct HTMLEditorView: NSViewRepresentable {
             webView.evaluateJavaScript(js)
             webView.evaluateJavaScript(Self.mentionScript)
             webView.evaluateJavaScript(Self.linkScript)
+            webView.evaluateJavaScript(Self.formatScript)
         }
+
+        /// Reports the caret's computed formatting (`__nmFormat`) whenever the
+        /// selection or the document changes, and runs the format painter: a
+        /// format copied into `__nmPainter` is applied to the next selection made
+        /// with the mouse. A click that leaves no selection keeps it armed.
+        private static let formatScript = """
+        window.__nmFormat = function () {
+          var sel = window.getSelection();
+          if (!sel || !sel.rangeCount) return null;
+          var range = sel.getRangeAt(0);
+          var node = range.startContainer;
+          if (node.nodeType === 1 && node.childNodes[range.startOffset]) node = node.childNodes[range.startOffset];
+          if (node.nodeType !== 1) node = node.parentElement;
+          if (!node) return null;
+          var cs = getComputedStyle(node);
+          // Highlight and underline aren't inherited in computed style, so they're
+          // looked for on the ancestors up to (not including) the body.
+          var background = '', underline = false, sup = false;
+          for (var n = node; n && n.nodeType === 1 && n !== document.body; n = n.parentElement) {
+            var s = getComputedStyle(n);
+            if (!background && s.backgroundColor !== 'rgba(0, 0, 0, 0)' && s.backgroundColor !== 'transparent') {
+              background = s.backgroundColor;
+            }
+            if (/underline/.test(s.textDecorationLine)) underline = true;
+            if (s.verticalAlign === 'super' || n.tagName === 'SUP') sup = true;
+          }
+          return {
+            family: cs.fontFamily, size: parseFloat(cs.fontSize) || 16,
+            color: cs.color, background: background,
+            bold: cs.fontWeight === 'bold' || parseInt(cs.fontWeight, 10) >= 600,
+            italic: cs.fontStyle === 'italic', underline: underline, sup: sup
+          };
+        };
+        // execCommand('fontSize') only speaks the legacy 1–7 scale, so the
+        // selection is stamped with size 7 and those tags are rewritten to the
+        // exact pixel size; size-7 tags the original message already had are
+        // marked first so they're left alone.
+        window.__nmSetFontSize = function (px) {
+          var existing = document.querySelectorAll('font[size="7"]');
+          for (var i = 0; i < existing.length; i++) existing[i].setAttribute('data-nm-keep', '');
+          document.execCommand('styleWithCSS', false, false);
+          document.execCommand('fontSize', false, '7');
+          var made = document.querySelectorAll('font[size="7"]:not([data-nm-keep])');
+          for (var j = 0; j < made.length; j++) {
+            made[j].removeAttribute('size');
+            made[j].style.fontSize = px + 'px';
+          }
+          for (var k = 0; k < existing.length; k++) existing[k].removeAttribute('data-nm-keep');
+        };
+        window.__nmApplyFormat = function (f) {
+          document.execCommand('styleWithCSS', false, true);
+          document.execCommand('fontName', false, f.family);
+          document.execCommand('foreColor', false, f.color);
+          document.execCommand('hiliteColor', false, f.background || 'transparent');
+          var states = { bold: f.bold, italic: f.italic, underline: f.underline, superscript: f.sup };
+          for (var cmd in states) {
+            if (document.queryCommandState(cmd) !== states[cmd]) document.execCommand(cmd, false, null);
+          }
+          window.__nmSetFontSize(f.size);
+        };
+        // The brush cursor lives in its own stylesheet, removed on disarm and by
+        // exportHTML, so it never reaches the saved message.
+        window.__nmPainterCursor = function (css) {
+          var old = document.getElementById('nm-painter-cursor');
+          if (old) old.remove();
+          if (!css) return;
+          var s = document.createElement('style');
+          s.id = 'nm-painter-cursor';
+          s.textContent = 'html, html * { cursor: ' + css + ' !important; }';
+          (document.head || document.documentElement).appendChild(s);
+        };
+        window.__nmFormatPost = function () {
+          var f = window.__nmFormat();
+          if (f) window.webkit.messageHandlers.format.postMessage(f);
+        };
+        document.addEventListener('selectionchange', window.__nmFormatPost, true);
+        document.addEventListener('input', window.__nmFormatPost, true);
+        document.addEventListener('mouseup', function () {
+          // After the click's own selection handling has settled.
+          setTimeout(function () {
+            var f = window.__nmPainter;
+            var sel = window.getSelection();
+            if (!f || !sel || sel.isCollapsed) return;
+            window.__nmPainter = null;
+            window.__nmPainterCursor(null);
+            window.__nmApplyFormat(f);
+            window.webkit.messageHandlers.format.postMessage({ painterApplied: true });
+            window.__nmFormatPost();
+          }, 0);
+        }, true);
+        window.__nmFormatPost();
+        """
 
         /// Turns typed and pasted URLs into links, and reports clicks on links so
         /// native code can show the Open/Edit popup (designMode never follows them).
@@ -471,6 +620,11 @@ struct HTMLEditorView: NSViewRepresentable {
         func userContentController(_ userContentController: WKUserContentController,
                                    didReceive message: WKScriptMessage) {
             if message.name == "shiftTab" { controller.onShiftTab?() }
+            if message.name == "format", let body = message.body as? [String: Any] {
+                if body["painterApplied"] != nil { controller.painterApplied() }
+                else { controller.updateFormat(body) }
+                return
+            }
             if message.name == "link", let body = message.body as? [String: Any],
                let href = body["href"] as? String {
                 let rect = CGRect(x: body["x"] as? Double ?? 0, y: body["y"] as? Double ?? 0,
