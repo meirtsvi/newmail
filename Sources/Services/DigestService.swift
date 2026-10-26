@@ -585,23 +585,32 @@ final class DigestService {
         // a call that sees one segment cannot fold it into its neighbours — and
         // a real story the veto over-splits is re-merged by stage 1.5's dedup,
         // the same recovery chunk-boundary splits already rely on.
+        //
+        // Each call is told which item its segment was swept into: a long-form
+        // article with inline links (AlphaSignal's Sunday deep dive on the
+        // MemoryTax study) trips the veto too, and a segment seen alone came
+        // back as "a new study…" with entities like mem0 or zep — nothing the
+        // dedup could fold back together. With the parent in view, a segment
+        // that continues that story keeps its subject and entities, and dedup
+        // reunites the pieces; a round-up blurb still names its own subject.
         var kept: [ExtractionOutput.Item] = []
         var resplit: Set<Int> = []
         for item in items {
             let linkBearing = Set(item.segments.filter {
                 segments.indices.contains($0) && segments[$0].contains("[L:")
             })
-            if linkBearing.count >= Self.umbrellaSegments {
-                resplit.formUnion(item.segments)
-            } else {
+            guard linkBearing.count >= Self.umbrellaSegments else {
                 kept.append(item)
+                continue
             }
-        }
-        for id in resplit.sorted() where segments.indices.contains(id) {
-            if let output = await extractChunk(subject: subject, source: source, link: link,
-                                               segments: [(id, segments[id])]) {
-                kept.append(contentsOf: output.items)
-                noise.formUnion(output.noise)
+            for id in item.segments.sorted()
+            where segments.indices.contains(id) && resplit.insert(id).inserted {
+                if let output = await extractChunk(subject: subject, source: source, link: link,
+                                                   segments: [(id, segments[id])],
+                                                   parent: (item.title_he, item.entities ?? [])) {
+                    kept.append(contentsOf: output.items)
+                    noise.formUnion(output.noise)
+                }
             }
         }
         items = kept
@@ -633,33 +642,39 @@ final class DigestService {
     /// chunk is split and retried down to single segments, so at worst a few
     /// segments end up force-included verbatim.
     private func extractChunk(
-        subject: String, source: String, link: String, segments: [(id: Int, text: String)]
+        subject: String, source: String, link: String, segments: [(id: Int, text: String)],
+        parent: (title: String, entities: [String])? = nil
     ) async -> ExtractionOutput? {
         if let output = await extractionCall(subject: subject, source: source, link: link,
-                                             segments: segments) {
+                                             segments: segments, parent: parent) {
             return output
         }
         guard segments.count > 1 else { return nil }
         let mid = segments.count / 2
         let head = await extractChunk(subject: subject, source: source, link: link,
-                                      segments: Array(segments[..<mid]))
+                                      segments: Array(segments[..<mid]), parent: parent)
         let tail = await extractChunk(subject: subject, source: source, link: link,
-                                      segments: Array(segments[mid...]))
+                                      segments: Array(segments[mid...]), parent: parent)
         guard head != nil || tail != nil else { return nil }
         return ExtractionOutput(items: (head?.items ?? []) + (tail?.items ?? []),
                                 noise: (head?.noise ?? []) + (tail?.noise ?? []))
     }
 
     /// One extraction call (with a retry): numbered segments in, items+noise out.
+    /// `parent` is the item an umbrella-vetoed segment was swept into.
     private func extractionCall(
-        subject: String, source: String, link: String, segments: [(id: Int, text: String)]
+        subject: String, source: String, link: String, segments: [(id: Int, text: String)],
+        parent: (title: String, entities: [String])?
     ) async -> ExtractionOutput? {
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "title": subject,
             "source": source,
             "link": link,
             "segments": segments.map { ["id": $0.id, "text": $0.text] },
         ]
+        if let parent {
+            payload["parent_item"] = ["title_he": parent.title, "entities": parent.entities]
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
         let input = String(decoding: data, as: UTF8.self)
         let schema: [String: Any] = [
@@ -773,6 +788,13 @@ final class DigestService {
         English; do not transliterate. Write idiomatic Hebrew prose.
         - ALWAYS keep these exact words in English, never translate them: \
         \(TranslationService.skipWordsClause).
+        - The input may include parent_item: {title_he, entities} — an earlier pass grouped \
+        these segments into that item, and they are now re-read on their own. When a segment \
+        continues the parent's story (a detail, finding, or section of the same article, \
+        study, or announcement), its item MUST name that story's subject in title_he and \
+        summary_he and MUST include the parent's entities, so it can be merged back. When a \
+        segment is a different story (one blurb of a round-up), ignore parent_item and give \
+        it its own title and entities.
         """
     }
 
@@ -998,7 +1020,8 @@ final class DigestService {
         or by a different newsletter. Ignore superficial wording differences.
         Two items about the same company or the same product are NOT duplicates unless they \
         are about the same event: a model's launch, its benchmark results, and its pricing \
-        change are three different stories.
+        change are three different stories. But the findings, sections, and details of ONE \
+        study, paper, or article are one story — they ARE duplicates of each other.
         Two different companies are never the same story. Etched raising $700M and Groq \
         raising $350M are both funding news, and both are AI news, and they are still two \
         separate stories — "the same category of news" is NOT a duplicate.
