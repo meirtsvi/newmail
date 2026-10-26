@@ -211,6 +211,9 @@ final class MailboxViewModel {
     var isGeneratingDigest = false
     var digestProgress: String?
     var digestResult: String?
+    /// The digest whose source mails are being trashed, so its button can show
+    /// progress while the provider calls run.
+    var deletingDigestSourcesId: String?
     @ObservationIgnored private var newsletterLabelIds: [String: String] = [:]
     /// Replied/forwarded marks, keyed by `CachedReplyMark.key`; the message list
     /// shows a tag for each header whose `Message-ID` has one.
@@ -2686,7 +2689,9 @@ final class MailboxViewModel {
     /// successful purge left the button showing its original count, and clicking
     /// it again silently re-trashed already-trashed mail: it read as broken.
     func deleteDigestSources(for header: MessageHeader) async {
-        guard let record = digestRecord(for: header.id) else { return }
+        guard deletingDigestSourcesId == nil, let record = digestRecord(for: header.id) else { return }
+        deletingDigestSourcesId = header.id
+        defer { deletingDigestSourcesId = nil }
         var byAccount: [String: [String]] = [:]
         for source in record.sources {
             byAccount[source.accountId, default: []].append(source.messageId)

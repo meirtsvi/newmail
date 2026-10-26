@@ -60,13 +60,21 @@ struct MessageDetailView: View {
                 Divider().frame(height: 16)
             }
             if let count = vm.digestSourceCount(for: header) {
-                Button {
-                    Task { await vm.deleteDigestSources(for: header) }
-                } label: {
-                    Label("Delete sources (\(count))", systemImage: "trash")
-                        .labelStyle(.titleAndIcon)
+                if vm.deletingDigestSourcesId == header.id {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Deleting sources…").foregroundStyle(.secondary)
+                    }
+                } else {
+                    Button {
+                        Task { await vm.deleteDigestSources(for: header) }
+                    } label: {
+                        Label("Delete sources (\(count))", systemImage: "trash")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .disabled(vm.deletingDigestSourcesId != nil)
+                    .help("Trash the \(count) newsletter messages this digest covers")
                 }
-                .help("Trash the \(count) newsletter messages this digest covers")
                 Divider().frame(height: 16)
             }
             Button { reply(header, all: false) } label: { Image(systemName: "arrowshape.turn.up.left") }

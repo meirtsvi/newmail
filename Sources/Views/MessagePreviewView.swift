@@ -134,12 +134,21 @@ struct MessagePreviewView: View {
             }
             recipientsBlock(header)
             if let count = vm.digestSourceCount(for: header) {
-                Button(role: .destructive) {
-                    Task { await vm.deleteDigestSources(for: header) }
-                } label: {
-                    Label("Delete source mails (\(count))", systemImage: "trash")
+                if vm.deletingDigestSourcesId == header.id {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Deleting \(count) source mail\(count == 1 ? "" : "s")…")
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Button(role: .destructive) {
+                        Task { await vm.deleteDigestSources(for: header) }
+                    } label: {
+                        Label("Delete source mails (\(count))", systemImage: "trash")
+                    }
+                    .disabled(vm.deletingDigestSourcesId != nil)
+                    .help("Trash the \(count) newsletter messages this digest covers")
                 }
-                .help("Trash the \(count) newsletter messages this digest covers")
             }
             if let body = vm.currentBody, !body.attachments.isEmpty {
                 AttachmentList(attachments: body.attachments)
