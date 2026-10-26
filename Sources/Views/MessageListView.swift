@@ -160,7 +160,10 @@ struct MessageListView: View {
                 // `customizationID`; fall back to the header title in case that
                 // ever changes.
                 isActionColumn: { $0.identifier.rawValue == "date" || $0.title == "Date" },
-                setHovered: { setHovered($0, onDateColumn: $1) }
+                setHovered: { setHovered($0, onDateColumn: $1) },
+                // A click selects the row natively but leaves the table without
+                // keyboard focus (gray highlight, Delete does nothing), so take it.
+                onClick: { tableFocused = true }
             )
             .allowsHitTesting(false)
         )
@@ -460,6 +463,8 @@ struct TableHoverTracker: NSViewRepresentable {
     /// Reports the hovered row id (nil when the cursor is off any row) and whether
     /// the cursor sits in that row's action column.
     let setHovered: (String?, Bool) -> Void
+    /// Called after a left click lands on the table.
+    let onClick: () -> Void
 
     func makeNSView(context: Context) -> TableHoverNSView {
         let v = TableHoverNSView()
@@ -475,6 +480,7 @@ struct TableHoverTracker: NSViewRepresentable {
         v.idForRow = idForRow
         v.isActionColumn = isActionColumn
         v.setHovered = setHovered
+        v.onClick = onClick
     }
 }
 
@@ -482,9 +488,28 @@ final class TableHoverNSView: NSView {
     var idForRow: ((Int) -> String?)?
     var isActionColumn: ((NSTableColumn) -> Bool)?
     var setHovered: ((String?, Bool) -> Void)?
+    var onClick: (() -> Void)?
     private var area: NSTrackingArea?
+    private var clickMonitor: Any?
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }   // click-through
+
+    /// Clicks never reach this view (click-through), so watch them with a local
+    /// monitor and report the ones inside its frame. Deferred a runloop so the
+    /// table finishes handling the click before focus moves.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
+        clickMonitor = nil
+        guard window != nil else { return }
+        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            if let self, event.window === self.window,
+               self.convert(self.bounds, to: nil).contains(event.locationInWindow) {
+                DispatchQueue.main.async { self.onClick?() }
+            }
+            return event
+        }
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
