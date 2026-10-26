@@ -388,6 +388,10 @@ struct StatusBar: View {
                 .frame(width: 440)
                 .frame(maxHeight: 300)
             }
+        } else if let notice = vm.noticeMessage {
+            Image(systemName: "checkmark.circle")
+                .foregroundStyle(.secondary)
+            Text(notice).foregroundStyle(.secondary).lineLimit(1).help(notice)
         } else if vm.isCleaningUp {
             ProgressView().controlSize(.small)
             Text(vm.cleanupProgress ?? "Cleaning up conversation…").foregroundStyle(.secondary)

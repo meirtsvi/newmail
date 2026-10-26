@@ -188,6 +188,9 @@ final class MailboxViewModel {
     // Non-modal status-bar message for connection / sync / load problems (shown
     // in the bottom bar instead of an alert). Cleared on the next success.
     var statusMessage: String?
+    /// A short-lived confirmation ("Moved 3 messages to …") for the status bar,
+    /// shown with a plain check rather than `statusMessage`'s warning icon.
+    var noticeMessage: String?
     var authMessage: String?
     var isSigningIn = false
     var hasWriteScope = true
@@ -1097,13 +1100,13 @@ final class MailboxViewModel {
               folder.compositeId != currentFolder?.compositeId else { return }
         let ids = sweepMatches(rule)
         guard !ids.isEmpty else {
-            statusMessage = "No messages from \(rule.name) here."
+            setNotice("No messages from \(rule.name) here.")
             return
         }
         errorMessage = nil
         await moveDropped(ids, to: folder)
         if errorMessage == nil {
-            statusMessage = "Moved \(ids.count) to \(folder.name)."
+            setNotice("Moved \(ids.count) to \(folder.name).")
         }
     }
 
@@ -2509,7 +2512,7 @@ final class MailboxViewModel {
         if moved > 0 {
             let name = dest.account.displayName.isEmpty ? dest.account.email : dest.account.displayName
             let note = purgesSource ? "" : " Source copies are in Gmail’s Trash."
-            statusMessage = "Moved \(moved) message\(moved == 1 ? "" : "s") to \(name).\(note)"
+            setNotice("Moved \(moved) message\(moved == 1 ? "" : "s") to \(name).\(note)")
         }
     }
 
@@ -2617,6 +2620,17 @@ final class MailboxViewModel {
     }
 
     /// Shows a digest result in the status bar, auto-clearing after a few seconds.
+    /// Shows `message` as a status-bar notice for a few seconds. It replaces any
+    /// standing problem message, as the success it reports used to.
+    func setNotice(_ message: String) {
+        statusMessage = nil
+        noticeMessage = message
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(8))
+            if self?.noticeMessage == message { self?.noticeMessage = nil }
+        }
+    }
+
     private func setDigestResult(_ message: String) {
         digestResult = message
         Task { [weak self] in
@@ -3997,7 +4011,7 @@ final class MailboxViewModel {
         if savedURLs.count == 1 {
             NSWorkspace.shared.activateFileViewerSelecting(savedURLs)
         } else if savedURLs.count > 1 {
-            statusMessage = "Downloaded \(savedURLs.count) attachments to Downloads."
+            setNotice("Downloaded \(savedURLs.count) attachments to Downloads.")
         }
     }
 
