@@ -3319,7 +3319,7 @@ final class MailboxViewModel {
         let dayAgo = Date().addingTimeInterval(-86_400)
         let arrived = update.upserted
             .filter { update.newIds.contains($0.id) && $0.labelIds.contains(inbox.id) && !$0.isRead && $0.date > dayAgo }
-            .filter { !hebrewRewrittenIds.contains($0.id) }
+            .filter { !hebrewTabsHandledIds.contains($0.id) }
             .sorted { $0.date < $1.date }
         for header in arrived { presentNotification(header, accountId: update.accountId) }
     }
@@ -3479,8 +3479,9 @@ final class MailboxViewModel {
         }
     }
 
-    /// Appends messages missing a translation or summary to the pre-translation
-    /// queue and starts the single background worker draining it.
+    /// Appends messages missing a translation or summary — or not yet checked
+    /// for the Hebrew-tabs rewrite this session — to the pre-translation queue
+    /// and starts the single background worker draining it.
     private func enqueuePretranslations(_ notes: [MailNotification]) {
         guard GeminiConfig.apiKey != nil else { return }
         let queued = Set(pretranslateQueue.map(\.id))
@@ -3488,6 +3489,7 @@ final class MailboxViewModel {
             guard !queued.contains(note.id) else { return false }
             let cached = store.cachedTranslation(id: note.id)
             return cached.translated == nil || cached.summary == nil
+                || !hebrewTabsHandledIds.contains(note.id)
         }
         guard !missing.isEmpty else { return }
         pretranslateQueue.append(contentsOf: missing)
@@ -3519,13 +3521,15 @@ final class MailboxViewModel {
         }
         let done = store.cachedTranslation(id: note.id)
         if let translated = done.translated, let summary = done.summary {
+            hebrewTabsHandledIds.insert(note.id)
             await rewriteWithHebrewTabs(note, body: body, translated: translated, summary: summary)
         }
     }
 
-    /// Copies of newsletters rewritten with Hebrew tabs, so their arrival on the
-    /// next sync doesn't pop a second notification.
-    @ObservationIgnored private var hebrewRewrittenIds: Set<String> = []
+    /// Newsletters already checked for the Hebrew-tabs rewrite this session, and
+    /// the rewritten copies — so backlog sweeps don't re-check them and a copy's
+    /// arrival on the next sync doesn't pop a second notification.
+    @ObservationIgnored private var hebrewTabsHandledIds: Set<String> = []
 
     /// Replaces a Gmail newsletter on the server with a copy whose body carries
     /// Original / Hebrew / Summary tabs, so the translation is readable on devices
@@ -3551,7 +3555,7 @@ final class MailboxViewModel {
                 cc: body.cc.map(\.email).filter { !$0.isEmpty }.joined(separator: ", "),
                 subject: header.subject, html: html, attachments: [], date: header.date)
             let newId = try await gmail.importRawMessage(mime, toFolderId: "INBOX", markUnread: !header.isRead)
-            hebrewRewrittenIds.insert(newId)
+            hebrewTabsHandledIds.insert(newId)
             store.saveTranslation(id: newId, translated: translated, summary: summary)
             if header.isFlagged { try? await gmail.setFlagged(ids: [newId], flagged: true) }
             // Insert only carries INBOX/UNREAD; re-apply the user labels (Newsletter
