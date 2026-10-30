@@ -53,6 +53,45 @@ final class TranslationService {
         return Self.wrapSummary(out)
     }
 
+    /// Marker on the tabbed wrapper, so a message already rewritten with Hebrew
+    /// tabs is never wrapped again.
+    static let hebrewTabsMarker = "data-newmail-hebrew"
+
+    /// The original message plus its Hebrew translation and summary as one HTML
+    /// document with three tap-to-switch tabs (Original / עברית / סיכום). No JS:
+    /// hidden radios + `:checked` sibling selectors, which Apple Mail (incl. iOS)
+    /// and WebKit honor, so the tabs work when the mail is read on another device.
+    func hebrewTabsHTML(original: String, translated: String, summary: String) async throws -> String {
+        let session = WebSession()
+        try await session.load(original)
+        let originalFragment = try await session.bodyFragment()
+        let css = """
+        .nm-r{display:none}
+        .nm-bar{display:flex;gap:8px;padding:8px 0 12px;font-family:-apple-system,Helvetica,Arial,sans-serif}
+        .nm-tab{padding:6px 14px;border:1px solid #c7c7cc;border-radius:16px;font-size:14px;color:#007aff;cursor:pointer}
+        .nm-pane{display:none}
+        #nm-o:checked~.nm-o,#nm-h:checked~.nm-h,#nm-s:checked~.nm-s{display:block}
+        #nm-o:checked~.nm-bar .nm-to,#nm-h:checked~.nm-bar .nm-th,#nm-s:checked~.nm-bar .nm-ts{background:#007aff;color:#fff;border-color:#007aff}
+        """
+        return """
+        <html><head><meta charset="utf-8"><style>\(css)</style></head><body>
+        <div \(Self.hebrewTabsMarker)="1">
+        <input type="radio" name="nm-tabs" id="nm-o" class="nm-r" checked>
+        <input type="radio" name="nm-tabs" id="nm-h" class="nm-r">
+        <input type="radio" name="nm-tabs" id="nm-s" class="nm-r">
+        <div class="nm-bar">
+        <label for="nm-o" class="nm-tab nm-to">Original</label>
+        <label for="nm-h" class="nm-tab nm-th">עברית</label>
+        <label for="nm-s" class="nm-tab nm-ts">סיכום</label>
+        </div>
+        <div class="nm-pane nm-o">\(originalFragment)</div>
+        <div class="nm-pane nm-h">\(translated)</div>
+        <div class="nm-pane nm-s">\(summary)</div>
+        </div>
+        </body></html>
+        """
+    }
+
     // MARK: - Batching
 
     /// Groups indices into batches bounded by char count and item count
@@ -319,6 +358,18 @@ private final class WebSession: NSObject, WKNavigationDelegate {
             throw TranslationError.emptyResponse
         }
         return s
+    }
+
+    /// The body HTML with any `<style>` blocks preserved, for embedding the
+    /// document inside another one.
+    func bodyFragment() async throws -> String {
+        let js = """
+        (function(){
+          var styles = Array.prototype.map.call(document.querySelectorAll('style'), function(s){ return s.outerHTML; }).join('');
+          return styles + document.body.innerHTML;
+        })()
+        """
+        return (try await webView.evaluateJavaScript(js) as? String) ?? ""
     }
 
     func innerText() async throws -> String {

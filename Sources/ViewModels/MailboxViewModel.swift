@@ -3319,6 +3319,7 @@ final class MailboxViewModel {
         let dayAgo = Date().addingTimeInterval(-86_400)
         let arrived = update.upserted
             .filter { update.newIds.contains($0.id) && $0.labelIds.contains(inbox.id) && !$0.isRead && $0.date > dayAgo }
+            .filter { !hebrewRewrittenIds.contains($0.id) }
             .sorted { $0.date < $1.date }
         for header in arrived { presentNotification(header, accountId: update.accountId) }
     }
@@ -3515,6 +3516,64 @@ final class MailboxViewModel {
            let summary = try? await TranslationService.shared.summarizeInHebrew(
                plainText: body.plainText, html: body.html) {
             store.saveTranslation(id: note.id, summary: summary)
+        }
+        let done = store.cachedTranslation(id: note.id)
+        if let translated = done.translated, let summary = done.summary {
+            await rewriteWithHebrewTabs(note, body: body, translated: translated, summary: summary)
+        }
+    }
+
+    /// Copies of newsletters rewritten with Hebrew tabs, so their arrival on the
+    /// next sync doesn't pop a second notification.
+    @ObservationIgnored private var hebrewRewrittenIds: Set<String> = []
+
+    /// Replaces a Gmail newsletter on the server with a copy whose body carries
+    /// Original / Hebrew / Summary tabs, so the translation is readable on devices
+    /// without newmail (e.g. Apple Mail on iPhone). Messages are immutable on the
+    /// server, so — like `saveEditedMessage` — this inserts the copy (same sender,
+    /// date, labels, read and star state) and trashes the original only after the
+    /// insert succeeds. Skips messages with attachments or inline images, which
+    /// the rebuilt single-part HTML mail wouldn't carry over.
+    private func rewriteWithHebrewTabs(_ note: MailNotification, body: MessageBody,
+                                       translated: String, summary: String) async {
+        guard gmailWriteScope,
+              let gmail = sessions.first(where: { $0.account.id == note.accountId })?.provider as? GmailProvider,
+              body.attachments.isEmpty,
+              !body.html.contains(TranslationService.hebrewTabsMarker) else { return }
+        let header = messages.first(where: { $0.id == note.id }) ?? note.header
+        guard header.labelIds.contains("INBOX") else { return }
+        do {
+            let html = try await TranslationService.shared.hebrewTabsHTML(
+                original: body.html, translated: translated, summary: summary)
+            let mime = MIMEBuilder.buildHTML(
+                from: header.from.nameAndEmail,
+                to: header.to.map(\.email).filter { !$0.isEmpty }.joined(separator: ", "),
+                cc: body.cc.map(\.email).filter { !$0.isEmpty }.joined(separator: ", "),
+                subject: header.subject, html: html, attachments: [], date: header.date)
+            let newId = try await gmail.importRawMessage(mime, toFolderId: "INBOX", markUnread: !header.isRead)
+            hebrewRewrittenIds.insert(newId)
+            store.saveTranslation(id: newId, translated: translated, summary: summary)
+            if header.isFlagged { try? await gmail.setFlagged(ids: [newId], flagged: true) }
+            // Insert only carries INBOX/UNREAD; re-apply the user labels (Newsletter
+            // included) and Gmail categories.
+            let system: Set<String> = ["INBOX", "UNREAD", "STARRED", "SENT", "DRAFT", "TRASH", "SPAM", "CHAT"]
+            for labelId in header.labelIds where !system.contains(labelId) {
+                try? await gmail.setLabel(ids: [newId], labelId: labelId, on: true)
+            }
+            try await gmail.trash(ids: [note.id])
+            let wasOpen = selection.contains(note.id) || currentBody?.headerId == note.id
+            addTombstones(ids: [note.id], folderId: "INBOX")
+            if currentAccountId == note.accountId {
+                removeLocal(ids: [note.id])
+                await reloadCurrentFolder()
+                if wasOpen, messages.contains(where: { $0.id == newId }) {
+                    selection = [newId]
+                }
+            } else {
+                store.deleteMessages(ids: [note.id])
+            }
+        } catch {
+            // Best effort: on failure the original stays in place untouched.
         }
     }
 
