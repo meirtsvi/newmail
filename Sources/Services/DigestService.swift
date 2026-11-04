@@ -422,7 +422,7 @@ final class DigestService {
         if !extra.isEmpty {
             progress("Digest: sending to \(extra)…")
             let outgoing = MIMEBuilder.buildHTML(
-                from: destination.accountEmail, to: extra, cc: "",
+                from: destination.accountEmail, to: "", cc: "", bcc: extra,
                 subject: subject, html: html, attachments: []
             )
             do {

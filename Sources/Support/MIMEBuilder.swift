@@ -21,6 +21,7 @@ enum MIMEBuilder {
         from: String,
         to: String,
         cc: String,
+        bcc: String = "",
         subject: String,
         html: String,
         attachments: [URL],
@@ -30,8 +31,10 @@ enum MIMEBuilder {
     ) -> Data {
         var header: [String] = []
         if !from.isEmpty { header.append("From: \(from)") }
-        header.append("To: \(to)")
+        // A Bcc-only message (e.g. the digest) carries no To line at all.
+        if !to.isEmpty || bcc.isEmpty { header.append("To: \(to)") }
         if !cc.isEmpty { header.append("Cc: \(cc)") }
+        if !bcc.isEmpty { header.append("Bcc: \(bcc)") }
         header.append("Subject: \(encodeHeader(subject))")
         // Threads a reply or forward under the original (its `Message-ID`).
         if let inReplyTo, !inReplyTo.isEmpty {
