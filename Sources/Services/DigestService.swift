@@ -145,7 +145,7 @@ final class DigestService {
     private struct ExtractionOutput: Decodable {
         struct Link: Decodable {
             let id: Int
-            let title: String
+            let source_text: String
         }
         struct Item: Decodable {
             let title_he: String
@@ -691,9 +691,9 @@ final class DigestService {
                             "type": "OBJECT",
                             "properties": [
                                 "id": ["type": "INTEGER"],
-                                "title": ["type": "STRING"],
+                                "source_text": ["type": "STRING"],
                             ],
-                            "required": ["id", "title"],
+                            "required": ["id", "source_text"],
                         ] as [String: Any]],
                         "entities": ["type": "ARRAY", "items": ["type": "STRING"]],
                         "significance": ["type": "STRING"],
@@ -723,7 +723,7 @@ final class DigestService {
         var seen = Set<Int>()
         return (links ?? []).compactMap { link in
             guard link.id >= 0, link.id < urlCount, seen.insert(link.id).inserted else { return nil }
-            let title = link.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = link.source_text.trimmingCharacters(in: .whitespacesAndNewlines)
             return LinkRef(id: link.id, title: title.isEmpty ? "קישור" : title)
         }
     }
@@ -743,7 +743,7 @@ final class DigestService {
         contain several stories (then create several items that all reference that segment's id).
         The segment text contains markers of the form [L:7] — each one stands for a hyperlink \
         that was at that exact spot, and 7 is its id.
-        Return {"items": [{title_he, summary_he, link, segments: [ids], links: [{id, title}], \
+        Return {"items": [{title_he, summary_he, link, segments: [ids], links: [{id, source_text}], \
         entities: [...], significance}], "noise": [ids]}.
         Rules:
         - One item per distinct story. title_he: a short Hebrew headline. summary_he: 1–3 \
@@ -766,8 +766,10 @@ final class DigestService {
         "model releases"), you have merged stories that must stay separate — split them.
         - links: one entry for EVERY [L:n] marker that falls inside this item's text. `id` is \
         that marker's number, exactly as written — never invent an id, and never write a URL. \
-        `title` is the FULL sentence the marker appeared in, in its original language, trimmed, \
-        with the marker itself removed — not the two or three words of anchor text, and never \
+        `source_text` is the FULL sentence the marker appeared in, copied VERBATIM from the \
+        segment text in its original language — NEVER translate it into Hebrew (an English \
+        sentence stays English; only a sentence that is already Hebrew is Hebrew). Trim it and \
+        remove the marker itself — not the two or three words of anchor text, and never \
         "Read more" or "Click here". Omit markers in noise text (unsubscribe, sponsor, nav). \
         An item whose text contains any [L:n] marker MUST list it — an empty links array is \
         only correct when the item's text has no marker at all.
