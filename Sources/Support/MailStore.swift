@@ -409,7 +409,21 @@ final class MailStore {
         guard let row = try? context.fetch(descriptor).first else { return nil }
         let attachments = (try? JSONDecoder().decode([MailAttachment].self, from: Data(row.attachmentsJSON.utf8))) ?? []
         return MessageBody(headerId: row.id, html: row.html, plainText: row.plainText,
-                           attachments: attachments, cc: Self.decodeAddresses(row.ccRaw))
+                           attachments: attachments, cc: Self.decodeAddresses(row.ccRaw),
+                           calendar: Self.decodeInvite(row.calendarJSON))
+    }
+
+    /// The cached invitations among the given message ids.
+    func cachedInvites(among ids: [String]) -> [CalendarInvite] {
+        let rows = (try? context.fetch(
+            FetchDescriptor<CachedBody>(predicate: #Predicate { ids.contains($0.id) && $0.isCalendar })
+        )) ?? []
+        return rows.compactMap { Self.decodeInvite($0.calendarJSON) }
+    }
+
+    private static func decodeInvite(_ json: String) -> CalendarInvite? {
+        guard !json.isEmpty else { return nil }
+        return try? JSONDecoder().decode(CalendarInvite.self, from: Data(json.utf8))
     }
 
     func saveBody(_ body: MessageBody) {
@@ -417,15 +431,19 @@ final class MailStore {
         let ccRaw = Self.encodeAddresses(body.cc)
         let id = body.headerId
         let isCalendar = body.calendar != nil
+        let calendarJSON = body.calendar.flatMap { try? JSONEncoder().encode($0) }
+            .map { String(decoding: $0, as: UTF8.self) } ?? ""
         if let row = try? context.fetch(FetchDescriptor<CachedBody>(predicate: #Predicate { $0.id == id })).first {
             row.html = body.html
             row.plainText = body.plainText
             row.attachmentsJSON = attachmentsJSON
             row.ccRaw = ccRaw
             row.isCalendar = isCalendar
+            row.calendarJSON = calendarJSON
         } else {
             context.insert(CachedBody(id: id, html: body.html, plainText: body.plainText,
-                                      attachmentsJSON: attachmentsJSON, ccRaw: ccRaw, isCalendar: isCalendar))
+                                      attachmentsJSON: attachmentsJSON, ccRaw: ccRaw, isCalendar: isCalendar,
+                                      calendarJSON: calendarJSON))
         }
         try? context.save()
     }
@@ -444,8 +462,11 @@ final class MailStore {
     private nonisolated static func findMessagesNeedingBodies(in context: ModelContext, since: Date, skip: Set<String>,
                                                               limit: Int) -> [(id: String, accountId: String)] {
         var bodyDescriptor = FetchDescriptor<CachedBody>()
-        bodyDescriptor.propertiesToFetch = [\.id]
-        let haveBody = Set(((try? context.fetch(bodyDescriptor)) ?? []).map(\.id))
+        bodyDescriptor.propertiesToFetch = [\.id, \.isCalendar, \.calendarJSON]
+        // Invitations cached before the parsed invite was stored are fetched
+        // again, so their card shows from the cache too.
+        let haveBody = Set(((try? context.fetch(bodyDescriptor)) ?? [])
+            .filter { !$0.isCalendar || !$0.calendarJSON.isEmpty }.map(\.id))
         var descriptor = FetchDescriptor<CachedMessage>(
             predicate: #Predicate { $0.date >= since },
             sortBy: [SortDescriptor(\.date, order: .reverse)]

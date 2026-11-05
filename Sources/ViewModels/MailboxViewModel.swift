@@ -154,6 +154,10 @@ final class MailboxViewModel {
     var inviteEventsLoading = false
     var inviteNeedsCalendarAuth = false
     var inviteEventsError: String?
+    /// The user's Google Calendar events per day (keyed by start of day), fetched
+    /// ahead of time for invitations so the card's timeline shows at once.
+    @ObservationIgnored private var inviteDayCache: [Date: [CalEvent]] = [:]
+    @ObservationIgnored private var inviteDaysLoading: Set<Date> = []
 
     // Search
     var searchText = ""
@@ -310,16 +314,41 @@ final class MailboxViewModel {
     /// place the compose autocomplete can learn the people you were copied with.
     private func noteFetchedBody(_ body: MessageBody) {
         contactStore.record(body.cc)
-        if body.calendar != nil {
+        if let invite = body.calendar {
             calendarMessageIds.insert(body.headerId)
             applyCategoryFlags()
+            prefetchInviteDays([invite])
         }
     }
 
     /// Hydrates the calendar-event set from already-cached bodies for the listed ids.
     private func hydrateCalendarIds() {
-        calendarMessageIds.formUnion(store.calendarMessageIds(among: messages.map(\.id)))
+        let ids = messages.map(\.id)
+        calendarMessageIds.formUnion(store.calendarMessageIds(among: ids))
         applyCategoryFlags()
+        if currentAccountIsGmail { prefetchInviteDays(store.cachedInvites(among: ids)) }
+    }
+
+    /// Fetches the user's calendar for the days of upcoming invitations that
+    /// aren't cached yet, so opening one shows its timeline without waiting.
+    private func prefetchInviteDays(_ invites: [CalendarInvite]) {
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        let days = Set(invites
+            .filter { $0.method == .request || $0.method == .cancel || $0.method == .counter }
+            .compactMap(\.start).map { cal.startOfDay(for: $0) })
+            .filter { $0 >= today && inviteDayCache[$0] == nil && !inviteDaysLoading.contains($0) }
+        guard !days.isEmpty, network.isOnline else { return }
+        inviteDaysLoading.formUnion(days)
+        Task {
+            defer { inviteDaysLoading.subtract(days) }
+            guard (try? await GoogleAuth.shared.hasCalendarScope) == true else { return }
+            for day in days {
+                if let events = try? await GoogleCalendarService.shared.events(onDayOf: day) {
+                    inviteDayCache[day] = events
+                }
+            }
+        }
     }
 
     /// Mirrors the invite set and Newsletter-label membership onto the loaded
@@ -1619,9 +1648,11 @@ final class MailboxViewModel {
         backfillMessageId(id, provider: provider)
         // Paint the cached body instantly so the preview is immediate; only show the
         // loading spinner when there's nothing cached to display yet.
-        if let cached = store.cachedBody(id: id) {
+        let cached = store.cachedBody(id: id)
+        if let cached {
             currentBody = cached
             isLoadingBody = false
+            Task { await loadInviteContextIfNeeded(headerId: id, body: cached) }
         } else {
             isLoadingBody = true
         }
@@ -1642,7 +1673,10 @@ final class MailboxViewModel {
             // Ignore a late network result if the user has moved to another message.
             if selection.count == 1, selection.first == id {
                 currentBody = body
-                await loadInviteContextIfNeeded(headerId: id, body: body)
+                // Already loaded from the cached copy unless the invite changed.
+                if body.calendar != cached?.calendar {
+                    await loadInviteContextIfNeeded(headerId: id, body: body)
+                }
             }
         } catch {
             if currentBody == nil, !Self.isCancellation(error) { errorMessage = error.localizedDescription }
@@ -3892,23 +3926,34 @@ final class MailboxViewModel {
     /// Loads the user's Google Calendar events for the invitation's day so the
     /// card can show their schedule. Gmail-only; no-op (with an auth prompt) when
     /// the calendar scope hasn't been granted.
+    /// A day fetched ahead of time shows at once and is then refreshed quietly.
     func loadInviteContext(headerId: String, invite: CalendarInvite) async {
         inviteContextHeaderId = headerId
-        inviteDayEvents = []
         inviteNeedsCalendarAuth = false
         inviteEventsError = nil
-        guard let day = invite.start, currentAccountIsGmail else { return }
-        guard (try? await GoogleAuth.shared.hasCalendarScope) == true else {
-            inviteNeedsCalendarAuth = true
+        guard let day = invite.start, currentAccountIsGmail else {
+            inviteDayEvents = []
             return
         }
-        inviteEventsLoading = true
-        defer { inviteEventsLoading = false }
+        let key = Calendar.current.startOfDay(for: day)
+        let cached = inviteDayCache[key]
+        inviteDayEvents = cached ?? []
+        guard (try? await GoogleAuth.shared.hasCalendarScope) == true else {
+            if inviteContextHeaderId == headerId {
+                inviteDayEvents = []
+                inviteNeedsCalendarAuth = true
+            }
+            return
+        }
+        if cached == nil { inviteEventsLoading = true }
+        defer { if cached == nil { inviteEventsLoading = false } }
         do {
             let events = try await GoogleCalendarService.shared.events(onDayOf: day)
+            inviteDayCache[key] = events
             if inviteContextHeaderId == headerId { inviteDayEvents = events }
         } catch {
-            guard inviteContextHeaderId == headerId else { return }
+            // With a cached day on screen, a failed refresh is left silent.
+            guard inviteContextHeaderId == headerId, cached == nil else { return }
             // Distinguish a missing/insufficient scope (re-consent helps → show the
             // Connect button) from any other failure such as the Calendar API being
             // disabled in the Cloud project (re-consent won't help → show the error,
@@ -3932,6 +3977,44 @@ final class MailboxViewModel {
             “Google hasn’t verified this app”, click Advanced → “Go to newmail (unsafe)”; then keep the \
             “View and edit events on all your calendars” permission checked and click Continue.
             """
+        }
+    }
+
+    /// Accept / Maybe / Decline from the reading pane: the invitation leaves the
+    /// list at once and the RSVP is sent in the background. The message is
+    /// trashed only once the RSVP went out; if it fails the message is put back.
+    func respondToInviteAndRemove(_ invite: CalendarInvite, response: InviteResponse, note: String,
+                                  messageId: String) {
+        guard let provider = currentProvider, let accountId = currentAccountId else {
+            errorMessage = "No account is selected."
+            return
+        }
+        let removed = messages.filter { $0.id == messageId }
+        let body = store.cachedBody(id: messageId)
+        let folderId = currentFolder?.id
+        removeLocal(ids: [messageId])
+        addTombstones(ids: [messageId], folderId: folderId)
+        func putBack() {
+            clearTombstones(ids: [messageId], folderId: folderId)
+            if currentAccountId == accountId, currentFolder?.id == folderId {
+                restoreLocal(removed)
+            } else {
+                store.saveHeaders(removed)
+            }
+            if let body { store.saveBody(body) }
+        }
+        Task {
+            guard await respondToInvite(invite, response: response, note: note, accountId: accountId) else {
+                putBack()
+                return
+            }
+            do {
+                try await submit(PendingActionQueue.make(.trash, accountId: accountId, ids: [messageId]),
+                                 provider: provider)
+            } catch {
+                putBack()
+                errorMessage = "Couldn’t delete: \(error.localizedDescription)"
+            }
         }
     }
 

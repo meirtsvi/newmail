@@ -239,14 +239,19 @@ final class CachedBody {
     /// calendar-event column). Defaulted so the additive schema change migrates
     /// in place without discarding the cache.
     var isCalendar: Bool = false
+    /// The parsed invitation as JSON (empty when there is none), so an invite's
+    /// card shows from the cache without refetching the message.
+    var calendarJSON: String = ""
 
-    init(id: String, html: String, plainText: String, attachmentsJSON: String, ccRaw: String = "", isCalendar: Bool = false) {
+    init(id: String, html: String, plainText: String, attachmentsJSON: String, ccRaw: String = "", isCalendar: Bool = false,
+         calendarJSON: String = "") {
         self.id = id
         self.html = html
         self.plainText = plainText
         self.attachmentsJSON = attachmentsJSON
         self.ccRaw = ccRaw
         self.isCalendar = isCalendar
+        self.calendarJSON = calendarJSON
     }
 }
 

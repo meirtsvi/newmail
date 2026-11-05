@@ -3,8 +3,8 @@ import Foundation
 // MARK: - Model
 
 /// A calendar invitation parsed from a message's `text/calendar` part.
-struct CalendarInvite: Hashable {
-    enum Method: String {
+struct CalendarInvite: Hashable, Codable {
+    enum Method: String, Codable {
         case request = "REQUEST"   // an invitation asking for a response
         case cancel  = "CANCEL"    // the organizer canceled the event
         case reply   = "REPLY"

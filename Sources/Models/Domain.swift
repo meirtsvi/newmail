@@ -22,7 +22,7 @@ enum MailError: LocalizedError {
 
 // MARK: - Addresses
 
-struct MailAddress: Hashable, Identifiable {
+struct MailAddress: Hashable, Identifiable, Codable {
     var name: String
     var email: String
 

@@ -10,7 +10,6 @@ struct CalendarInviteView: View {
     let messageId: String
     @Environment(MailboxViewModel.self) private var vm
 
-    @State private var sending: InviteResponse?
     @State private var note = ""
 
     var body: some View {
@@ -136,25 +135,19 @@ struct CalendarInviteView: View {
             respond(response)
         } label: {
             HStack(spacing: 4) {
-                if sending == response { ProgressView().controlSize(.small) }
-                else { Image(systemName: symbol) }
+                Image(systemName: symbol)
                 Text(title)
             }
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(.bordered)
         .tint(tint)
-        .disabled(sending != nil)
     }
 
+    /// Removes the invitation at once; the RSVP is sent in the background and
+    /// the message comes back if it fails.
     private func respond(_ response: InviteResponse) {
-        sending = response
-        Task {
-            let ok = await vm.respondToInvite(invite, response: response, note: note)
-            sending = nil
-            // On a sent RSVP, remove the invitation and advance the selection.
-            if ok { await vm.deleteMessages([messageId]) }
-        }
+        vm.respondToInviteAndRemove(invite, response: response, note: note, messageId: messageId)
     }
 
     // MARK: Timeline
